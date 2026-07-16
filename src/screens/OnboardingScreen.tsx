@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { StyleSheet, Text, View, Image, TouchableOpacity, SafeAreaView, StatusBar } from 'react-native';
+import { useTheme } from '../hooks/useTheme'; 
 
 const onboardingData = [
   { id: '01', title: 'Speak English\nWith Confidence', subtitle: 'Practice real conversations, improve pronunciation, and speak without fear.', image: 'https://images.unsplash.com/photo-1543269865-cbf427effbad?q=80&w=500' },
@@ -8,9 +9,11 @@ const onboardingData = [
   { id: '04', title: 'Build Fluency\nEvery Day', subtitle: 'Stay consistent, track your progress, and unlock achievements.', image: 'https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?q=80&w=500' },
 ];
 
-export default function OnboardingScreen({ navigation, theme }: any) {
+export default function OnboardingScreen({ navigation }: any) {
   const [currentStep, setCurrentStep] = useState(0);
   const activeData = onboardingData[currentStep];
+  
+  const theme = useTheme(); 
 
   const handleNext = () => {
     if (currentStep < onboardingData.length - 1) {
@@ -30,37 +33,46 @@ export default function OnboardingScreen({ navigation, theme }: any) {
     navigation.replace('Login');
   };
 
+  // Safe fallback agar theme ya colors load hone mein time le
+  const colors = theme?.colors || {
+    background: '#FFFFFF',
+    textPrimary: '#000000',
+    textSecondary: '#666666',
+    accent: '#4F5E8C',
+    cardBg: '#F5F5F5',
+    border: '#E0E0E0'
+  };
+
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: theme.background }]}>
-      {/* StatusBar transparency control */}
-      <StatusBar barStyle="light-content" backgroundColor="transparent" translucent={true} />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.background || colors.bgLight }]}>
+      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent={true} />
       
-      {/* Fixed Safe Header Bar with explicit Top Margin */}
+      {/* Header Bar */}
       <View style={styles.headerBar}>
         <View style={styles.headerActionLeft}>
           {currentStep > 0 ? (
             <TouchableOpacity onPress={handleBack} style={styles.navButton}>
-              <Text style={[styles.navButtonText, { color: theme.textSecondary }]}>←</Text>
+              <Text style={[styles.navButtonText, { color: colors.textSecondary }]}>←</Text>
             </TouchableOpacity>
           ) : null}
         </View>
         
-        <Text style={[styles.logoText, { color: theme.textPrimary }]}>ECC</Text>
+        <Text style={[styles.logoText, { color: colors.textPrimary }]}>ECC</Text>
         
         <View style={styles.headerActionRight}>
           <TouchableOpacity onPress={handleSkip} style={styles.skipButton}>
-            <Text style={[styles.skipButtonText, { color: theme.accent }]}>Skip</Text>
+            <Text style={[styles.skipButtonText, { color: '#4F5E8C' }]}>Skip</Text>
           </TouchableOpacity>
         </View>
       </View>
 
       {/* Content Section */}
       <View style={styles.contentContainer}>
-        <View style={[styles.badge, { backgroundColor: theme.cardBg }]}>
-          <Text style={{ color: theme.accent, fontWeight: 'bold' }}>{activeData.id}</Text>
+        <View style={[styles.badge, { backgroundColor: colors.bgCard || colors.cardBg || '#F5F5F5' }]}>
+          <Text style={{ color: '#4F5E8C', fontWeight: 'bold' }}>{activeData.id}</Text>
         </View>
-        <Text style={[styles.title, { color: theme.textPrimary }]}>{activeData.title}</Text>
-        <Text style={[styles.subtitle, { color: theme.textSecondary }]}>{activeData.subtitle}</Text>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>{activeData.title}</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>{activeData.subtitle}</Text>
         <Image source={{ uri: activeData.image }} style={styles.illustration} resizeMode="cover" />
       </View>
 
@@ -68,11 +80,22 @@ export default function OnboardingScreen({ navigation, theme }: any) {
       <View style={styles.bottomBar}>
         <View style={styles.paginationContainer}>
           {onboardingData.map((_, i) => (
-            <View key={i} style={[styles.dot, { backgroundColor: i === currentStep ? theme.accent : theme.border }, i === currentStep && { width: 24 }]} />
+            <View 
+              key={i} 
+              style={[
+                styles.dot, 
+                { backgroundColor: i === currentStep ? '#4F5E8C' : (colors.border || '#E0E0E0') }, 
+                i === currentStep && { width: 24 }
+              ]} 
+            />
           ))}
         </View>
-        <TouchableOpacity style={[styles.nextButton, { backgroundColor: theme.accent }]} onPress={handleNext}>
-          <Text style={styles.nextButtonText}>{currentStep === onboardingData.length - 1 ? 'Get Started' : 'Next →'}</Text>
+        
+        {/* Next/Get Started Button */}
+        <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
+          <Text style={styles.nextButtonText}>
+            {currentStep === onboardingData.length - 1 ? 'Get Started' : 'Next →'}
+          </Text>
         </TouchableOpacity>
       </View>
     </SafeAreaView>
@@ -86,7 +109,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 24,
-    marginTop: 45, // Device ke Top status bar notches ko clear karne ke liye constant margin
+    marginTop: 45, 
     paddingBottom: 16,
   },
   headerActionLeft: { width: 50, alignItems: 'flex-start' },
@@ -104,6 +127,6 @@ const styles = StyleSheet.create({
   bottomBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 32 },
   paginationContainer: { flexDirection: 'row', alignItems: 'center' },
   dot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  nextButton: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 25 },
+  nextButton: { backgroundColor: '#4F5E8C', paddingHorizontal: 28, paddingVertical: 14, borderRadius: 25, elevation: 2 },
   nextButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
 });
