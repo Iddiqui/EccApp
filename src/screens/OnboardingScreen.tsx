@@ -1,19 +1,58 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, Image, TouchableOpacity, SafeAreaView, StatusBar } from 'react-native';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  Image, 
+  TouchableOpacity, 
+  SafeAreaView, 
+  StatusBar 
+} from 'react-native';
 import { useTheme } from '../hooks/useTheme'; 
 
 const onboardingData = [
-  { id: '01', title: 'Speak English\nWith Confidence', subtitle: 'Practice real conversations, improve pronunciation, and speak without fear.', image: 'https://images.unsplash.com/photo-1543269865-cbf427effbad?q=80&w=500' },
-  { id: '02', title: 'Practice Live\nWith Real Learners', subtitle: 'Join live study rooms, talk with real people, and learn together.', image: 'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?q=80&w=500' },
-  { id: '03', title: 'Voice Chat Rooms\nSpeak. Listen. Grow', subtitle: 'Jump into voice rooms, practice speaking naturally every day.', image: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=500' },
-  { id: '04', title: 'Build Fluency\nEvery Day', subtitle: 'Stay consistent, track your progress, and unlock achievements.', image: 'https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?q=80&w=500' },
+  { 
+    id: '01', 
+    title: 'Speak English\nWith Confidence', 
+    subtitle: 'Practice real conversations, improve pronunciation, and speak without fear.', 
+    image: 'https://images.unsplash.com/photo-1543269865-cbf427effbad?q=80&w=500' 
+  },
+  { 
+    id: '02', 
+    title: 'Practice Live\nWith Real Learners', 
+    subtitle: 'Join live study rooms, talk with real people, and learn together.', 
+    image: 'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?q=80&w=500' 
+  },
+  { 
+    id: '03', 
+    title: 'Voice Chat Rooms\nSpeak. Listen. Grow', 
+    subtitle: 'Jump into voice rooms, practice speaking naturally every day.', 
+    image: 'https://images.unsplash.com/photo-1516321318423-f06f85e504b3?q=80&w=500' 
+  },
+  { 
+    id: '04', 
+    title: 'Build Fluency\nEvery Day', 
+    subtitle: 'Stay consistent, track your progress, and unlock achievements.', 
+    image: 'https://images.unsplash.com/photo-1517245386807-bb43f82c33c4?q=80&w=500' 
+  },
 ];
 
 export default function OnboardingScreen({ navigation }: any) {
   const [currentStep, setCurrentStep] = useState(0);
   const activeData = onboardingData[currentStep];
   
-  const theme = useTheme(); 
+  const themeHook = useTheme(); 
+  const isDarkMode = themeHook?.isDarkMode || false;
+
+  // Theme Fallback Mechanism
+  const colors = themeHook?.theme?.colors || themeHook?.colors || {
+    bgLight: '#FFFFFF',
+    textPrimary: '#000000',
+    textSecondary: '#666666',
+    primary: '#4F5E8C',
+    bgCard: '#F5F5F5',
+    border: '#E0E0E0'
+  };
 
   const handleNext = () => {
     if (currentStep < onboardingData.length - 1) {
@@ -33,25 +72,19 @@ export default function OnboardingScreen({ navigation }: any) {
     navigation.replace('Login');
   };
 
-  // Safe fallback agar theme ya colors load hone mein time le
-  const colors = theme?.colors || {
-    background: '#FFFFFF',
-    textPrimary: '#000000',
-    textSecondary: '#666666',
-    accent: '#4F5E8C',
-    cardBg: '#F5F5F5',
-    border: '#E0E0E0'
-  };
-
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: colors.background || colors.bgLight }]}>
-      <StatusBar barStyle="dark-content" backgroundColor="transparent" translucent={true} />
+    <SafeAreaView style={[styles.container, { backgroundColor: colors.bgLight }]}>
+      <StatusBar 
+        barStyle={isDarkMode ? "light-content" : "dark-content"} 
+        backgroundColor="transparent" 
+        translucent={true} 
+      />
       
       {/* Header Bar */}
       <View style={styles.headerBar}>
         <View style={styles.headerActionLeft}>
           {currentStep > 0 ? (
-            <TouchableOpacity onPress={handleBack} style={styles.navButton}>
+            <TouchableOpacity onPress={handleBack} style={styles.navButton} activeOpacity={0.7}>
               <Text style={[styles.navButtonText, { color: colors.textSecondary }]}>←</Text>
             </TouchableOpacity>
           ) : null}
@@ -60,16 +93,16 @@ export default function OnboardingScreen({ navigation }: any) {
         <Text style={[styles.logoText, { color: colors.textPrimary }]}>ECC</Text>
         
         <View style={styles.headerActionRight}>
-          <TouchableOpacity onPress={handleSkip} style={styles.skipButton}>
-            <Text style={[styles.skipButtonText, { color: '#4F5E8C' }]}>Skip</Text>
+          <TouchableOpacity onPress={handleSkip} style={styles.skipButton} activeOpacity={0.7}>
+            <Text style={[styles.skipButtonText, { color: colors.primary || '#4F5E8C' }]}>Skip</Text>
           </TouchableOpacity>
         </View>
       </View>
 
       {/* Content Section */}
       <View style={styles.contentContainer}>
-        <View style={[styles.badge, { backgroundColor: colors.bgCard || colors.cardBg || '#F5F5F5' }]}>
-          <Text style={{ color: '#4F5E8C', fontWeight: 'bold' }}>{activeData.id}</Text>
+        <View style={[styles.badge, { backgroundColor: colors.bgCard }]}>
+          <Text style={{ color: colors.primary || '#4F5E8C', fontWeight: 'bold' }}>{activeData.id}</Text>
         </View>
         <Text style={[styles.title, { color: colors.textPrimary }]}>{activeData.title}</Text>
         <Text style={[styles.subtitle, { color: colors.textSecondary }]}>{activeData.subtitle}</Text>
@@ -84,7 +117,7 @@ export default function OnboardingScreen({ navigation }: any) {
               key={i} 
               style={[
                 styles.dot, 
-                { backgroundColor: i === currentStep ? '#4F5E8C' : (colors.border || '#E0E0E0') }, 
+                { backgroundColor: i === currentStep ? (colors.primary || '#4F5E8C') : colors.border }, 
                 i === currentStep && { width: 24 }
               ]} 
             />
@@ -92,7 +125,11 @@ export default function OnboardingScreen({ navigation }: any) {
         </View>
         
         {/* Next/Get Started Button */}
-        <TouchableOpacity style={styles.nextButton} onPress={handleNext}>
+        <TouchableOpacity 
+          style={[styles.nextButton, { backgroundColor: colors.primary || '#4F5E8C' }]} 
+          onPress={handleNext}
+          activeOpacity={0.8}
+        >
           <Text style={styles.nextButtonText}>
             {currentStep === onboardingData.length - 1 ? 'Get Started' : 'Next →'}
           </Text>
@@ -127,6 +164,6 @@ const styles = StyleSheet.create({
   bottomBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 32 },
   paginationContainer: { flexDirection: 'row', alignItems: 'center' },
   dot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  nextButton: { backgroundColor: '#4F5E8C', paddingHorizontal: 28, paddingVertical: 14, borderRadius: 25, elevation: 2 },
+  nextButton: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 25, elevation: 2 },
   nextButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
 });

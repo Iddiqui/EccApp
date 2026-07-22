@@ -1,16 +1,90 @@
-import React from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, StatusBar, Platform } from 'react-native';
+import React, { useEffect, useState } from 'react';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  ScrollView, 
+  TouchableOpacity, 
+  StatusBar, 
+  Platform, 
+  ActivityIndicator 
+} from 'react-native';
 import { ArrowRight, Sparkles, BookOpen, Calendar, Mic, Volume2 } from 'lucide-react-native';
+import auth from '@react-native-firebase/auth';
+import firestore from '@react-native-firebase/firestore';
+import { useTheme } from '../../../hooks/useTheme';
 
 export default function PracticeScreen() {
+  const { theme, isDarkMode } = useTheme();
+  const colors = theme.colors;
+
+  // Real-time Firestore States
+  const [practiceData, setPracticeData] = useState<any>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    const currentUser = auth().currentUser;
+
+    if (currentUser) {
+      // Real-time database synchronizer
+      const unsubscribe = firestore()
+        .collection('users')
+        .doc(currentUser.uid)
+        .onSnapshot(
+          (documentSnapshot) => {
+            if (documentSnapshot.exists) {
+              setPracticeData(documentSnapshot.data());
+            } else {
+              // Default structural fallback safely handles new profile documentations
+              setPracticeData({
+                minutesSpokenToday: 0,
+                dailyGoalMinutes: 20,
+              });
+            }
+            setLoading(false);
+          },
+          (error) => {
+            console.error("Firestore real-time sync mapping error:", error);
+            setLoading(false);
+          }
+        );
+
+      return () => unsubscribe();
+    } else {
+      setLoading(false);
+    }
+  }, []);
+
+  // UI state management during asynchronous load phases
+  if (loading) {
+    return (
+      <View style={[styles.mainContainer, { backgroundColor: colors.bgLight, justifyContent: 'center', alignItems: 'center' }]}>
+        <ActivityIndicator size="large" color={colors.primary} />
+      </View>
+    );
+  }
+
+  // --- Dynamic Math Computations for Goal Component ---
+  const spokenMinutes = practiceData?.minutesSpokenToday ?? 0;
+  const targetGoalMinutes = practiceData?.dailyGoalMinutes ?? 20;
+  
+  // Safe math bounds mapping prevents any potential division by zero constraints
+  const structuralPercentage = targetGoalMinutes > 0 
+    ? Math.min(Math.round((spokenMinutes / targetGoalMinutes) * 100), 100) 
+    : 0;
+
   return (
-    <View style={styles.mainContainer}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={true} />
+    <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
+      <StatusBar 
+        barStyle={isDarkMode ? "light-content" : "dark-content"} 
+        backgroundColor={colors.bgLight} 
+        translucent={true} 
+      />
       
-      {/* ─── FIXED HEADER SECTION (ScrollView Se Bahar) ─── */}
-      <View style={styles.fixedHeader}>
-        <Text style={styles.title}>Practice</Text>
-        <Text style={styles.subtitle}>Sharpen your speaking, your way</Text>
+      {/* ─── FIXED HEADER SECTION ─── */}
+      <View style={[styles.fixedHeader, { backgroundColor: colors.bgLight }]}>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>Practice</Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Sharpen your speaking, your way</Text>
       </View>
 
       {/* ─── SCROLLABLE CONTENT SECTION ─── */}
@@ -20,87 +94,87 @@ export default function PracticeScreen() {
         showsVerticalScrollIndicator={false}
       >
         {/* Hero Button */}
-        <TouchableOpacity style={styles.heroButton} activeOpacity={0.9}>
+        <TouchableOpacity style={[styles.heroButton, { backgroundColor: colors.primary }]} activeOpacity={0.9}>
           <Text style={styles.heroButtonText}>YOUR AI COACH</Text>
         </TouchableOpacity>
 
-        {/* Weekly Goal Card */}
-        <View style={styles.card}>
+        {/* Weekly Goal Card (DYNAMIC ARCHITECTURE INTEGRATED) */}
+        <View style={[styles.card, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]}>
           <View style={styles.row}>
-            <View style={styles.progressRingOuter}>
-              <View style={styles.progressRingInner}>
-                <View style={styles.progressDot} />
+            <View style={[styles.progressRingOuter, { borderColor: isDarkMode ? '#334155' : '#E2E8F0', borderLeftColor: colors.primary, borderTopColor: colors.primary }]}>
+              <View style={[styles.progressRingInner, { borderColor: colors.primary }]}>
+                <View style={[styles.progressDot, { backgroundColor: colors.primary }]} />
               </View>
             </View>
             
             <View style={styles.goalTextContainer}>
-              <Text style={styles.cardTitle}>Weekly goal</Text>
-              <Text style={styles.goalStats}>
-                <Text style={styles.boldText}>14 of 20</Text> minutes spoken today
+              <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Weekly goal</Text>
+              <Text style={[styles.goalStats, { color: colors.textSecondary }]}>
+                <Text style={[styles.boldText, { color: colors.textPrimary }]}>{spokenMinutes} of {targetGoalMinutes}</Text> minutes spoken today
               </Text>
             </View>
 
-            <View style={styles.badge}>
-              <Text style={styles.badgeText}>70%</Text>
+            <View style={[styles.badge, { backgroundColor: isDarkMode ? '#1E293B' : '#EFF6FF' }]}>
+              <Text style={[styles.badgeText, { color: colors.primary }]}>{structuralPercentage}%</Text>
             </View>
           </View>
         </View>
 
         {/* AI Speaking Coach Card */}
-        <TouchableOpacity style={styles.cardRow} activeOpacity={0.8}>
-          <View style={[styles.iconContainer, { backgroundColor: '#E0F7F6' }]}>
+        <TouchableOpacity style={[styles.cardRow, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
+          <View style={[styles.iconContainer, { backgroundColor: isDarkMode ? '#134E4A' : '#E0F7F6' }]}>
             <Sparkles color="#14B8A6" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={styles.cardTitle}>AI Speaking Coach</Text>
-            <Text style={styles.cardDescription}>Have a real conversation and get instant feedback.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>AI Speaking Coach</Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Have a real conversation and get instant feedback.</Text>
           </View>
-          <ArrowRight color="#9CA3AF" size={20} />
+          <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
 
         {/* Read & Record Card */}
-        <TouchableOpacity style={styles.cardRow} activeOpacity={0.8}>
-          <View style={[styles.iconContainer, { backgroundColor: '#EEF2FF' }]}>
-            <BookOpen color="#4F46E5" size={24} />
+        <TouchableOpacity style={[styles.cardRow, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
+          <View style={[styles.iconContainer, { backgroundColor: isDarkMode ? '#1E1B4B' : '#EEF2FF' }]}>
+            <BookOpen color="#6366F1" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={styles.cardTitle}>Read & Record</Text>
-            <Text style={styles.cardDescription}>Read an article aloud and analyze your pronunciation.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Read & Record</Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Read an article aloud and analyze your pronunciation.</Text>
           </View>
-          <ArrowRight color="#9CA3AF" size={20} />
+          <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
 
         {/* 1:1 Live Coach Card */}
-        <TouchableOpacity style={styles.cardRow} activeOpacity={0.8}>
-          <View style={[styles.iconContainer, { backgroundColor: '#FFF7ED' }]}>
+        <TouchableOpacity style={[styles.cardRow, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
+          <View style={[styles.iconContainer, { backgroundColor: isDarkMode ? '#431407' : '#FFF7ED' }]}>
             <Calendar color="#EA580C" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={styles.cardTitle}>1:1 with a Trainer</Text>
-            <Text style={styles.cardDescription}>Book a live session with a certified coach.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>1:1 with a Trainer</Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Book a live session with a certified coach.</Text>
           </View>
-          <ArrowRight color="#9CA3AF" size={20} />
+          <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
 
         {/* Quick Drills Matrix */}
-        <Text style={styles.sectionHeading}>Quick drills</Text>
+        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Quick drills</Text>
 
         <View style={styles.gridContainer}>
-          <TouchableOpacity style={styles.gridCard} activeOpacity={0.8}>
-            <View style={[styles.iconContainerGrid, { backgroundColor: '#EEF2FF' }]}>
+          <TouchableOpacity style={[styles.gridCard, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
+            <View style={[styles.iconContainerGrid, { backgroundColor: isDarkMode ? '#1E1B4B' : '#EEF2FF' }]}>
               <Mic color="#2563EB" size={20} />
             </View>
-            <Text style={styles.gridCardTitle}>Tongue twisters</Text>
-            <Text style={styles.gridCardSub}>3 min drill</Text>
+            <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>Tongue twisters</Text>
+            <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>3 min drill</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.gridCard} activeOpacity={0.8}>
+          <TouchableOpacity style={[styles.gridCard, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
             <View style={styles.gridCardInner}>
-              <View style={[styles.iconContainerGrid, { backgroundColor: '#E0F7F6' }]}>
+              <View style={[styles.iconContainerGrid, { backgroundColor: isDarkMode ? '#134E4A' : '#E0F7F6' }]}>
                 <Volume2 color="#0D9488" size={20} />
               </View>
-              <Text style={styles.gridCardTitle}>Minimal pairs</Text>
-              <Text style={styles.gridCardSub}>3 min drill</Text>
+              <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>Minimal pairs</Text>
+              <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>3 min drill</Text>
             </View>
           </TouchableOpacity>
         </View>
@@ -114,11 +188,8 @@ const STATUSBAR_HEIGHT = Platform.OS === 'android' ? StatusBar.currentHeight : 0
 const styles = StyleSheet.create({
   mainContainer: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
   },
-  // Fixed header jo upar chipka rahega aur notch ko safe padding dega
   fixedHeader: {
-    backgroundColor: '#F8FAFC',
     paddingHorizontal: 20,
     paddingTop: (STATUSBAR_HEIGHT || 0) + 20,
     paddingBottom: 12,
@@ -127,11 +198,9 @@ const styles = StyleSheet.create({
   title: {
     fontSize: 32,
     fontWeight: '800',
-    color: '#0F172A',
   },
   subtitle: {
     fontSize: 16,
-    color: '#64748B',
     marginTop: 4,
   },
   scrollContainer: {
@@ -140,16 +209,15 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 8,
-    paddingBottom: 100, // Bottom Tab padding constraint
+    paddingBottom: 100,
   },
   heroButton: {
-    backgroundColor: '#2DD4BF',
     borderRadius: 30,
     height: 54,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 24,
-    shadowColor: '#2DD4BF',
+    shadowColor: '#2563EB',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
     shadowRadius: 5,
@@ -162,7 +230,6 @@ const styles = StyleSheet.create({
     letterSpacing: 0.5,
   },
   card: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 24,
     padding: 20,
     marginBottom: 16,
@@ -173,7 +240,6 @@ const styles = StyleSheet.create({
     elevation: 2,
   },
   cardRow: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 24,
     padding: 20,
     flexDirection: 'row',
@@ -195,9 +261,6 @@ const styles = StyleSheet.create({
     height: 60,
     borderRadius: 30,
     borderWidth: 5,
-    borderColor: '#E2E8F0',
-    borderLeftColor: '#2563EB',
-    borderTopColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -206,7 +269,6 @@ const styles = StyleSheet.create({
     height: 30,
     borderRadius: 15,
     borderWidth: 2,
-    borderColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -214,7 +276,6 @@ const styles = StyleSheet.create({
     width: 8,
     height: 8,
     borderRadius: 4,
-    backgroundColor: '#2563EB',
   },
   goalTextContainer: {
     flex: 1,
@@ -224,25 +285,20 @@ const styles = StyleSheet.create({
   cardTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#0F172A',
   },
   goalStats: {
     fontSize: 14,
-    color: '#64748B',
     marginTop: 2,
   },
   boldText: {
     fontWeight: '600',
-    color: '#0F172A',
   },
   badge: {
-    backgroundColor: '#EFF6FF',
     paddingHorizontal: 12,
     paddingVertical: 6,
     borderRadius: 12,
   },
   badgeText: {
-    color: '#2563EB',
     fontWeight: '600',
     fontSize: 13,
   },
@@ -260,14 +316,12 @@ const styles = StyleSheet.create({
   },
   cardDescription: {
     fontSize: 14,
-    color: '#64748B',
     marginTop: 4,
     lineHeight: 18,
   },
   sectionHeading: {
     fontSize: 20,
     fontWeight: '700',
-    color: '#0F172A',
     marginTop: 12,
     marginBottom: 16,
   },
@@ -277,7 +331,6 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   gridCard: {
-    backgroundColor: '#FFFFFF',
     borderRadius: 24,
     padding: 20,
     width: '47.5%',
@@ -301,11 +354,9 @@ const styles = StyleSheet.create({
   gridCardTitle: {
     fontSize: 16,
     fontWeight: '700',
-    color: '#0F172A',
   },
   gridCardSub: {
     fontSize: 13,
-    color: '#94A3B8',
     marginTop: 4,
   },
 });

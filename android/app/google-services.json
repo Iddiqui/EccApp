@@ -1,0 +1,55 @@
+{
+  "project_info": {
+    "project_number": "297316222035",
+    "project_id": "ecc-master-english-fa596",
+    "storage_bucket": "ecc-master-english-fa596.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:297316222035:android:faaa9c54c0fd06145672a6",
+        "android_client_info": {
+          "package_name": "com.eccapp"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "297316222035-87no1qgboabcnp7i23o4dnk11lu4ekq5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.eccapp",
+            "certificate_hash": "5e8f16062ea3cd2c4a0d547876baa6f38cabf625"
+          }
+        },
+        {
+          "client_id": "297316222035-ohu8hnc4jesdbolgrv9v1k1sk46nocc5.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.eccapp",
+            "certificate_hash": "de587a9407ce04682bea70f1f4934fc04900ac49"
+          }
+        },
+        {
+          "client_id": "297316222035-vg3fuee2jrfff4076jfh9qnr2nd3q05q.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAYsEF6KwHgAkp2aY7e1kAcK5_lViWn8sw"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "297316222035-vg3fuee2jrfff4076jfh9qnr2nd3q05q.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

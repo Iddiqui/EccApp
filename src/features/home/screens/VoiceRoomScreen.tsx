@@ -1,38 +1,47 @@
-import React, { useState } from 'react';
-import { StyleSheet, Text, View, ScrollView, TouchableOpacity, StatusBar, Platform, Dimensions } from 'react-native';
-import { Users, ChevronRight, MessageSquare, Volume2 } from 'lucide-react-native';
+import React, { useState, useEffect } from 'react';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  ScrollView, 
+  TouchableOpacity, 
+  StatusBar, 
+  Platform 
+} from 'react-native';
+import { Users, ChevronRight, MessageSquare, Volume2, ChevronLeft } from 'lucide-react-native';
+import { useTheme } from '../../../hooks/useTheme';
 
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-
-// Dynamic dummy data based exactly on your snapshot layouts
 const publicRooms = [
   {
-    id: 1,
+    id: 'room_123',
     title: 'English Fluency & Pronunciation Practice',
     host: 'Aman Sharma',
     listeners: 14,
-    bgColor: '#EEF2FF', // Soft Indigo
-    accentColor: '#4F46E5',
+    bgColorLight: '#EEF2FF',
+    bgColorDark: '#1E1B4B',
+    accentColor: '#6366F1',
     tag: 'Beginner',
     speakers: ['A', 'R', 'S'],
   },
   {
-    id: 2,
+    id: 'room_456',
     title: 'Business Communication Secrets',
     host: 'Sneha Patel',
     listeners: 28,
-    bgColor: '#F0FDF4', // Soft Emerald
-    accentColor: '#16A34A',
+    bgColorLight: '#F0FDF4',
+    bgColorDark: '#064E3B',
+    accentColor: '#10B981',
     tag: 'Advanced',
     speakers: ['S', 'P', 'V'],
   },
   {
-    id: 3,
+    id: 'room_789',
     title: 'Daily Vocab & Idiom Mastery',
     host: 'Rohit Verma',
     listeners: 9,
-    bgColor: '#FFF7ED', // Soft Orange/Amber
-    accentColor: '#EA580C',
+    bgColorLight: '#FFF7ED',
+    bgColorDark: '#451A03',
+    accentColor: '#F97316',
     tag: 'Intermediate',
     speakers: ['R', 'M'],
   }
@@ -40,19 +49,44 @@ const publicRooms = [
 
 const myRooms = [
   {
-    id: 1,
+    id: 'room_my_1',
     title: 'My Custom Speaking Workspace',
     host: 'Anas (You)',
     listeners: 1,
-    bgColor: '#FDF2F8', // Soft Pink
-    accentColor: '#DB2777',
+    bgColorLight: '#FDF2F8',
+    bgColorDark: '#831843',
+    accentColor: '#EC4899',
     tag: 'Private',
     speakers: ['Y'],
   }
 ];
 
-export default function VoiceRoomScreen() {
+export default function VoiceRoomScreen({ navigation, route }: any) {
+  // ✅ ALL HOOKS AT THE VERY TOP (STRICT ORDER)
+  const themeHook = useTheme();
   const [activeTab, setActiveTab] = useState<'public' | 'my'>('public');
+  const [highlightedRoomId, setHighlightedRoomId] = useState<string | null>(null);
+
+  // Fallback theme colors
+  const isDarkMode = themeHook?.isDarkMode || false;
+  const colors = themeHook?.theme?.colors || themeHook?.colors || {
+    bgLight: '#F8FAFC',
+    textPrimary: '#0F172A',
+    textSecondary: '#64748B',
+    primary: '#2563EB',
+    bgCard: '#FFFFFF',
+    border: '#E2E8F0',
+  };
+
+  // Notification Params Handler
+  useEffect(() => {
+    const targetRoomId = route?.params?.roomId;
+    if (targetRoomId) {
+      setHighlightedRoomId(targetRoomId);
+      const timer = setTimeout(() => setHighlightedRoomId(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [route?.params?.roomId]);
 
   const onlineCreators = [
     { id: 1, name: 'Aman', active: true },
@@ -65,29 +99,60 @@ export default function VoiceRoomScreen() {
   const currentRooms = activeTab === 'public' ? publicRooms : myRooms;
 
   return (
-    <View style={styles.mainContainer}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" translucent={true} />
+    <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
+      <StatusBar 
+        barStyle={isDarkMode ? "light-content" : "dark-content"} 
+        backgroundColor={colors.bgLight} 
+        translucent={true} 
+      />
       
       {/* FIXED HEADER SECTION */}
-      <View style={styles.fixedHeader}>
-        <Text style={styles.title}>Voice Rooms</Text>
-        <Text style={styles.subtitle}>Practice live audio communication instantly</Text>
+      <View style={[styles.fixedHeader, { backgroundColor: colors.bgLight }]}>
+        <View style={styles.headerTopRow}>
+          {navigation?.canGoBack() && (
+            <TouchableOpacity 
+              style={[styles.backButton, { backgroundColor: colors.bgCard, borderColor: colors.border }]} 
+              onPress={() => navigation.goBack()}
+              activeOpacity={0.7}
+            >
+              <ChevronLeft size={22} color={colors.textPrimary} />
+            </TouchableOpacity>
+          )}
+          <Text style={[styles.title, { color: colors.textPrimary }]}>Voice Rooms</Text>
+        </View>
 
-        {/* Custom Segmented Control */}
-        <View style={styles.tabBarContainer}>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Practice live audio communication instantly</Text>
+
+        {/* Segmented Tab Control */}
+        <View style={[styles.tabBarContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' }]}>
           <TouchableOpacity 
-            style={[styles.tabButton, activeTab === 'public' && styles.activeTabButton]}
+            style={[
+              styles.tabButton, 
+              activeTab === 'public' && [styles.activeTabButton, { backgroundColor: colors.bgCard }]
+            ]}
             onPress={() => setActiveTab('public')}
             activeOpacity={0.8}
           >
-            <Text style={[styles.tabText, activeTab === 'public' && styles.activeTabText]}>Public Rooms</Text>
+            <Text style={[
+              styles.tabText, 
+              { color: colors.textSecondary },
+              activeTab === 'public' && { color: colors.textPrimary, fontWeight: '700' }
+            ]}>Public Rooms</Text>
           </TouchableOpacity>
+
           <TouchableOpacity 
-            style={[styles.tabButton, activeTab === 'my' && styles.activeTabButton]}
+            style={[
+              styles.tabButton, 
+              activeTab === 'my' && [styles.activeTabButton, { backgroundColor: colors.bgCard }]
+            ]}
             onPress={() => setActiveTab('my')}
             activeOpacity={0.8}
           >
-            <Text style={[styles.tabText, activeTab === 'my' && styles.activeTabText]}>My Rooms</Text>
+            <Text style={[
+              styles.tabText, 
+              { color: colors.textSecondary },
+              activeTab === 'my' && { color: colors.textPrimary, fontWeight: '700' }
+            ]}>My Rooms</Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -100,91 +165,104 @@ export default function VoiceRoomScreen() {
       >
         {/* Horizontal Active Speakers list */}
         <View style={styles.creatorsSection}>
-          <Text style={styles.sectionHeading}>Active Speakers</Text>
+          <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Active Speakers</Text>
           <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.creatorsScroll}>
             {onlineCreators.map((creator) => (
               <View key={creator.id} style={styles.creatorCircleContainer}>
-                <View style={[styles.avatarBorder, creator.active && styles.activeAvatarBorder]}>
-                  <View style={styles.avatarPlaceholder}>
-                    <Text style={styles.avatarText}>{creator.name[0]}</Text>
+                <View style={[
+                  styles.avatarBorder, 
+                  { borderColor: colors.border },
+                  creator.active && { borderColor: colors.primary || '#2563EB' }
+                ]}>
+                  <View style={[styles.avatarPlaceholder, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]}>
+                    <Text style={[styles.avatarText, { color: colors.textPrimary }]}>{creator.name[0]}</Text>
                   </View>
                 </View>
-                <Text style={styles.creatorName} numberOfLines={1}>{creator.name}</Text>
+                <Text style={[styles.creatorName, { color: colors.textSecondary }]} numberOfLines={1}>{creator.name}</Text>
               </View>
             ))}
           </ScrollView>
         </View>
 
-        <Text style={styles.sectionHeading}>Live Now</Text>
+        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Live Now</Text>
 
-        {/* Dynamic Card Feed mapping */}
-        {currentRooms.map((room) => (
-          <TouchableOpacity 
-            key={room.id} 
-            style={[styles.roomCard, { backgroundColor: room.bgColor }]} 
-            activeOpacity={0.95}
-          >
-            {/* Header section inside card */}
-            <View style={styles.roomCardHeader}>
-              <View style={[styles.liveBadge, { backgroundColor: room.accentColor }]}>
-                <Volume2 color="#FFFFFF" size={12} style={{ marginRight: 4 }} />
-                <Text style={styles.liveBadgeText}>LIVE</Text>
-              </View>
-              <View style={styles.listenerCountContainer}>
-                <Users color="#475569" size={14} />
-                <Text style={styles.listenerCountText}>{room.listeners} listening</Text>
-              </View>
-            </View>
+        {/* Dynamic Card Feed */}
+        {currentRooms.map((room) => {
+          const cardBg = isDarkMode ? room.bgColorDark : room.bgColorLight;
+          const isTargeted = room.id === highlightedRoomId;
 
-            {/* Core Split Body Area */}
-            <View style={styles.cardContentContainer}>
-              {/* Left Column: Title and details */}
-              <View style={styles.leftColumn}>
-                <Text style={styles.roomTitle} numberOfLines={2}>{room.title}</Text>
-                <Text style={styles.roomHost}>
-                  Hosted by <Text style={styles.boldHostText}>{room.host}</Text>
-                </Text>
-              </View>
-
-              {/* Right Column: Stacked Avatars Visualizer */}
-              <View style={styles.rightColumn}>
-                <View style={styles.stackedAvatarsContainer}>
-                  {room.speakers.map((initial, index) => (
-                    <View 
-                      key={index} 
-                      style={[
-                        styles.miniAvatar, 
-                        { 
-                          backgroundColor: room.accentColor,
-                          marginLeft: index === 0 ? 0 : -14, // Overlap offset shift
-                          zIndex: 5 - index 
-                        }
-                      ]}
-                    >
-                      <Text style={styles.miniAvatarText}>{initial}</Text>
-                    </View>
-                  ))}
+          return (
+            <TouchableOpacity 
+              key={room.id} 
+              style={[
+                styles.roomCard, 
+                { backgroundColor: cardBg, borderColor: isDarkMode ? 'rgba(255,255,255,0.05)' : 'rgba(0,0,0,0.03)' },
+                isTargeted && { borderWidth: 2, borderColor: colors.primary }
+              ]} 
+              activeOpacity={0.95}
+            >
+              <View style={styles.roomCardHeader}>
+                <View style={[styles.liveBadge, { backgroundColor: room.accentColor }]}>
+                  <Volume2 color="#FFFFFF" size={12} style={{ marginRight: 4 }} />
+                  <Text style={styles.liveBadgeText}>LIVE</Text>
+                </View>
+                <View style={[styles.listenerCountContainer, { backgroundColor: isDarkMode ? 'rgba(0,0,0,0.4)' : 'rgba(255,255,255,0.7)' }]}>
+                  <Users color={isDarkMode ? '#94A3B8' : '#475569'} size={14} />
+                  <Text style={[styles.listenerCountText, { color: isDarkMode ? '#CBD5E1' : '#334155' }]}>
+                    {room.listeners} listening
+                  </Text>
                 </View>
               </View>
-            </View>
 
-            {/* Card Footer actions */}
-            <View style={styles.roomCardFooter}>
-              <View style={styles.tagsContainer}>
-                <View style={[styles.tag, { borderColor: room.accentColor }]}>
-                  <Text style={[styles.tagText, { color: room.accentColor }]}>{room.tag}</Text>
+              <View style={styles.cardContentContainer}>
+                <View style={styles.leftColumn}>
+                  <Text style={[styles.roomTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]} numberOfLines={2}>
+                    {room.title}
+                  </Text>
+                  <Text style={[styles.roomHost, { color: isDarkMode ? '#94A3B8' : '#475569' }]}>
+                    Hosted by <Text style={[styles.boldHostText, { color: isDarkMode ? '#F1F5F9' : '#1E293B' }]}>{room.host}</Text>
+                  </Text>
                 </View>
-                <View style={styles.interactiveBubble}>
-                  <MessageSquare color="#64748B" size={14} />
-                  <Text style={styles.bubbleText}>Ask to join</Text>
+
+                <View style={styles.rightColumn}>
+                  <View style={styles.stackedAvatarsContainer}>
+                    {room.speakers.map((initial, index) => (
+                      <View 
+                        key={index} 
+                        style={[
+                          styles.miniAvatar, 
+                          { 
+                            backgroundColor: room.accentColor,
+                            borderColor: cardBg,
+                            marginLeft: index === 0 ? 0 : -14,
+                            zIndex: 5 - index 
+                          }
+                        ]}
+                      >
+                        <Text style={styles.miniAvatarText}>{initial}</Text>
+                      </View>
+                    ))}
+                  </View>
                 </View>
               </View>
-              <View style={[styles.arrowButton, { backgroundColor: room.accentColor }]}>
-                <ChevronRight color="#FFFFFF" size={18} strokeWidth={2.5} />
+
+              <View style={[styles.roomCardFooter, { borderTopColor: isDarkMode ? 'rgba(255,255,255,0.1)' : 'rgba(0,0,0,0.05)' }]}>
+                <View style={styles.tagsContainer}>
+                  <View style={[styles.tag, { borderColor: room.accentColor, backgroundColor: isDarkMode ? 'rgba(0,0,0,0.3)' : '#FFFFFF' }]}>
+                    <Text style={[styles.tagText, { color: room.accentColor }]}>{room.tag}</Text>
+                  </View>
+                  <View style={[styles.interactiveBubble, { backgroundColor: isDarkMode ? 'rgba(0,0,0,0.3)' : '#FFFFFF', borderColor: isDarkMode ? '#334155' : '#E2E8F0' }]}>
+                    <MessageSquare color={isDarkMode ? '#94A3B8' : '#64748B'} size={14} />
+                    <Text style={[styles.bubbleText, { color: isDarkMode ? '#CBD5E1' : '#475569' }]}>Ask to join</Text>
+                  </View>
+                </View>
+                <View style={[styles.arrowButton, { backgroundColor: room.accentColor }]}>
+                  <ChevronRight color="#FFFFFF" size={18} strokeWidth={2.5} />
+                </View>
               </View>
-            </View>
-          </TouchableOpacity>
-        ))}
+            </TouchableOpacity>
+          );
+        })}
       </ScrollView>
     </View>
   );
@@ -195,28 +273,36 @@ const STATUSBAR_HEIGHT = Platform.OS === 'android' ? StatusBar.currentHeight : 0
 const styles = StyleSheet.create({
   mainContainer: {
     flex: 1,
-    backgroundColor: '#F8FAFC',
   },
   fixedHeader: {
-    backgroundColor: '#F8FAFC',
     paddingHorizontal: 20,
-    paddingTop: (STATUSBAR_HEIGHT || 0) + 20,
+    paddingTop: (STATUSBAR_HEIGHT || 0) + 16,
     paddingBottom: 4,
     zIndex: 10,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  backButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    marginRight: 12,
   },
   title: {
     fontSize: 32,
     fontWeight: '800',
-    color: '#0F172A',
   },
   subtitle: {
-    fontSize: 16,
-    color: '#64748B',
+    fontSize: 15,
     marginTop: 4,
   },
   tabBarContainer: {
     flexDirection: 'row',
-    backgroundColor: '#F1F5F9',
     borderRadius: 14,
     padding: 4,
     marginTop: 18,
@@ -228,7 +314,6 @@ const styles = StyleSheet.create({
     borderRadius: 10,
   },
   activeTabButton: {
-    backgroundColor: '#FFFFFF',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.05,
@@ -238,10 +323,6 @@ const styles = StyleSheet.create({
   tabText: {
     fontSize: 14,
     fontWeight: '600',
-    color: '#64748B',
-  },
-  activeTabText: {
-    color: '#0F172A',
   },
   scrollContainer: {
     flex: 1,
@@ -249,12 +330,11 @@ const styles = StyleSheet.create({
   scrollContent: {
     paddingHorizontal: 20,
     paddingTop: 12,
-    paddingBottom: 110, // Margin to protect Center Plus Tab bar overlap layout heights
+    paddingBottom: 110,
   },
   sectionHeading: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#0F172A',
     marginBottom: 12,
     marginTop: 8,
   },
@@ -275,14 +355,9 @@ const styles = StyleSheet.create({
     borderRadius: 30,
     padding: 2,
     borderWidth: 2,
-    borderColor: '#E2E8F0',
-  },
-  activeAvatarBorder: {
-    borderColor: '#2563EB',
   },
   avatarPlaceholder: {
     flex: 1,
-    backgroundColor: '#E2E8F0',
     borderRadius: 28,
     justifyContent: 'center',
     alignItems: 'center',
@@ -290,21 +365,17 @@ const styles = StyleSheet.create({
   avatarText: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#475569',
   },
   creatorName: {
     fontSize: 12,
-    color: '#475569',
     marginTop: 6,
     fontWeight: '500',
   },
-  // Re-designed card block with soft dynamic structures
   roomCard: {
     borderRadius: 24,
     padding: 18,
     marginBottom: 16,
     borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.03)',
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 6 },
     shadowOpacity: 0.04,
@@ -332,18 +403,15 @@ const styles = StyleSheet.create({
   listenerCountContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255,255,255,0.6)',
     paddingHorizontal: 8,
     paddingVertical: 4,
     borderRadius: 20,
   },
   listenerCountText: {
     fontSize: 12,
-    color: '#334155',
     marginLeft: 5,
     fontWeight: '600',
   },
-  // Main split body section styling
   cardContentContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -360,19 +428,15 @@ const styles = StyleSheet.create({
   roomTitle: {
     fontSize: 18,
     fontWeight: '700',
-    color: '#0F172A',
     lineHeight: 24,
   },
   roomHost: {
     fontSize: 13,
-    color: '#475569',
     marginTop: 6,
   },
   boldHostText: {
     fontWeight: '700',
-    color: '#1E293B',
   },
-  // Stacked speaking users circles style
   stackedAvatarsContainer: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -382,7 +446,6 @@ const styles = StyleSheet.create({
     height: 32,
     borderRadius: 16,
     borderWidth: 2,
-    borderColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -391,14 +454,12 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: '700',
   },
-  // Re-designed footer section elements
   roomCardFooter: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingTop: 14,
     borderTopWidth: 1,
-    borderTopColor: 'rgba(0,0,0,0.05)',
   },
   tagsContainer: {
     flexDirection: 'row',
@@ -409,7 +470,6 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 30,
-    backgroundColor: '#FFFFFF',
     marginRight: 8,
   },
   tagText: {
@@ -419,16 +479,13 @@ const styles = StyleSheet.create({
   interactiveBubble: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#FFFFFF',
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 30,
     borderWidth: 1,
-    borderColor: '#E2E8F0',
   },
   bubbleText: {
     fontSize: 11,
-    color: '#475569',
     fontWeight: '600',
     marginLeft: 4,
   },

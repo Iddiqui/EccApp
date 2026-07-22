@@ -7,13 +7,16 @@ import HomeScreen from '../features/home/screens/HomeScreen';
 import PracticeScreen from '../features/home/screens/PracticeScreen'; 
 import VoiceRoomScreen from '../features/home/screens/VoiceRoomScreen'; 
 import CommunityScreen from '../features/home/screens/CommunityScreen'; 
-// ProfileScreen ko import kiya
 import ProfileScreen from '../features/home/screens/ProfileScreen'; 
+import { useTheme } from '../hooks/useTheme';
 
 const Tab = createBottomTabNavigator();
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function TabNavigator() {
+  const { theme, isDarkMode } = useTheme();
+  const colors = theme.colors;
+
   return (
     <Tab.Navigator 
       screenOptions={({ route }) => ({
@@ -24,9 +27,15 @@ export default function TabNavigator() {
           if (route.name === 'Community') return <Users color={color} size={size} strokeWidth={2} />;
           if (route.name === 'Profile') return <User color={color} size={size} strokeWidth={2} />;
         },
-        tabBarActiveTintColor: '#2563EB', 
-        tabBarInactiveTintColor: '#9CA3AF', 
-        tabBarStyle: styles.tabBar,
+        tabBarActiveTintColor: colors.primary, 
+        tabBarInactiveTintColor: isDarkMode ? '#64748B' : '#9CA3AF', 
+        tabBarStyle: [
+          styles.tabBar, 
+          { 
+            backgroundColor: colors.bgCard, 
+            borderTopColor: colors.border 
+          }
+        ],
         tabBarLabelStyle: styles.tabBarLabel,
       })}
     >
@@ -42,22 +51,21 @@ export default function TabNavigator() {
           tabBarButton: (props) => (
             <View style={styles.centerButtonWrapper} pointerEvents="box-none">
               <TouchableOpacity 
-                style={styles.absoluteCenterButton} 
+                style={[styles.absoluteCenterButton, { backgroundColor: colors.bgCard }]} 
                 activeOpacity={0.9}
                 onPress={() => navigation.navigate('Voice')}
               >
-                <View style={styles.innerCircle}>
+                <View style={[styles.innerCircle, { backgroundColor: colors.primary }]}>
                   <Plus color="#FFFFFF" size={34} strokeWidth={2.5} />
                 </View>
               </TouchableOpacity>
-              <Text style={[styles.tabBarLabel, { marginTop: 48, color: '#9CA3AF' }]}></Text>
+              <Text style={[styles.tabBarLabel, { marginTop: 48, color: colors.textSecondary }]}></Text>
             </View>
           ),
         })}
       />
 
       <Tab.Screen name="Community" component={CommunityScreen} />
-      {/* Yahan par ProfileScreen ko render kar diya */}
       <Tab.Screen name="Profile" component={ProfileScreen} />
     </Tab.Navigator>
   );
@@ -68,9 +76,7 @@ const styles = StyleSheet.create({
     height: 70,
     paddingBottom: 12,
     paddingTop: 10,
-    backgroundColor: '#FFFFFF',
     borderTopWidth: 1,
-    borderTopColor: '#E5E7EB',
     elevation: 20,
     position: 'absolute',
     bottom: 0,
@@ -93,7 +99,6 @@ const styles = StyleSheet.create({
     width: 66,
     height: 66,
     borderRadius: 33,
-    backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#2563EB',
@@ -106,7 +111,6 @@ const styles = StyleSheet.create({
     width: 56,
     height: 56,
     borderRadius: 28,
-    backgroundColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
   }
