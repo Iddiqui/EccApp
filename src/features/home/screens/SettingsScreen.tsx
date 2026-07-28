@@ -1,7 +1,18 @@
 import React, { useState } from 'react';
-import { StyleSheet, Text, View, Switch, TouchableOpacity, ScrollView, Platform } from 'react-native';
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  Switch, 
+  TouchableOpacity, 
+  ScrollView, 
+  Platform, 
+  StatusBar 
+} from 'react-native';
 import { ArrowLeft, Moon, Palette, Globe, Bell, Shield } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
+
+const STATUS_BAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
 
 export default function SettingsScreen({ navigation }: any) {
   // Updated useTheme hook se theme, isDarkMode, aur toggleDarkMode extract kar rahe hain
@@ -15,18 +26,27 @@ export default function SettingsScreen({ navigation }: any) {
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgLight }]}>
+      {/* 🛠️ FIX: Explicitly StatusBar Props defining to prevent icon disappearing issue */}
+      <StatusBar 
+        barStyle={isDarkMode ? 'light-content' : 'dark-content'} 
+        backgroundColor="transparent" 
+        translucent={true} 
+        animated={true}
+      />
+
       {/* Settings Navigation Header */}
       <View style={styles.headerRow}>
         <TouchableOpacity 
           style={[styles.backBtn, { backgroundColor: colors.iconBg }]} 
           onPress={() => navigation.goBack()}
+          activeOpacity={0.7}
         >
           <ArrowLeft size={24} color={colors.textPrimary} />
         </TouchableOpacity>
         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Settings</Text>
       </View>
 
-      <ScrollView showsVerticalScrollIndicator={false}>
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {/* PREFERENCES SECTION */}
         <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PREFERENCES</Text>
         <View style={[styles.cardBlock, { backgroundColor: colors.bgCard }]}>
@@ -55,7 +75,7 @@ export default function SettingsScreen({ navigation }: any) {
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
           {/* Theme Row */}
-          <TouchableOpacity style={styles.settingItemRow}>
+          <TouchableOpacity style={styles.settingItemRow} activeOpacity={0.7}>
             <View style={styles.itemLeftBlock}>
               <View style={[styles.iconCircleBg, { backgroundColor: colors.iconBg }]}>
                 <Palette size={20} color={colors.textPrimary} />
@@ -70,7 +90,7 @@ export default function SettingsScreen({ navigation }: any) {
           <View style={[styles.divider, { backgroundColor: colors.border }]} />
 
           {/* App Language Row */}
-          <TouchableOpacity style={styles.settingItemRow}>
+          <TouchableOpacity style={styles.settingItemRow} activeOpacity={0.7}>
             <View style={styles.itemLeftBlock}>
               <View style={[styles.iconCircleBg, { backgroundColor: colors.iconBg }]}>
                 <Globe size={20} color={colors.textPrimary} />
@@ -149,7 +169,7 @@ export default function SettingsScreen({ navigation }: any) {
         {/* PRIVACY & SECURITY SECTION */}
         <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PRIVACY & SECURITY</Text>
         <View style={[styles.cardBlock, { backgroundColor: colors.bgCard }]}>
-          <TouchableOpacity style={styles.settingItemRow}>
+          <TouchableOpacity style={styles.settingItemRow} activeOpacity={0.7}>
             <View style={styles.itemLeftBlock}>
               <View style={[styles.iconCircleBg, { backgroundColor: colors.iconBg }]}>
                 <Shield size={20} color={colors.textPrimary} />
@@ -168,13 +188,13 @@ export default function SettingsScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
-    paddingTop: Platform.OS === 'ios' ? 60 : 40, 
+    paddingTop: STATUS_BAR_HEIGHT + 10, 
     paddingHorizontal: 20 
   },
   headerRow: { 
     flexDirection: 'row', 
     alignItems: 'center', 
-    marginBottom: 24 
+    marginBottom: 20 
   },
   backBtn: {
     width: 40,
@@ -187,6 +207,9 @@ const styles = StyleSheet.create({
   headerTitle: { 
     fontSize: 24, 
     fontWeight: '800' 
+  },
+  scrollContent: {
+    paddingBottom: 40
   },
   sectionTitle: { 
     fontSize: 13, 

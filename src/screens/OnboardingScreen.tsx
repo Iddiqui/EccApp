@@ -94,7 +94,12 @@ export default function OnboardingScreen({ navigation }: any) {
         
         <View style={styles.headerActionRight}>
           <TouchableOpacity onPress={handleSkip} style={styles.skipButton} activeOpacity={0.7}>
-            <Text style={[styles.skipButtonText, { color: colors.primary || '#4F5E8C' }]}>Skip</Text>
+            <Text 
+              style={[styles.skipButtonText, { color: colors.primary || '#4F5E8C' }]}
+              numberOfLines={1}
+            >
+              Skip
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
@@ -145,17 +150,27 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 24,
+    paddingHorizontal: 20,
     marginTop: 45, 
     paddingBottom: 16,
   },
-  headerActionLeft: { width: 50, alignItems: 'flex-start' },
-  headerActionRight: { width: 50, alignItems: 'flex-end' },
-  navButton: { paddingVertical: 4, paddingHorizontal: 8 },
+  headerActionLeft: { width: 70, alignItems: 'flex-start' },
+  headerActionRight: { width: 70, alignItems: 'flex-end' },
+  navButton: { paddingVertical: 4, paddingHorizontal: 4 },
   navButtonText: { fontSize: 24, fontWeight: '600', lineHeight: 28 },
   logoText: { fontSize: 22, fontWeight: '900', letterSpacing: 1, textAlign: 'center' },
-  skipButton: { paddingVertical: 6, paddingHorizontal: 8 },
-  skipButtonText: { fontSize: 16, fontWeight: '600' },
+  skipButton: { 
+    paddingVertical: 6, 
+    paddingHorizontal: 8, 
+    minWidth: 60, 
+    alignItems: 'flex-end', 
+    justifyContent: 'center' 
+  },
+  skipButtonText: { 
+    fontSize: 16, 
+    fontWeight: '600',
+    textAlign: 'right'
+  },
   contentContainer: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
   badge: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
   title: { fontSize: 32, fontWeight: '800', lineHeight: 40, marginBottom: 12 },

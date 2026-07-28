@@ -8,17 +8,31 @@ import {
   Dimensions, 
   Platform, 
   StatusBar,
-  ActivityIndicator
+  ActivityIndicator,
+  Alert
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
-import { Settings, Award, ChevronRight, Download, Flame, Mic, Sparkles, Trophy, GraduationCap, Crown } from 'lucide-react-native';
+import { 
+  Settings, 
+  Award, 
+  ChevronRight, 
+  Download, 
+  Flame, 
+  Mic, 
+  Sparkles, 
+  Trophy, 
+  GraduationCap, 
+  Crown,
+  LogOut // <-- Added Logout Icon
+} from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import { useTheme } from '../../../hooks/useTheme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
+const STATUS_BAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
 
-// ─── MASTER BADGES MAPPING (REAL-TIME FILTERING KE LIYE) ───
+// ─── MASTER BADGES MAPPING ───
 const ALL_AVAILABLE_BADGES: { [key: string]: { label: string, icon: React.JSX.Element, bgLight: string, bgDark: string } } = {
   streak_12: { label: '12-Day Streak', icon: <Flame size={24} color="#F59E0B" />, bgLight: '#FFF7ED', bgDark: '#451A03' },
   rooms_50: { label: '50 Rooms', icon: <Mic size={24} color="#2563EB" />, bgLight: '#EFF6FF', bgDark: '#1E293B' },
@@ -37,13 +51,35 @@ export default function ProfileScreen({ navigation }: any) {
   
   const currentUser = auth().currentUser;
 
+  // Sign Out Handler with Confirmation Alert
+  const handleLogout = () => {
+    Alert.alert(
+      'Sign Out',
+      'Are you sure you want to log out from your account?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Sign Out',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await auth().signOut();
+            } catch (error: any) {
+              Alert.alert('Logout Failed', error.message || 'Something went wrong');
+            }
+          },
+        },
+      ],
+      { cancelable: true }
+    );
+  };
+
   useEffect(() => {
     if (!currentUser) {
       setLoading(false);
       return;
     }
 
-    // Real-time user stats connection
     const unsubscribe = firestore()
       .collection('users')
       .doc(currentUser.uid)
@@ -51,7 +87,6 @@ export default function ProfileScreen({ navigation }: any) {
         if (doc.exists) {
           setUserData(doc.data());
         } else {
-          // Fallback defaults mapping if doc layout isn't fully ready in DB
           setUserData({
             name: currentUser.displayName || 'ECC Student',
             xp: 0,
@@ -90,7 +125,6 @@ export default function ProfileScreen({ navigation }: any) {
   const avatarInitials = displayName.substring(0, 2).toUpperCase();
   const avatarBgColor = userData?.avatarBg || colors.primary;
 
-  // Firestore standard metrics filtering logic
   const liveProgressData = [
     { label: 'Pronunciation', value: userData?.pronunciation || '0%', color: '#10B981' },
     { label: 'Grammar', value: userData?.grammar || '0%', color: colors.primary },
@@ -98,10 +132,11 @@ export default function ProfileScreen({ navigation }: any) {
     { label: 'Fluency', value: userData?.fluency || '0%', color: '#F59E0B' },
   ];
 
-  // Dynamic Badges mapping resolver
   const activeUserBadges = Array.isArray(userData?.badges) 
     ? userData.badges.filter((bKey: string) => ALL_AVAILABLE_BADGES[bKey])
     : [];
+
+  const currentXp = userData?.xp || 0;
 
   return (
     <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
@@ -121,7 +156,7 @@ export default function ProfileScreen({ navigation }: any) {
             onPress={() => navigation.navigate('Settings')}
             activeOpacity={0.8}
           >
-            <Settings size={22} color="#FFFFFF" opacity={0.9} />
+            <Settings size={20} color="#FFFFFF" />
           </TouchableOpacity>
         </View>
       </LinearGradient>
@@ -131,15 +166,12 @@ export default function ProfileScreen({ navigation }: any) {
         
         {/* Profile Info Block */}
         <View style={styles.profileMetaWrapper}>
-          
-          {/* Avatar Ring Container */}
           <View style={[styles.avatarWrapperContainer, { backgroundColor: colors.bgCard }]}>
             <View style={[styles.avatarMainCircle, { backgroundColor: avatarBgColor }]}>
               <Text style={styles.avatarMainText}>{avatarInitials}</Text>
             </View>
           </View>
 
-          {/* Premium Tag Indicator */}
           {userData?.isPremium && (
             <View style={[styles.premiumBadge, { backgroundColor: isDarkMode ? '#451A03' : '#FEF3C7', borderColor: isDarkMode ? '#78350F' : '#FDE68A' }]}>
               <Crown size={13} color="#D97706" />
@@ -147,7 +179,6 @@ export default function ProfileScreen({ navigation }: any) {
             </View>
           )}
 
-          {/* User Details */}
           <Text style={[styles.profileName, { color: colors.textPrimary }]}>{displayName}</Text>
           <Text style={[styles.profileSubText, { color: colors.textSecondary }]}>
             Level {userData?.level || 'B2'} · {userData?.status || 'Intermediate'} · {userData?.joinedDate || 'Joined 2026'}
@@ -160,10 +191,12 @@ export default function ProfileScreen({ navigation }: any) {
             <View 
               style={[
                 styles.circleProgressRing, 
-                { borderColor: (userData?.xp || 0) > 0 ? colors.primary : colors.border }
+                currentXp > 0 
+                  ? { borderColor: colors.primary, borderWidth: 3 } 
+                  : { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9', borderWidth: 0 }
               ]}
             >
-              <Text style={[styles.circleProgressVal, { color: colors.textPrimary }]}>{userData?.xp || 0}</Text>
+              <Text style={[styles.circleProgressVal, { color: colors.textPrimary }]}>{currentXp}</Text>
               <Text style={[styles.circleProgressLbl, { color: colors.textSecondary }]}>XP</Text>
             </View>
           </View>
@@ -257,6 +290,19 @@ export default function ProfileScreen({ navigation }: any) {
             <ChevronRight size={20} color="#94A3B8" />
           </TouchableOpacity>
         )}
+
+        {/* ─── DEDICATED SIGN OUT BUTTON BLOCK ─── */}
+        <TouchableOpacity 
+          style={[styles.signOutCard, { backgroundColor: isDarkMode ? '#3f1c1c' : '#FEF2F2', borderColor: isDarkMode ? '#7f1d1d' : '#FCA5A5' }]} 
+          onPress={handleLogout}
+          activeOpacity={0.8}
+        >
+          <View style={styles.signOutIconContainer}>
+            <LogOut size={20} color="#DC2626" />
+          </View>
+          <Text style={styles.signOutCardText}>Sign Out Account</Text>
+        </TouchableOpacity>
+
       </ScrollView>
     </View>
   );
@@ -266,17 +312,14 @@ const styles = StyleSheet.create({
   mainContainer: { flex: 1 },
   loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
   fixedTopBannerGradient: {
-    height: Platform.OS === 'ios' ? 105 : 90,
+    paddingTop: STATUS_BAR_HEIGHT + 10,
+    paddingBottom: 14,
     width: '100%',
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
     zIndex: 100,
-    justifyContent: 'flex-end',
-    paddingBottom: 14,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.15)',
     elevation: 8,
     shadowColor: '#0F172A',
     shadowOffset: { width: 0, height: 4 },
@@ -288,7 +331,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    position: 'relative',
     width: '100%',
   },
   fixedHeaderTitle: {
@@ -298,17 +340,17 @@ const styles = StyleSheet.create({
     letterSpacing: -0.3,
   },
   settingsButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.25)',
+    borderColor: 'rgba(255, 255, 255, 0.3)',
   },
   scrollContainer: { 
-    paddingTop: Platform.OS === 'ios' ? 130 : 115,
+    paddingTop: STATUS_BAR_HEIGHT + 75,
     paddingBottom: 140 
   },
   profileMetaWrapper: {
@@ -366,15 +408,13 @@ const styles = StyleSheet.create({
   statBox: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   verticalDivider: { width: 1, height: 42 },
   circleProgressRing: {
-    width: 64,
-    height: 64,
-    borderRadius: 32,
-    borderWidth: 4,
-    borderTopColor: 'transparent', 
+    width: 62,
+    height: 62,
+    borderRadius: 31,
     justifyContent: 'center',
     alignItems: 'center',
   },
-  circleProgressVal: { fontSize: 14, fontWeight: '800' },
+  circleProgressVal: { fontSize: 15, fontWeight: '800' },
   circleProgressLbl: { fontSize: 8, fontWeight: '700', marginTop: -2, textTransform: 'uppercase', letterSpacing: 0.2 },
   statNumber: { fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
   statLabel: { fontSize: 12, fontWeight: '600', marginTop: 3 },
@@ -480,4 +520,26 @@ const styles = StyleSheet.create({
   subsDetails: { flex: 1 },
   subsTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
   subsSub: { fontSize: 13, color: '#94A3B8', marginTop: 3, fontWeight: '500' },
+  
+  /* Sign Out Button Styles */
+  signOutCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 20,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
+    marginHorizontal: 20,
+    marginTop: 10,
+    marginBottom: 20,
+    borderWidth: 1,
+  },
+  signOutIconContainer: {
+    marginRight: 10,
+  },
+  signOutCardText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: '#DC2626',
+  },
 });
