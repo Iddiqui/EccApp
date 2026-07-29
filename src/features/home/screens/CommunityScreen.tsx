@@ -24,8 +24,8 @@ const { height: SCREEN_HEIGHT } = Dimensions.get('window');
 const TABS = ['Feed', 'Challenges', 'Leaderboard'];
 
 const AVATAR_COLORS = [
-  '#4285F4', '#EA4335', '#FBBC05', '#34A853', 
-  '#8E24AA', '#00ACC1', '#F4511E', '#3949AB', '#D81B60'
+  '#6366F1', '#EC4899', '#F59E0B', '#10B981', 
+  '#8B5CF6', '#06B6D4', '#F97316', '#3B82F6', '#D946EF'
 ];
 
 const getAvatarColor = (str: string = 'User') => {
@@ -63,16 +63,16 @@ interface QuizQuestion {
 }
 
 const CommunityScreen = () => {
-  // 1. ALL HOOKS CALLS MUST BE AT THE TOP (Unconditional)
   const themeContext = useTheme();
   const isDarkMode = themeContext?.isDarkMode ?? false;
+  
   const colors = themeContext?.theme?.colors || {
     primary: '#6366F1',
-    bgLight: '#F8FAFC',
-    bgCard: '#FFFFFF',
-    border: '#E2E8F0',
-    textPrimary: '#0F172A',
-    textSecondary: '#64748B'
+    bgLight: isDarkMode ? '#090D16' : '#F8FAFC',
+    bgCard: isDarkMode ? '#131B2E' : '#FFFFFF',
+    border: isDarkMode ? '#1E293B' : '#E2E8F0',
+    textPrimary: isDarkMode ? '#F8FAFC' : '#0F172A',
+    textSecondary: isDarkMode ? '#94A3B8' : '#64748B'
   };
 
   const currentUser = auth().currentUser;
@@ -102,9 +102,9 @@ const CommunityScreen = () => {
   const [currentTakingQuiz, setCurrentTakingQuiz] = useState<any>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
   const [userSelectedOption, setUserSelectedOption] = useState<number | null>(null);
+  const [isAnswerSubmitted, setIsAnswerSubmitted] = useState(false); // Lock state
   const [calculatedScore, setCalculatedScore] = useState(0);
   const [quizCompleted, setQuizCompleted] = useState(false);
-  const [showExplanation, setShowExplanation] = useState(false);
 
   const [leaderboardUsers, setLeaderboardUsers] = useState<any[]>([]);
 
@@ -201,7 +201,7 @@ const CommunityScreen = () => {
     return () => unsubscribe();
   }, []);
 
-  // 2. HELPER FUNCTIONS
+  // Functions
   const handleCreatePost = async () => {
     if (!newPostText.trim() || !currentUser) return;
     setIsPosting(true);
@@ -343,14 +343,15 @@ const CommunityScreen = () => {
     setCurrentTakingQuiz(quiz);
     setCurrentQuestionIndex(0);
     setUserSelectedOption(null);
+    setIsAnswerSubmitted(false);
     setCalculatedScore(0);
     setQuizCompleted(false);
-    setShowExplanation(false);
     setIsStudentQuizModalVisible(true);
   };
 
   const handleSelectOption = (index: number) => {
-    if (showExplanation) return;
+    // agar submit ho chuka hai toh change mat hone do
+    if (isAnswerSubmitted) return; 
     setUserSelectedOption(index);
   };
 
@@ -367,7 +368,7 @@ const CommunityScreen = () => {
       setCalculatedScore(prev => prev + 1);
     }
 
-    setShowExplanation(true);
+    setIsAnswerSubmitted(true); // Lock the option and show answer
   };
 
   const handleNextQuestion = () => {
@@ -376,7 +377,7 @@ const CommunityScreen = () => {
     if (currentQuestionIndex + 1 < totalQuestions) {
       setCurrentQuestionIndex(prev => prev + 1);
       setUserSelectedOption(null);
-      setShowExplanation(false);
+      setIsAnswerSubmitted(false);
     } else {
       setQuizCompleted(true);
       submitScoreToLeaderboard(calculatedScore, totalQuestions);
@@ -417,14 +418,13 @@ const CommunityScreen = () => {
     }
   };
 
-  // 3. RENDER FUNCTIONS
- const renderPostCard = ({ item }: { item: any }) => {
+  // Render Functions
+  const renderPostCard = ({ item }: { item: any }) => {
     const displayName = item.userName || item.name || 'User';
     const firstLetter = displayName.charAt(0).toUpperCase();
     const avatarBg = getAvatarColor(displayName);
     const timeAgo = formatTimeAgo(item.createdAt);
 
-    // DELETE PERMISSION CHECK: Admin can delete any post, Regular user can ONLY delete their own post
     const canDelete = isAdmin || (currentUser?.uid && item.uid === currentUser.uid);
 
     return (
@@ -434,13 +434,12 @@ const CommunityScreen = () => {
             <View style={[styles.avatar, { backgroundColor: avatarBg }]}>
               <Text style={styles.avatarText}>{firstLetter}</Text>
             </View>
-            <View>
+            <View style={{ flex: 1 }}>
               <Text style={[styles.userName, { color: colors.textPrimary }]}>{displayName}</Text>
               <Text style={[styles.timeAgoText, { color: colors.textSecondary }]}>{timeAgo}</Text>
             </View>
           </View>
           
-          {/* SHOW DELETE BUTTON ONLY IF ADMIN OR POST OWNER */}
           {canDelete && (
             <TouchableOpacity onPress={() => handleDeletePost(item.id)} style={styles.deleteBtn}>
               <Trash2 size={18} color="#EF4444" />
@@ -459,24 +458,24 @@ const CommunityScreen = () => {
     return (
       <View style={[styles.card, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
         <View style={styles.cardHeader}>
-          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-            <View style={[styles.iconBox, { backgroundColor: isDarkMode ? '#312E81' : '#EEF2FF' }]}>
-              <Trophy size={20} color={colors.primary} />
+          <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+            <View style={[styles.iconBox, { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.15)' : '#EEF2FF' }]}>
+              <Trophy size={22} color={colors.primary} />
             </View>
-            <View>
-              <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>{item.title}</Text>
+            <View style={{ flex: 1, paddingRight: 8 }}>
+              <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={1}>{item.title}</Text>
               <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>{totalQ} Questions • Up to {totalQ * 10} XP</Text>
             </View>
           </View>
           {isAdmin && (
             <TouchableOpacity onPress={() => handleDeleteChallenge(item.id)} style={styles.deleteBtn}>
-              <Trash2 size={18} color="#EF4444" />
+              <Trash2 size={20} color="#EF4444" />
             </TouchableOpacity>
           )}
         </View>
 
         {isDone ? (
-          <View style={[styles.attemptedBadge, { backgroundColor: '#F1F5F9' }]}>
+          <View style={[styles.attemptedBadge, { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' }]}>
             <CheckCircle size={16} color="#10B981" />
             <Text style={{ color: '#10B981', fontWeight: '700', fontSize: 13, marginLeft: 6 }}>Completed</Text>
           </View>
@@ -528,7 +527,7 @@ const CommunityScreen = () => {
         <Text style={[styles.subtitleText, { color: colors.textSecondary }]}>Connect, Learn & Rank</Text>
       </View>
 
-      <View style={[styles.tabsContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' }]}>
+      <View style={[styles.tabsContainer, { backgroundColor: isDarkMode ? '#131B2E' : '#F1F5F9' }]}>
         {TABS.map((tab, index) => (
           <TouchableOpacity key={tab} style={[styles.tab, activeTab === index && [styles.activeTab, { backgroundColor: colors.bgCard }]]} onPress={() => setActiveTab(index)}>
             <Text style={[styles.tabText, { color: colors.textSecondary }, activeTab === index && [styles.activeTabText, { color: colors.textPrimary }]]}>{tab}</Text>
@@ -584,24 +583,27 @@ const CommunityScreen = () => {
       {/* ADMIN MODAL */}
       <Modal visible={isAddQuestionModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsAddQuestionModalVisible(false)}>
         <SafeAreaView style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
+          <View style={[styles.modalContent, { backgroundColor: colors.bgCard }]}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Question & Solution</Text>
-              <TouchableOpacity onPress={() => setIsAddQuestionModalVisible(false)}><X size={22} color="#000" /></TouchableOpacity>
+              <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Add Question & Solution</Text>
+              <TouchableOpacity onPress={() => setIsAddQuestionModalVisible(false)} style={styles.closeIconBtn}>
+                <X size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
             </View>
             <ScrollView showsVerticalScrollIndicator={false}>
-              <TextInput style={styles.modalInput} placeholder="Enter Question..." value={tempQuestionText} onChangeText={setTempQuestionText} multiline />
+              <TextInput style={[styles.modalInput, { color: colors.textPrimary, borderColor: colors.border }]} placeholder="Enter Question..." placeholderTextColor={colors.textSecondary} value={tempQuestionText} onChangeText={setTempQuestionText} multiline />
               
-              <Text style={{ fontWeight: '700', marginVertical: 8, color: '#334155', fontSize: 13 }}>
+              <Text style={{ fontWeight: '700', marginVertical: 8, color: colors.textSecondary, fontSize: 13 }}>
                 Tap check icon to mark correct answer:
               </Text>
 
               {tempOptions.map((optionText, idx) => (
-                <View key={idx} style={[styles.optionRow, selectedCorrectIndex === idx && { borderColor: '#10B981', backgroundColor: '#ECFDF5' }]}>
-                  <Text style={styles.optionChar}>{String.fromCharCode(65 + idx)}.</Text>
+                <View key={idx} style={[styles.optionRow, { borderColor: selectedCorrectIndex === idx ? '#10B981' : colors.border, backgroundColor: selectedCorrectIndex === idx ? (isDarkMode ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5') : 'transparent' }]}>
+                  <Text style={[styles.optionChar, { color: colors.textSecondary }]}>{String.fromCharCode(65 + idx)}.</Text>
                   <TextInput 
-                    style={styles.optionInput} 
+                    style={[styles.optionInput, { color: colors.textPrimary }]} 
                     placeholder={`Option ${idx + 1}`} 
+                    placeholderTextColor={colors.textSecondary}
                     value={optionText} 
                     onChangeText={(txt) => {
                       const copy = [...tempOptions];
@@ -610,17 +612,18 @@ const CommunityScreen = () => {
                     }} 
                   />
                   <TouchableOpacity onPress={() => setSelectedCorrectIndex(idx)} style={{ padding: 4 }}>
-                    <CheckCircle size={24} color={selectedCorrectIndex === idx ? '#10B981' : '#CBD5E1'} />
+                    <CheckCircle size={22} color={selectedCorrectIndex === idx ? '#10B981' : '#64748B'} />
                   </TouchableOpacity>
                 </View>
               ))}
 
-              <Text style={{ fontWeight: '700', marginTop: 10, marginBottom: 4, color: '#334155', fontSize: 13 }}>
+              <Text style={{ fontWeight: '700', marginTop: 10, marginBottom: 4, color: colors.textSecondary, fontSize: 13 }}>
                 Description / Correct Solution (Optional):
               </Text>
               <TextInput 
-                style={[styles.modalInput, { height: 70 }]} 
+                style={[styles.modalInput, { height: 70, color: colors.textPrimary, borderColor: colors.border }]} 
                 placeholder="Explain why this answer is correct..." 
+                placeholderTextColor={colors.textSecondary}
                 value={tempExplanation} 
                 onChangeText={setTempExplanation} 
                 multiline 
@@ -637,11 +640,11 @@ const CommunityScreen = () => {
       {/* STUDENT MODAL */}
       <Modal visible={isStudentQuizModalVisible && currentTakingQuiz !== null} animationType="fade" transparent={true} onRequestClose={() => setIsStudentQuizModalVisible(false)}>
         <View style={styles.studentModalOverlay}>
-          <View style={styles.studentModalContent}>
+          <View style={[styles.studentModalContent, { backgroundColor: isDarkMode ? '#131B2E' : '#FFFFFF' }]}>
             {quizCompleted ? (
               <View style={{ alignItems: 'center', padding: 20 }}>
                 <CheckCircle size={60} color="#10B981" style={{ marginBottom: 10 }} />
-                <Text style={{ fontSize: 20, fontWeight: '800' }}>Quiz Completed!</Text>
+                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.textPrimary }}>Quiz Completed!</Text>
                 <Text style={{ fontSize: 16, color: colors.primary, fontWeight: '700', marginTop: 8 }}>
                   Score: {calculatedScore} / {activeQuizTotal}
                 </Text>
@@ -655,15 +658,19 @@ const CommunityScreen = () => {
             ) : (
               <ScrollView showsVerticalScrollIndicator={false}>
                 <View style={styles.modalHeader}>
-                  <Text style={{ fontSize: 16, fontWeight: '700', flex: 1 }}>{currentTakingQuiz?.title}</Text>
-                  <TouchableOpacity onPress={() => setIsStudentQuizModalVisible(false)}><X size={20} color="#64748B" /></TouchableOpacity>
+                  <Text style={{ fontSize: 18, fontWeight: '700', flex: 1, color: colors.textPrimary }}>
+                    {currentTakingQuiz?.title}
+                  </Text>
+                  <TouchableOpacity onPress={() => setIsStudentQuizModalVisible(false)} style={styles.closeIconBtn}>
+                    <X size={18} color={colors.textSecondary} />
+                  </TouchableOpacity>
                 </View>
 
-                <Text style={{ fontSize: 12, color: colors.textSecondary, marginBottom: 12 }}>
-                  Question {currentQuestionIndex + 1} of {activeQuizTotal}
+                <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary, textTransform: 'uppercase', letterSpacing: 0.8, marginBottom: 6 }}>
+                  Question {currentQuestionIndex + 1} <Text style={{ color: colors.textSecondary }}>/ {activeQuizTotal}</Text>
                 </Text>
                 
-                <Text style={{ fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginBottom: 16 }}>
+                <Text style={{ fontSize: 16, fontWeight: '700', color: colors.textPrimary, marginBottom: 18, lineHeight: 22 }}>
                   {activeQuizQuestion?.questionText}
                 </Text>
                 
@@ -671,20 +678,28 @@ const CommunityScreen = () => {
                   const isSelected = userSelectedOption === index;
                   const isCorrectAnswer = index === activeQuizQuestion?.correctAnswerIndex;
                   
-                  let optionBg = isDarkMode ? '#1E293B' : '#FFF';
-                  let optionBorder = '#CBD5E1';
+                  let optionBg = isDarkMode ? '#1E293B' : '#F8FAFC';
+                  let optionBorder = isDarkMode ? '#334155' : '#CBD5E1';
+                  let badgeBg = isDarkMode ? '#334155' : '#E2E8F0';
+                  let badgeTextColor = colors.textSecondary;
 
-                  if (showExplanation) {
+                  if (isAnswerSubmitted) {
                     if (isCorrectAnswer) {
-                      optionBg = '#ECFDF5';
+                      optionBg = isDarkMode ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5';
                       optionBorder = '#10B981';
+                      badgeBg = '#10B981';
+                      badgeTextColor = '#FFFFFF';
                     } else if (isSelected && !isCorrectAnswer) {
-                      optionBg = '#FEF2F2';
+                      optionBg = isDarkMode ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2';
                       optionBorder = '#EF4444';
+                      badgeBg = '#EF4444';
+                      badgeTextColor = '#FFFFFF';
                     }
                   } else if (isSelected) {
-                    optionBg = isDarkMode ? '#1E293B' : '#EEF2FF';
+                    optionBg = isDarkMode ? 'rgba(99, 102, 241, 0.15)' : '#EEF2FF';
                     optionBorder = colors.primary;
+                    badgeBg = colors.primary;
+                    badgeTextColor = '#FFFFFF';
                   }
 
                   return (
@@ -692,52 +707,66 @@ const CommunityScreen = () => {
                       key={index} 
                       style={[styles.studentOptionBtn, { backgroundColor: optionBg, borderColor: optionBorder }]} 
                       onPress={() => handleSelectOption(index)}
-                      disabled={showExplanation}
+                      disabled={isAnswerSubmitted}
+                      activeOpacity={0.7}
                     >
-                      <Text style={{ fontWeight: '800', width: 22 }}>{String.fromCharCode(65 + index)}.</Text>
-                      <Text style={{ fontSize: 14, color: colors.textPrimary, flex: 1 }}>{opt}</Text>
+                      <View style={[styles.optionBadge, { backgroundColor: badgeBg }]}>
+                        <Text style={[styles.optionBadgeText, { color: badgeTextColor }]}>
+                          {String.fromCharCode(65 + index)}
+                        </Text>
+                      </View>
+                      <Text style={{ fontSize: 15, fontWeight: isSelected ? '600' : '400', color: colors.textPrimary, flex: 1 }}>
+                        {opt}
+                      </Text>
                     </TouchableOpacity>
                   );
                 })}
 
-    {/* STUDENT MODAL Inside Logic */}
-{showExplanation && (() => {
-  // 1. Calculate isCorrect here
-  const isCorrect = userSelectedOption === activeQuizQuestion?.correctAnswerIndex;
+                {/* EXPLANATION BOX */}
+                {isAnswerSubmitted && (() => {
+                  const isCorrect = userSelectedOption === activeQuizQuestion?.correctAnswerIndex;
 
-  return (
-    <View style={[
-      styles.explanationBox, 
-      { backgroundColor: isCorrect ? '#ECFDF5' : '#FEF2F2', borderColor: isCorrect ? '#A7F3D0' : '#FECACA' }
-    ]}>
-      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
-        <HelpCircle size={16} color={isCorrect ? '#059669' : '#DC2626'} />
-        <Text style={{ fontWeight: '700', color: isCorrect ? '#065F46' : '#991B1B', fontSize: 13 }}>
-          {isCorrect ? '✅ Excellent! Solution:' : '💡 Correct Solution:'}
-        </Text>
-      </View>
-      <Text style={{ fontSize: 13, color: '#334155', lineHeight: 18 }}>
-        {activeQuizQuestion?.explanation || `Correct Answer: Option ${String.fromCharCode(65 + activeQuizQuestion?.correctAnswerIndex)}`}
-      </Text>
-    </View>
-  );
-})()}
+                  return (
+                    <View style={[
+                      styles.explanationBox, 
+                      { 
+                        backgroundColor: isCorrect 
+                          ? (isDarkMode ? 'rgba(16, 185, 129, 0.15)' : '#ECFDF5') 
+                          : (isDarkMode ? 'rgba(239, 68, 68, 0.15)' : '#FEF2F2'), 
+                        borderColor: isCorrect ? '#10B981' : '#EF4444' 
+                      }
+                    ]}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 4 }}>
+                        <HelpCircle size={16} color={isCorrect ? '#10B981' : '#EF4444'} />
+                        <Text style={{ fontWeight: '700', color: isCorrect ? '#10B981' : '#EF4444', fontSize: 13 }}>
+                          {isCorrect ? 'Correct Answer!' : 'Incorrect Answer'}
+                        </Text>
+                      </View>
+                      {activeQuizQuestion?.explanation ? (
+                        <Text style={{ fontSize: 13, color: colors.textPrimary, lineHeight: 18 }}>
+                          {activeQuizQuestion.explanation}
+                        </Text>
+                      ) : null}
+                    </View>
+                  );
+                })()}
 
-                {!showExplanation ? (
+                {/* ACTION BUTTON: Submit Answer or Next Question */}
+                {!isAnswerSubmitted ? (
                   <TouchableOpacity 
-                    style={[styles.actionBtn, { backgroundColor: colors.primary, marginTop: 16 }, userSelectedOption === null && { opacity: 0.5 }]} 
-                    onPress={handleConfirmAnswer} 
+                    style={[styles.actionBtn, { backgroundColor: colors.primary, marginTop: 15 }, userSelectedOption === null && { opacity: 0.5 }]} 
+                    onPress={handleConfirmAnswer}
                     disabled={userSelectedOption === null}
                   >
-                    <Text style={styles.actionBtnText}>Check Answer</Text>
+                    <Text style={styles.actionBtnText}>Check / Submit Answer</Text>
                   </TouchableOpacity>
                 ) : (
                   <TouchableOpacity 
-                    style={[styles.actionBtn, { backgroundColor: '#10B981', marginTop: 16 }]} 
-                    onPress={handleNextQuestion} 
+                    style={[styles.actionBtn, { backgroundColor: colors.primary, marginTop: 15 }]} 
+                    onPress={handleNextQuestion}
                   >
                     <Text style={styles.actionBtnText}>
-                      {currentQuestionIndex + 1 === activeQuizTotal ? 'Finish Quiz' : 'Next Question'}
+                      {currentQuestionIndex + 1 < activeQuizTotal ? 'Next Question' : 'Finish Quiz'}
                     </Text>
                   </TouchableOpacity>
                 )}
@@ -746,70 +775,287 @@ const CommunityScreen = () => {
           </View>
         </View>
       </Modal>
-
     </View>
   );
 };
 
-export default CommunityScreen;
-
 const styles = StyleSheet.create({
-  container: { flex: 1, paddingTop: Platform.OS === 'ios' ? 60 : 40, paddingHorizontal: 20 },
-  header: { marginBottom: 16 },
-  title: { fontSize: 32, fontWeight: '800' },
-  subtitleText: { fontSize: 15, marginTop: 2 },
-  tabsContainer: { flexDirection: 'row', borderRadius: 30, padding: 4, marginBottom: 16, alignSelf: 'flex-start' },
-  tab: { paddingVertical: 8, paddingHorizontal: 16, borderRadius: 24 },
-  activeTab: { elevation: 2 },
-  tabText: { fontSize: 14, fontWeight: '600' },
-  activeTabText: { fontWeight: '700' },
-  scrollList: { paddingBottom: 100 },
-  
-  card: { borderRadius: 16, padding: 14, marginBottom: 12, borderWidth: 1 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 10 },
-  
-  avatar: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-  avatarText: { color: '#FFF', fontWeight: '800', fontSize: 16 },
-  avatarSmall: { width: 32, height: 32, borderRadius: 16, justifyContent: 'center', alignItems: 'center' },
-  avatarSmallText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
-  
-  userName: { fontWeight: '700', fontSize: 15 },
-  timeAgoText: { fontSize: 11, marginTop: 1 },
-  postText: { fontSize: 14, lineHeight: 20, marginTop: 2 },
-  iconBox: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
-  cardTitle: { fontWeight: '700', fontSize: 15 },
-  cardSubtitle: { fontSize: 12, marginTop: 2 },
-
-  deleteBtn: { padding: 6, borderRadius: 8, backgroundColor: '#FEE2E2' },
-
-  attemptedBadge: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 10, borderRadius: 10, marginTop: 8 },
-  actionBtn: { height: 42, borderRadius: 10, justifyContent: 'center', alignItems: 'center' },
-  actionBtnText: { color: '#FFF', fontWeight: '700', fontSize: 14 },
-  outlineBtn: { height: 42, borderRadius: 10, borderWidth: 1, flexDirection: 'row', justifyContent: 'center', alignItems: 'center', paddingHorizontal: 12 },
-
-  createPostBox: { flexDirection: 'row', borderRadius: 16, borderWidth: 1, padding: 8, alignItems: 'center', marginBottom: 16 },
-  postInput: { flex: 1, paddingHorizontal: 10, fontSize: 14, maxHeight: 80 },
-  sendBtn: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
-
-  adminCard: { padding: 12, borderRadius: 16, borderWidth: 1.5, marginBottom: 16 },
-  adminTitle: { fontSize: 14, fontWeight: '800', marginBottom: 8 },
-  input: { borderWidth: 1, borderRadius: 8, paddingHorizontal: 10, height: 40, fontSize: 13, marginBottom: 8 },
-
-  rankText: { fontSize: 16, fontWeight: '800', width: 26 },
-
-  modalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'flex-end' },
-  modalContent: { backgroundColor: '#FFF', borderTopLeftRadius: 20, borderTopRightRadius: 20, height: SCREEN_HEIGHT * 0.8, padding: 16 },
-  modalHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
-  modalTitle: { fontSize: 16, fontWeight: '800' },
-  modalInput: { borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 10, padding: 10, height: 50, fontSize: 13, marginBottom: 8 },
-  
-  optionRow: { flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: '#CBD5E1', borderRadius: 8, paddingHorizontal: 10, marginBottom: 8, height: 44 },
-  optionChar: { fontWeight: '800', width: 20 },
-  optionInput: { flex: 1, fontSize: 13, color: '#0F172A' },
-
-  studentModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.5)', justifyContent: 'center', alignItems: 'center', padding: 16 },
-  studentModalContent: { backgroundColor: '#FFF', borderRadius: 20, width: '100%', maxHeight: SCREEN_HEIGHT * 0.8, padding: 16 },
-  studentOptionBtn: { flexDirection: 'row', alignItems: 'center', borderWidth: 1.5, borderRadius: 10, padding: 12, marginBottom: 8 },
-  
-  explanationBox: { backgroundColor: '#EEF2FF', borderRadius: 10, padding: 12, marginTop: 8, borderWidth: 1, borderColor: '#C7D2FE' }
+  container: {
+    flex: 1,
+    paddingTop: Platform.OS === 'android' ? StatusBar.currentHeight : 0,
+  },
+  header: {
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+  },
+  title: {
+    fontSize: 24,
+    fontWeight: '800',
+  },
+  subtitleText: {
+    fontSize: 13,
+    marginTop: 2,
+  },
+  tabsContainer: {
+    flexDirection: 'row',
+    marginHorizontal: 16,
+    borderRadius: 12,
+    padding: 4,
+    marginBottom: 12,
+  },
+  tab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 8,
+  },
+  activeTab: {
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+  },
+  tabText: {
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  activeTabText: {
+    fontWeight: '700',
+  },
+  scrollList: {
+    paddingHorizontal: 16,
+    paddingBottom: 24,
+  },
+  card: {
+    borderRadius: 16,
+    padding: 14,
+    borderWidth: 1,
+    marginBottom: 12,
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  avatar: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  userName: {
+    fontSize: 14,
+    fontWeight: '700',
+  },
+  timeAgoText: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  deleteBtn: {
+    padding: 6,
+    marginLeft: 6,
+  },
+  postText: {
+    fontSize: 14,
+    lineHeight: 20,
+  },
+  iconBox: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  cardTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+  },
+  cardSubtitle: {
+    fontSize: 12,
+    marginTop: 2,
+  },
+  attemptedBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    borderRadius: 10,
+    marginTop: 8,
+  },
+  actionBtn: {
+    paddingVertical: 10,
+    borderRadius: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  actionBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '700',
+    fontSize: 14,
+  },
+  outlineBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1.5,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+  },
+  createPostBox: {
+    marginHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    padding: 10,
+    marginBottom: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  postInput: {
+    flex: 1,
+    maxHeight: 80,
+    fontSize: 14,
+    paddingRight: 8,
+  },
+  sendBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  adminCard: {
+    marginHorizontal: 16,
+    borderRadius: 16,
+    borderWidth: 1.5,
+    padding: 14,
+    marginBottom: 12,
+  },
+  adminTitle: {
+    fontSize: 14,
+    fontWeight: '800',
+    marginBottom: 10,
+  },
+  input: {
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    fontSize: 13,
+    marginBottom: 10,
+  },
+  rankText: {
+    fontSize: 16,
+    fontWeight: '800',
+    width: 32,
+  },
+  avatarSmall: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  avatarSmallText: {
+    color: '#FFF',
+    fontWeight: '700',
+    fontSize: 13,
+  },
+  modalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    borderTopLeftRadius: 20,
+    borderTopRightRadius: 20,
+    padding: 18,
+    maxHeight: SCREEN_HEIGHT * 0.85,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+  },
+  modalTitle: {
+    fontSize: 16,
+    fontWeight: '800',
+  },
+  closeIconBtn: {
+    padding: 4,
+  },
+  modalInput: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    fontSize: 13,
+    marginBottom: 10,
+  },
+  optionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderRadius: 10,
+    paddingHorizontal: 10,
+    marginBottom: 8,
+  },
+  optionChar: {
+    fontWeight: '700',
+    fontSize: 13,
+    marginRight: 6,
+  },
+  optionInput: {
+    flex: 1,
+    paddingVertical: 8,
+    fontSize: 13,
+  },
+  studentModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  studentModalContent: {
+    borderRadius: 20,
+    padding: 18,
+    maxHeight: SCREEN_HEIGHT * 0.8,
+  },
+  studentOptionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 10,
+  },
+  optionBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
+  },
+  optionBadgeText: {
+    fontSize: 12,
+    fontWeight: '700',
+  },
+  explanationBox: {
+    borderWidth: 1,
+    borderRadius: 10,
+    padding: 10,
+    marginTop: 6,
+    marginBottom: 10,
+  }
 });
+
+export default CommunityScreen;

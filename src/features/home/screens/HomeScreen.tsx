@@ -114,7 +114,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 2. DASHBOARD STATS SECTION (STREAK & RINGS) */}
+        {/* 2. DASHBOARD STATS SECTION (STREAK & SCORES WITHOUT CIRCLES) */}
         <View style={styles.statsRow}>
           <View style={[styles.streakCard, { backgroundColor: colors.bgCard }]}>
             <View style={styles.streakHeader}>
@@ -136,20 +136,22 @@ export default function HomeScreen() {
           </View>
 
           <View style={styles.ringsColumn}>
+            {/* SPEAKING CARD (CIRCLE REMOVED) */}
             <View style={[styles.ringMiniCard, { backgroundColor: colors.bgCard }]}>
-              <View style={[styles.ringTrack, { borderColor: colors.primary }]}>
-                <Text style={[styles.ringValueText, { color: colors.textPrimary }]}>{userData?.speakingScore ?? 0}</Text>
-              </View>
+              <Text style={[styles.scoreValueText, { color: colors.primary }]}>
+                {userData?.speakingScore ?? 0}
+              </Text>
               <View style={styles.ringInfoTextContainer}>
                 <Text style={[styles.ringTitle, { color: colors.textPrimary }]}>Speaking</Text>
                 <Text style={[styles.ringSubtitle, { color: colors.textSecondary }]}>+4 this week</Text>
               </View>
             </View>
 
+            {/* FLUENCY CARD (CIRCLE REMOVED) */}
             <View style={[styles.ringMiniCard, { backgroundColor: colors.bgCard }]}>
-              <View style={[styles.ringTrack, { borderColor: colors.successGreen }]}>
-                <Text style={[styles.ringValueText, { color: colors.textPrimary }]}>{userData?.fluency ?? 0}</Text>
-              </View>
+              <Text style={[styles.scoreValueText, { color: colors.successGreen }]}>
+                {userData?.fluency ?? 0}
+              </Text>
               <View style={styles.ringInfoTextContainer}>
                 <Text style={[styles.ringTitle, { color: colors.textPrimary }]}>Fluency</Text>
                 <Text style={[styles.ringSubtitle, { color: colors.textSecondary }]}>Level B2</Text>
@@ -311,9 +313,8 @@ const styles = StyleSheet.create({
   activeDot: { backgroundColor: '#F59E0B' },
 
   ringsColumn: { width: (width - 55) * 0.5, justifyContent: 'space-between' },
-  ringMiniCard: { borderRadius: 20, padding: 12, flexDirection: 'row', alignItems: 'center', height: 68, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 0.8 },
-  ringTrack: { width: 42, height: 42, borderRadius: 21, borderWidth: 4, justifyContent: 'center', alignItems: 'center', marginRight: 12 },
-  ringValueText: { fontSize: 12, fontWeight: '700' },
+  ringMiniCard: { borderRadius: 20, paddingHorizontal: 16, paddingVertical: 12, flexDirection: 'row', alignItems: 'center', height: 68, shadowColor: '#000', shadowOffset: { width: 0, height: 1 }, shadowOpacity: 0.03, shadowRadius: 4, elevation: 0.8 },
+  scoreValueText: { fontSize: 28, fontWeight: '800', marginRight: 14, minWidth: 20, textAlign: 'center' },
   ringInfoTextContainer: { flex: 1 },
   ringTitle: { fontSize: 14, fontWeight: '700' },
   ringSubtitle: { fontSize: 11, marginTop: 1 },

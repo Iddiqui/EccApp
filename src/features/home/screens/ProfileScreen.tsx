@@ -23,7 +23,7 @@ import {
   Trophy, 
   GraduationCap, 
   Crown,
-  LogOut // <-- Added Logout Icon
+  LogOut
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -187,22 +187,16 @@ export default function ProfileScreen({ navigation }: any) {
 
         {/* Overview Stats Card Grid */}
         <View style={[styles.statsCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+          
+          {/* XP Stat Item (Simple Layout) */}
           <View style={styles.statBox}>
-            <View 
-              style={[
-                styles.circleProgressRing, 
-                currentXp > 0 
-                  ? { borderColor: colors.primary, borderWidth: 3 } 
-                  : { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9', borderWidth: 0 }
-              ]}
-            >
-              <Text style={[styles.circleProgressVal, { color: colors.textPrimary }]}>{currentXp}</Text>
-              <Text style={[styles.circleProgressLbl, { color: colors.textSecondary }]}>XP</Text>
-            </View>
+            <Text style={[styles.statNumber, { color: colors.textPrimary }]}>{currentXp}</Text>
+            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>XP</Text>
           </View>
           
           <View style={[styles.verticalDivider, { backgroundColor: colors.border }]} />
           
+          {/* Rooms Joined Stat Item */}
           <View style={styles.statBox}>
             <Text style={[styles.statNumber, { color: colors.textPrimary }]}>{userData?.roomsJoined || 0}</Text>
             <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Rooms joined</Text>
@@ -210,10 +204,12 @@ export default function ProfileScreen({ navigation }: any) {
           
           <View style={[styles.verticalDivider, { backgroundColor: colors.border }]} />
           
+          {/* Day Streak Stat Item */}
           <View style={styles.statBox}>
             <Text style={[styles.statNumber, { color: '#F59E0B' }]}>{userData?.streak || 0}</Text>
             <Text style={[styles.statLabel, { color: colors.textSecondary }]}>Day streak</Text>
           </View>
+
         </View>
 
         {/* Core Metric Analytics Blocks */}
@@ -407,15 +403,6 @@ const styles = StyleSheet.create({
   },
   statBox: { flex: 1, alignItems: 'center', justifyContent: 'center' },
   verticalDivider: { width: 1, height: 42 },
-  circleProgressRing: {
-    width: 62,
-    height: 62,
-    borderRadius: 31,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  circleProgressVal: { fontSize: 15, fontWeight: '800' },
-  circleProgressLbl: { fontSize: 8, fontWeight: '700', marginTop: -2, textTransform: 'uppercase', letterSpacing: 0.2 },
   statNumber: { fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
   statLabel: { fontSize: 12, fontWeight: '600', marginTop: 3 },
   sectionHeading: { fontSize: 17, fontWeight: '800', marginHorizontal: 20, marginBottom: 14, marginTop: 4 },
@@ -520,8 +507,6 @@ const styles = StyleSheet.create({
   subsDetails: { flex: 1 },
   subsTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
   subsSub: { fontSize: 13, color: '#94A3B8', marginTop: 3, fontWeight: '500' },
-  
-  /* Sign Out Button Styles */
   signOutCard: {
     flexDirection: 'row',
     alignItems: 'center',
