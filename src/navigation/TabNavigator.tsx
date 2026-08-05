@@ -14,7 +14,7 @@ const Tab = createBottomTabNavigator();
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 export default function TabNavigator() {
-  const { theme, isDarkMode } = useTheme();
+  const { theme, isDarkMode, t } = useTheme() as any;
   const colors = theme.colors;
 
   return (
@@ -39,8 +39,20 @@ export default function TabNavigator() {
         tabBarLabelStyle: styles.tabBarLabel,
       })}
     >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Practice" component={PracticeScreen} />
+      <Tab.Screen 
+        name="Home" 
+        component={HomeScreen} 
+        options={{
+          tabBarLabel: t?.tabs?.home || 'होम'
+        }}
+      />
+      <Tab.Screen 
+        name="Practice" 
+        component={PracticeScreen} 
+        options={{
+          tabBarLabel: t?.tabs?.practice || 'प्रैक्टिस'
+        }}
+      />
       
       {/* ─── NATIVE TAB RENDER STRATEGY FOR ZERO ERRORS ─── */}
       <Tab.Screen 
@@ -65,8 +77,20 @@ export default function TabNavigator() {
         })}
       />
 
-      <Tab.Screen name="Community" component={CommunityScreen} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen 
+        name="Community" 
+        component={CommunityScreen} 
+        options={{
+          tabBarLabel: t?.tabs?.community || 'कम्युनिटी'
+        }}
+      />
+      <Tab.Screen 
+        name="Profile" 
+        component={ProfileScreen} 
+        options={{
+          tabBarLabel: t?.tabs?.profile || 'प्रोफाइल'
+        }}
+      />
     </Tab.Navigator>
   );
 }

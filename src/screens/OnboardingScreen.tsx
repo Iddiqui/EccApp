@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useRef } from 'react';
 import { 
   StyleSheet, 
   Text, 
@@ -6,9 +6,14 @@ import {
   Image, 
   TouchableOpacity, 
   SafeAreaView, 
-  StatusBar 
+  StatusBar,
+  FlatList,
+  Dimensions,
+  Platform
 } from 'react-native';
 import { useTheme } from '../hooks/useTheme'; 
+
+const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const onboardingData = [
   { 
@@ -39,37 +44,38 @@ const onboardingData = [
 
 export default function OnboardingScreen({ navigation }: any) {
   const [currentStep, setCurrentStep] = useState(0);
-  const activeData = onboardingData[currentStep];
+  const flatListRef = useRef<FlatList>(null);
   
-  const themeHook = useTheme(); 
+  const themeHook = useTheme() as any;
   const isDarkMode = themeHook?.isDarkMode || false;
 
-  // Theme Fallback Mechanism
-  const colors = themeHook?.theme?.colors || themeHook?.colors || {
+  const colors = themeHook?.theme?.colors || {
     bgLight: '#FFFFFF',
-    textPrimary: '#000000',
-    textSecondary: '#666666',
-    primary: '#4F5E8C',
-    bgCard: '#F5F5F5',
-    border: '#E0E0E0'
+    textPrimary: '#0F172A',
+    textSecondary: '#64748B',
+    primary: '#EC4899',
+    bgCard: '#F1F5F9',
+    border: '#E2E8F0',
   };
 
   const handleNext = () => {
     if (currentStep < onboardingData.length - 1) {
-      setCurrentStep(currentStep + 1);
+      flatListRef.current?.scrollToIndex({ index: currentStep + 1, animated: true });
     } else {
       navigation.replace('Login');
     }
   };
 
-  const handleBack = () => {
-    if (currentStep > 0) {
-      setCurrentStep(currentStep - 1);
-    }
-  };
-
   const handleSkip = () => {
     navigation.replace('Login');
+  };
+
+  const handleScroll = (event: any) => {
+    const slideSize = event.nativeEvent.layoutMeasurement.width;
+    const index = Math.round(event.nativeEvent.contentOffset.x / slideSize);
+    if (index !== currentStep && index >= 0 && index < onboardingData.length) {
+      setCurrentStep(index);
+    }
   };
 
   return (
@@ -80,41 +86,61 @@ export default function OnboardingScreen({ navigation }: any) {
         translucent={true} 
       />
       
-      {/* Header Bar */}
+      {/* Top Header Bar - Fixed Logo */}
       <View style={styles.headerBar}>
-        <View style={styles.headerActionLeft}>
-          {currentStep > 0 ? (
-            <TouchableOpacity onPress={handleBack} style={styles.navButton} activeOpacity={0.7}>
-              <Text style={[styles.navButtonText, { color: colors.textSecondary }]}>←</Text>
-            </TouchableOpacity>
-          ) : null}
+        <View style={styles.logoRoundWrapper}>
+          <Image 
+            source={require('../assets/Ecc-logo.jpeg')} 
+            style={styles.logoImage} 
+            resizeMode="cover"
+          />
         </View>
-        
-        <Text style={[styles.logoText, { color: colors.textPrimary }]}>ECC</Text>
-        
-        <View style={styles.headerActionRight}>
-          <TouchableOpacity onPress={handleSkip} style={styles.skipButton} activeOpacity={0.7}>
-            <Text 
-              style={[styles.skipButtonText, { color: colors.primary || '#4F5E8C' }]}
-              numberOfLines={1}
-            >
-              Skip
+
+        <TouchableOpacity onPress={handleSkip} style={styles.skipButton} activeOpacity={0.7}>
+          <Text style={[styles.skipButtonText, { color: colors.primary || '#EC4899' }]}>
+            Skip →
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {/* Carousel Section */}
+      <FlatList
+        ref={flatListRef}
+        data={onboardingData}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onScroll={handleScroll}
+        scrollEventThrottle={16}
+        keyExtractor={(item) => item.id}
+        renderItem={({ item }) => (
+          <View style={styles.slide}>
+            
+            {/* Step Badge */}
+            <View style={styles.badge}>
+              <Text style={{ color: colors.primary || '#EC4899', fontWeight: '800', fontSize: 13 }}>{item.id}</Text>
+            </View>
+            
+            {/* Title */}
+            <Text style={[styles.title, { color: colors.textPrimary }]}>
+              {item.title}
             </Text>
-          </TouchableOpacity>
-        </View>
-      </View>
 
-      {/* Content Section */}
-      <View style={styles.contentContainer}>
-        <View style={[styles.badge, { backgroundColor: colors.bgCard }]}>
-          <Text style={{ color: colors.primary || '#4F5E8C', fontWeight: 'bold' }}>{activeData.id}</Text>
-        </View>
-        <Text style={[styles.title, { color: colors.textPrimary }]}>{activeData.title}</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>{activeData.subtitle}</Text>
-        <Image source={{ uri: activeData.image }} style={styles.illustration} resizeMode="cover" />
-      </View>
+            {/* Subtitle */}
+            <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+              {item.subtitle}
+            </Text>
+            
+            {/* Illustration Image Wrapper */}
+            <View style={styles.imageCardWrapper}>
+              <Image source={{ uri: item.image }} style={styles.illustration} resizeMode="cover" />
+            </View>
 
-      {/* Bottom Footer Navigation */}
+          </View>
+        )}
+      />
+
+      {/* Bottom Footer Bar */}
       <View style={styles.bottomBar}>
         <View style={styles.paginationContainer}>
           {onboardingData.map((_, i) => (
@@ -122,18 +148,18 @@ export default function OnboardingScreen({ navigation }: any) {
               key={i} 
               style={[
                 styles.dot, 
-                { backgroundColor: i === currentStep ? (colors.primary || '#4F5E8C') : colors.border }, 
-                i === currentStep && { width: 24 }
+                { backgroundColor: i === currentStep ? (colors.primary || '#EC4899') : colors.border }, 
+                i === currentStep && { width: 24, backgroundColor: colors.primary || '#EC4899' }
               ]} 
             />
           ))}
         </View>
         
-        {/* Next/Get Started Button */}
+        {/* Next Button */}
         <TouchableOpacity 
-          style={[styles.nextButton, { backgroundColor: colors.primary || '#4F5E8C' }]} 
+          style={[styles.nextButton, { backgroundColor: colors.primary || '#EC4899' }]} 
           onPress={handleNext}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
         >
           <Text style={styles.nextButtonText}>
             {currentStep === onboardingData.length - 1 ? 'Get Started' : 'Next →'}
@@ -150,35 +176,106 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    marginTop: 45, 
-    paddingBottom: 16,
+    paddingHorizontal: 24,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 0) + 10 : 12,
+    paddingBottom: 4,
+    zIndex: 10,
   },
-  headerActionLeft: { width: 70, alignItems: 'flex-start' },
-  headerActionRight: { width: 70, alignItems: 'flex-end' },
-  navButton: { paddingVertical: 4, paddingHorizontal: 4 },
-  navButtonText: { fontSize: 24, fontWeight: '600', lineHeight: 28 },
-  logoText: { fontSize: 22, fontWeight: '900', letterSpacing: 1, textAlign: 'center' },
+  logoRoundWrapper: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    overflow: 'hidden',
+    borderWidth: 2,
+    borderColor: '#F59E0B',
+    backgroundColor: '#0F172A',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 5,
+  },
+  logoImage: {
+    width: '100%',
+    height: '100%',
+  },
   skipButton: { 
     paddingVertical: 6, 
-    paddingHorizontal: 8, 
-    minWidth: 60, 
-    alignItems: 'flex-end', 
-    justifyContent: 'center' 
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    backgroundColor: 'rgba(236, 72, 153, 0.1)'
   },
   skipButtonText: { 
-    fontSize: 16, 
-    fontWeight: '600',
-    textAlign: 'right'
+    fontSize: 14, 
+    fontWeight: '700',
   },
-  contentContainer: { flex: 1, paddingHorizontal: 24, justifyContent: 'center' },
-  badge: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', marginBottom: 16 },
-  title: { fontSize: 32, fontWeight: '800', lineHeight: 40, marginBottom: 12 },
-  subtitle: { fontSize: 16, lineHeight: 24, marginBottom: 32 },
-  illustration: { width: '100%', height: 260, borderRadius: 24 },
-  bottomBar: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 24, paddingBottom: 32 },
-  paginationContainer: { flexDirection: 'row', alignItems: 'center' },
-  dot: { width: 8, height: 8, borderRadius: 4, marginRight: 6 },
-  nextButton: { paddingHorizontal: 28, paddingVertical: 14, borderRadius: 25, elevation: 2 },
-  nextButtonText: { color: '#FFFFFF', fontWeight: '700', fontSize: 16 },
+  slide: {
+    width: SCREEN_WIDTH,
+    paddingHorizontal: 24,
+    justifyContent: 'center',
+    marginTop: -50, // Cursor location par content shift karne ke liye negative offset
+  },
+  badge: { 
+    width: 38, 
+    height: 38, 
+    borderRadius: 19, 
+    backgroundColor: 'rgba(236, 72, 153, 0.1)', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 12 
+  },
+  title: { 
+    fontSize: 28, 
+    fontWeight: '900', 
+    lineHeight: 36, 
+    marginBottom: 8 
+  },
+  subtitle: { 
+    fontSize: 14, 
+    lineHeight: 22, 
+    marginBottom: 16 
+  },
+  imageCardWrapper: {
+    borderRadius: 24,
+    overflow: 'hidden',
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+  },
+  illustration: { 
+    width: '100%', 
+    height: 240 
+  },
+  bottomBar: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    paddingHorizontal: 24, 
+    paddingBottom: 28 
+  },
+  paginationContainer: { 
+    flexDirection: 'row', 
+    alignItems: 'center' 
+  },
+  dot: { 
+    width: 8, 
+    height: 8, 
+    borderRadius: 4, 
+    marginRight: 6 
+  },
+  nextButton: { 
+    paddingHorizontal: 28, 
+    paddingVertical: 14, 
+    borderRadius: 25, 
+    elevation: 3 
+  },
+  nextButtonText: { 
+    color: '#FFFFFF', 
+    fontWeight: '800', 
+    fontSize: 15 
+  },
 });

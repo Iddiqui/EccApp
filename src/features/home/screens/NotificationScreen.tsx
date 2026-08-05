@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import { ChevronLeft, Flame, Mic, Trophy, Heart, BellOff } from 'lucide-react-native';
 
-// EXPO-NOTIFICATIONS KI JAGAH FIREBASE IMPORT KAREIN
+// FIREBASE & NOTIFEE IMPORTS
 import messaging from '@react-native-firebase/messaging';
 import notifee from '@notifee/react-native';
 
@@ -30,15 +30,44 @@ export interface AppNotification {
   targetBadgeId?: string;
 }
 
+// 🌐 TRANSLITERATION HELPER FOR NOTIFICATIONS (HINDI MODE)
+const toHindiNotificationText = (text: string = '', lang: string = 'en') => {
+  if (lang !== 'hi' || !text) return text;
+
+  const textMap: Record<string, string> = {
+    'Streak alert': 'स्ट्रिक अलर्ट',
+    "You're on a 12-day streak! Speak today to keep it alive.": 'आप 12 दिनों की स्ट्रिक पर हैं! इसे जारी रखने के लिए आज ही बोलें।',
+    'Room starting soon': 'रूम जल्द ही शुरू हो रहा है',
+    "'IELTS Speaking Part 2' with Priya starts in 15 minutes.": 'प्रिया के साथ "आईईएलटीएस स्पीकिंग पार्ट 2" 15 मिनट में शुरू हो रहा है।',
+    '2h ago': '2 घंटे पहले',
+    '3h ago': '3 घंटे पहले',
+    'Just now': 'अभी-अभी',
+    'New Update': 'नया अपडेट',
+  };
+
+  if (textMap[text.trim()]) {
+    return textMap[text.trim()];
+  }
+
+  let res = text;
+  res = res.replace(/(\d+)h ago/gi, '$1 घंटे पहले');
+  res = res.replace(/(\d+)m ago/gi, '$1 मिनट पहले');
+  res = res.replace(/(\d+)d ago/gi, '$1 दिन पहले');
+  res = res.replace(/Just now/gi, 'अभी-अभी');
+  return res;
+};
+
 export default function NotificationScreen({ navigation }: any) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
 
-  const themeHook = useTheme();
+  const themeHook = useTheme() as any;
   const isDarkMode = themeHook?.isDarkMode || false;
+  const t = themeHook?.t;
+  const currentLang = themeHook?.currentLang || 'en';
 
-  const colors = themeHook?.theme?.colors || themeHook?.colors || {
+  const colors = themeHook?.theme?.colors || {
     bgLight: '#F8FAFC',
     textPrimary: '#0F172A',
     textSecondary: '#64748B',
@@ -50,7 +79,6 @@ export default function NotificationScreen({ navigation }: any) {
   // Fetch Notifications from Backend API
   const fetchNotifications = async () => {
     try {
-      // REPLACE WITH YOUR BACKEND API
       setTimeout(() => {
         const fetchedData: AppNotification[] = [
           {
@@ -85,7 +113,7 @@ export default function NotificationScreen({ navigation }: any) {
   useEffect(() => {
     fetchNotifications();
 
-    // 1. FOREGROUND PUSH LISTENER (React Native CLI / Firebase)
+    // FOREGROUND PUSH LISTENER
     const unsubscribe = messaging().onMessage(async remoteMessage => {
       const newNotif: AppNotification = {
         id: remoteMessage.messageId || String(Date.now()),
@@ -97,10 +125,8 @@ export default function NotificationScreen({ navigation }: any) {
         targetRoomId: remoteMessage.data?.targetRoomId as string,
       };
 
-      // Real-time screen state updates
       setNotifications(prev => [newNotif, ...prev]);
 
-      // Screen ke upar local popup banner display karne ke liye (Notifee)
       await notifee.displayNotification({
         title: remoteMessage.notification?.title,
         body: remoteMessage.notification?.body,
@@ -166,11 +192,15 @@ export default function NotificationScreen({ navigation }: any) {
             <ChevronLeft size={24} color={colors.textPrimary} />
           </TouchableOpacity>
           
-          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Notifications</Text>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
+            {currentLang === 'hi' ? 'नोटिफिकेशन' : 'Notifications'}
+          </Text>
           
           <TouchableOpacity style={styles.markReadBtn} onPress={handleMarkAllRead} activeOpacity={0.7}>
             <Text style={[styles.checkIcon, { color: colors.primary }]}>✓ </Text>
-            <Text style={[styles.markReadText, { color: colors.primary }]}>Mark all read</Text>
+            <Text style={[styles.markReadText, { color: colors.primary }]}>
+              {currentLang === 'hi' ? 'सभी को पढ़ा हुआ मानें' : 'Mark all read'}
+            </Text>
           </TouchableOpacity>
         </View>
 
@@ -181,9 +211,13 @@ export default function NotificationScreen({ navigation }: any) {
         ) : notifications.length === 0 ? (
           <View style={styles.centerContainer}>
             <BellOff size={48} color={colors.textSecondary} />
-            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>No notifications yet</Text>
+            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+              {currentLang === 'hi' ? 'अभी कोई नोटिफिकेशन नहीं है' : 'No notifications yet'}
+            </Text>
             <Text style={[styles.emptySubText, { color: colors.textSecondary }]}>
-              We'll notify you when rooms start, badges unlock, or updates happen.
+              {currentLang === 'hi' 
+                ? 'जब रूम शुरू होंगे, बैज अनलॉक होंगे या कोई अपडेट आएगा, तब हम आपको सूचित करेंगे।'
+                : "We'll notify you when rooms start, badges unlock, or updates happen."}
             </Text>
           </View>
         ) : (
@@ -196,6 +230,10 @@ export default function NotificationScreen({ navigation }: any) {
           >
             {notifications.map((item) => {
               const { icon, bg } = renderIcon(item.type);
+              const titleText = toHindiNotificationText(item.title, currentLang);
+              const descText = toHindiNotificationText(item.desc, currentLang);
+              const timeText = toHindiNotificationText(item.time, currentLang);
+
               return (
                 <TouchableOpacity 
                   key={item.id} 
@@ -217,12 +255,12 @@ export default function NotificationScreen({ navigation }: any) {
                   <View style={styles.textDetailsBlock}>
                     <View style={styles.titleMetaRow}>
                       <View style={styles.titleBadgeContainer}>
-                        <Text style={[styles.notifTitle, { color: colors.textPrimary }]}>{item.title}</Text>
+                        <Text style={[styles.notifTitle, { color: colors.textPrimary }]}>{titleText}</Text>
                         {item.unread && <View style={[styles.unreadDotBlue, { backgroundColor: colors.primary }]} />}
                       </View>
-                      <Text style={[styles.timeText, { color: colors.textSecondary }]}>{item.time}</Text>
+                      <Text style={[styles.timeText, { color: colors.textSecondary }]}>{timeText}</Text>
                     </View>
-                    <Text style={[styles.descriptionText, { color: colors.textSecondary }]}>{item.desc}</Text>
+                    <Text style={[styles.descriptionText, { color: colors.textSecondary }]}>{descText}</Text>
                   </View>
                 </TouchableOpacity>
               );
@@ -254,15 +292,15 @@ const styles = StyleSheet.create({
     borderWidth: 1,
   },
   headerTitle: {
-    fontSize: 22,
+    fontSize: 20,
     fontWeight: '800',
     flex: 1,
-    marginLeft: 16,
+    marginLeft: 12,
     letterSpacing: -0.4,
   },
   markReadBtn: { flexDirection: 'row', alignItems: 'center', paddingVertical: 6 },
   checkIcon: { fontSize: 15, fontWeight: '800' },
-  markReadText: { fontSize: 14, fontWeight: '700' },
+  markReadText: { fontSize: 13, fontWeight: '700' },
   scrollContainer: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 40 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
   emptyText: { fontSize: 18, fontWeight: '700', marginTop: 16 },
@@ -287,4 +325,4 @@ const styles = StyleSheet.create({
   unreadDotBlue: { width: 8, height: 8, borderRadius: 4, marginLeft: 6 },
   timeText: { fontSize: 12, fontWeight: '600' },
   descriptionText: { fontSize: 13, lineHeight: 18, fontWeight: '500' },
-});
+});``

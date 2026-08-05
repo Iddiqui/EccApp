@@ -1,22 +1,24 @@
 import React, { useState } from 'react';
-import {
-  StyleSheet,
-  Text,
-  View,
-  TextInput,
-  TouchableOpacity,
-  SafeAreaView,
-  StatusBar,
-  ScrollView,
-  Alert,
+import { 
+  StyleSheet, 
+  Text, 
+  View, 
+  TextInput, 
+  TouchableOpacity, 
+  SafeAreaView, 
+  StatusBar, 
+  ScrollView, 
+  Alert, 
   ActivityIndicator,
+  Platform
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
-import { useTheme } from '../../../hooks/useTheme';
+import { useTheme } from '../../../hooks/useTheme'; 
 
 export default function RegisterScreen({ navigation }: any) {
-  const { isDarkMode } = useTheme();
+  const themeHook = useTheme() as any;
+  const isDarkMode = themeHook?.isDarkMode || false;
 
   // Form States
   const [fullName, setFullName] = useState('');
@@ -26,9 +28,17 @@ export default function RegisterScreen({ navigation }: any) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
-  // Validation & Registration Logic
+  // 1-Click Instant Back
+  const handleBackPress = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else {
+      navigation.navigate('Login');
+    }
+  };
+
+  // Registration Logic
   const handleRegister = async () => {
-    // 1. Basic Empty Validation
     if (
       !fullName.trim() ||
       !email.trim() ||
@@ -40,13 +50,11 @@ export default function RegisterScreen({ navigation }: any) {
       return;
     }
 
-    // 2. Password Matching Validation
     if (password !== confirmPassword) {
       Alert.alert('Password Mismatch', 'Password and Confirm Password do not match.');
       return;
     }
 
-    // 3. Password Minimum Length Check
     if (password.length < 6) {
       Alert.alert('Weak Password', 'Password should be at least 6 characters long.');
       return;
@@ -55,7 +63,6 @@ export default function RegisterScreen({ navigation }: any) {
     setLoading(true);
 
     try {
-      // Step A: Firebase Auth User Creation
       const userCredential = await auth().createUserWithEmailAndPassword(
         email.trim(),
         password,
@@ -63,12 +70,10 @@ export default function RegisterScreen({ navigation }: any) {
 
       const user = userCredential.user;
 
-      // Update User Display Name in Firebase Auth
       await user.updateProfile({
         displayName: fullName.trim(),
       });
 
-      // Step B: Save Extra Details in Firestore 'users' Collection
       await firestore()
         .collection('users')
         .doc(user.uid)
@@ -85,8 +90,6 @@ export default function RegisterScreen({ navigation }: any) {
         });
 
       setLoading(false);
-
-      // OnAuthStateChanged handles navigation, but explicit replace fallback:
       navigation.replace('Dashboard');
     } catch (error: any) {
       setLoading(false);
@@ -105,115 +108,128 @@ export default function RegisterScreen({ navigation }: any) {
   };
 
   return (
-    <SafeAreaView style={[styles.container, { backgroundColor: '#F4F7FC' }]}>
+    <SafeAreaView style={styles.container}>
       <StatusBar
         barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor="#F4F7FC"
+        backgroundColor="#EEF2FF"
       />
 
-      {/* Top Back Button */}
-      <TouchableOpacity
-        style={styles.backButton}
-        onPress={() => navigation.goBack && navigation.goBack()}
-        disabled={loading}>
-        <Text style={styles.backArrow}>←</Text>
-      </TouchableOpacity>
+      {/* Aesthetic Background Mesh Orbs */}
+      <View style={styles.orbTopRight} />
+      <View style={styles.orbBottomLeft} />
+
+      {/* Top Header Back Button */}
+      <View style={styles.header}>
+        <TouchableOpacity
+          style={styles.backButton}
+          onPress={handleBackPress}
+          activeOpacity={0.75}
+          hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+          disabled={loading}>
+          <Text style={styles.backArrow}>←</Text>
+        </TouchableOpacity>
+      </View>
 
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}>
-        {/* Main Title & Subtitle */}
-        <Text style={styles.heading}>Create{'\n'}Account</Text>
-        <Text style={styles.subtitle}>Join ECC and start learning today.</Text>
+        
+        {/* Glossy Floating Card Section */}
+        <View style={styles.cardContainer}>
+          
+          <Text style={styles.heading}>Create Account</Text>
+          <Text style={styles.subtitle}>Join ECC and start learning today.</Text>
 
-        {/* Full Name Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            placeholder="Full Name"
-            placeholderTextColor="#A0AEC0"
-            style={styles.input}
-            value={fullName}
-            onChangeText={setFullName}
-            editable={!loading}
-          />
-        </View>
+          {/* Full Name Input */}
+          <View style={styles.inputContainer}>
+            <TextInput
+              placeholder="Full Name"
+              placeholderTextColor="#94A3B8"
+              style={styles.input}
+              value={fullName}
+              onChangeText={setFullName}
+              editable={!loading}
+            />
+          </View>
 
-        {/* Email Address Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            placeholder="Email Address"
-            placeholderTextColor="#A0AEC0"
-            keyboardType="email-address"
-            autoCapitalize="none"
-            style={styles.input}
-            value={email}
-            onChangeText={setEmail}
-            editable={!loading}
-          />
-        </View>
+          {/* Email Address Input */}
+          <View style={styles.inputContainer}>
+            <TextInput
+              placeholder="Email Address"
+              placeholderTextColor="#94A3B8"
+              keyboardType="email-address"
+              autoCapitalize="none"
+              style={styles.input}
+              value={email}
+              onChangeText={setEmail}
+              editable={!loading}
+            />
+          </View>
 
-        {/* Mobile Number Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            placeholder="Mobile Number"
-            placeholderTextColor="#A0AEC0"
-            keyboardType="phone-pad"
-            style={styles.input}
-            value={mobileNumber}
-            onChangeText={setMobileNumber}
-            editable={!loading}
-          />
-        </View>
+          {/* Mobile Number Input */}
+          <View style={styles.inputContainer}>
+            <TextInput
+              placeholder="Mobile Number"
+              placeholderTextColor="#94A3B8"
+              keyboardType="phone-pad"
+              style={styles.input}
+              value={mobileNumber}
+              onChangeText={setMobileNumber}
+              editable={!loading}
+            />
+          </View>
 
-        {/* Password Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            placeholder="Password"
-            placeholderTextColor="#A0AEC0"
-            secureTextEntry={true}
-            autoCapitalize="none"
-            style={styles.input}
-            value={password}
-            onChangeText={setPassword}
-            editable={!loading}
-          />
-        </View>
+          {/* Password Input */}
+          <View style={styles.inputContainer}>
+            <TextInput
+              placeholder="Password"
+              placeholderTextColor="#94A3B8"
+              secureTextEntry={true}
+              autoCapitalize="none"
+              style={styles.input}
+              value={password}
+              onChangeText={setPassword}
+              editable={!loading}
+            />
+          </View>
 
-        {/* Confirm Password Input */}
-        <View style={styles.inputContainer}>
-          <TextInput
-            placeholder="Confirm Password"
-            placeholderTextColor="#A0AEC0"
-            secureTextEntry={true}
-            autoCapitalize="none"
-            style={styles.input}
-            value={confirmPassword}
-            onChangeText={setConfirmPassword}
-            editable={!loading}
-          />
-        </View>
+          {/* Confirm Password Input */}
+          <View style={styles.inputContainer}>
+            <TextInput
+              placeholder="Confirm Password"
+              placeholderTextColor="#94A3B8"
+              secureTextEntry={true}
+              autoCapitalize="none"
+              style={styles.input}
+              value={confirmPassword}
+              onChangeText={setConfirmPassword}
+              editable={!loading}
+            />
+          </View>
 
-        {/* Create Account Button */}
-        <TouchableOpacity
-          style={[styles.createButton, loading && { opacity: 0.7 }]}
-          onPress={handleRegister}
-          disabled={loading}
-          activeOpacity={0.8}>
-          {loading ? (
-            <ActivityIndicator color="#FFFFFF" size="small" />
-          ) : (
-            <Text style={styles.createButtonText}>Create Account</Text>
-          )}
-        </TouchableOpacity>
-
-        {/* Login Navigation Link */}
-        <View style={styles.footerContainer}>
-          <Text style={styles.footerText}>Already have an account? </Text>
+          {/* Primary Create Account Button */}
           <TouchableOpacity
-            onPress={() => navigation.navigate('Login')}
-            disabled={loading}>
-            <Text style={styles.loginLink}>Login</Text>
+            style={[styles.createButton, loading && { opacity: 0.7 }]}
+            onPress={handleRegister}
+            disabled={loading}
+            activeOpacity={0.85}>
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text style={styles.createButtonText}>Create Account</Text>
+            )}
           </TouchableOpacity>
+
+          {/* Footer Link */}
+          <View style={styles.footerContainer}>
+            <Text style={styles.footerText}>Already have an account? </Text>
+            <TouchableOpacity
+              onPress={() => navigation.navigate('Login')}
+              disabled={loading}>
+              <Text style={styles.loginLink}>Login</Text>
+            </TouchableOpacity>
+          </View>
+
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -223,7 +239,36 @@ export default function RegisterScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    paddingHorizontal: 24,
+    backgroundColor: '#EEF2FF', // Aesthetic Base Background
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  // Aesthetic Background Orbs
+  orbTopRight: {
+    position: 'absolute',
+    top: -80,
+    right: -80,
+    width: 270,
+    height: 270,
+    borderRadius: 135,
+    backgroundColor: '#C7D2FE',
+    opacity: 0.6,
+  },
+  orbBottomLeft: {
+    position: 'absolute',
+    bottom: -100,
+    left: -80,
+    width: 290,
+    height: 290,
+    borderRadius: 145,
+    backgroundColor: '#DDD6FE',
+    opacity: 0.7,
+  },
+  header: {
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 6 : 10,
+    paddingHorizontal: 20,
+    paddingBottom: 4,
+    zIndex: 10,
   },
   backButton: {
     width: 44,
@@ -232,83 +277,102 @@ const styles = StyleSheet.create({
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
-    marginTop: 12,
-    shadowColor: '#000',
+    elevation: 3,
+    shadowColor: '#5356FF',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.06,
+    shadowOpacity: 0.1,
     shadowRadius: 6,
-    elevation: 2,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.9)',
   },
   backArrow: {
-    fontSize: 20,
-    color: '#2D3748',
-    fontWeight: '600',
+    fontSize: 22,
+    color: '#1E293B',
+    fontWeight: '800',
+    transform: [{ translateY: -1 }],
   },
   scrollContent: {
     flexGrow: 1,
+    paddingHorizontal: 20,
+    paddingBottom: 24,
     justifyContent: 'center',
-    paddingVertical: 20,
+    zIndex: 5,
+  },
+  cardContainer: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: 32,
+    paddingVertical: 28,
+    paddingHorizontal: 20,
+    shadowColor: '#5356FF',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 6,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
   },
   heading: {
-    fontSize: 36,
-    fontWeight: '800',
+    fontSize: 30,
+    fontWeight: '900',
     textAlign: 'center',
     color: '#0F172A',
-    lineHeight: 42,
+    marginBottom: 4,
+    letterSpacing: -0.5,
   },
   subtitle: {
-    fontSize: 14,
+    fontSize: 13,
     color: '#64748B',
     textAlign: 'center',
-    marginTop: 8,
-    marginBottom: 28,
+    marginBottom: 22,
+    fontWeight: '500',
   },
   inputContainer: {
-    backgroundColor: '#EBF0F7',
-    borderRadius: 30,
-    height: 56,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 28,
+    height: 52,
     justifyContent: 'center',
     paddingHorizontal: 20,
-    marginBottom: 14,
-    borderWidth: 1,
+    marginBottom: 12,
+    borderWidth: 1.2,
     borderColor: '#E2E8F0',
   },
   input: {
     fontSize: 15,
-    color: '#1E293B',
-    fontWeight: '500',
+    color: '#0F172A',
+    fontWeight: '600',
   },
   createButton: {
-    backgroundColor: '#4F46E5',
-    height: 56,
-    borderRadius: 30,
+    backgroundColor: '#5356FF',
+    height: 54,
+    borderRadius: 27,
     justifyContent: 'center',
     alignItems: 'center',
-    shadowColor: '#4F46E5',
+    shadowColor: '#5356FF',
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
     elevation: 5,
-    marginTop: 12,
-    marginBottom: 24,
+    marginTop: 8,
+    marginBottom: 16,
   },
   createButtonText: {
     color: '#FFFFFF',
-    fontWeight: '700',
-    fontSize: 18,
+    fontWeight: '800',
+    fontSize: 16,
   },
   footerContainer: {
     flexDirection: 'row',
     justifyContent: 'center',
-    marginBottom: 16,
+    marginTop: 2,
   },
   footerText: {
     color: '#64748B',
     fontSize: 14,
   },
   loginLink: {
-    color: '#2563EB',
+    color: '#5356FF',
     fontSize: 14,
-    fontWeight: '700',
+    fontWeight: '800',
   },
 });

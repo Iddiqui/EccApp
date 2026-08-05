@@ -1,5 +1,3 @@
-  
-
 import React, { useState } from 'react';
 import {
   StyleSheet,
@@ -11,11 +9,10 @@ import {
   Alert,
   StatusBar,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { ArrowLeft, Mail } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
-
-const STATUS_BAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
 
 export default function ForgotPasswordScreen({ navigation }: any) {
   const [email, setEmail] = useState('');
@@ -44,91 +41,193 @@ export default function ForgotPasswordScreen({ navigation }: any) {
 
   return (
     <SafeAreaView style={styles.container}>
-      <StatusBar barStyle="dark-content" backgroundColor="#F8FAFC" />
+      <StatusBar barStyle="dark-content" backgroundColor="#E0F2FE" />
 
-      {/* Header with Back Button */}
+      {/* Unique Aesthetic Cyan & Violet Mesh Orbs */}
+      <View style={styles.orbTopRight} />
+      <View style={styles.orbBottomLeft} />
+
+      {/* Header Back Button */}
       <View style={styles.header}>
-        <TouchableOpacity style={styles.backButton} onPress={() => navigation.goBack()}>
+        <TouchableOpacity 
+          style={styles.backButton} 
+          onPress={() => navigation.goBack()}
+          activeOpacity={0.75}
+          hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+          disabled={loading}
+        >
           <ArrowLeft size={22} color="#1E293B" />
         </TouchableOpacity>
       </View>
 
-      <View style={styles.content}>
-        <Text style={styles.title}>Forgot Password?</Text>
-        <Text style={styles.subtitle}>
-          Enter your registered email address below to receive a password reset link.
-        </Text>
-
-        {/* Input */}
-        <View style={styles.inputContainer}>
-          <Mail size={20} color="#94A3B8" style={styles.inputIcon} />
-          <TextInput
-            style={styles.input}
-            placeholder="Enter your email"
-            placeholderTextColor="#94A3B8"
-            value={email}
-            onChangeText={setEmail}
-            keyboardType="email-address"
-            autoCapitalize="none"
-          />
-        </View>
-
-        {/* Reset Button */}
-        <TouchableOpacity
-          style={[styles.button, loading && { opacity: 0.7 }]}
-          onPress={handleResetPassword}
-          disabled={loading}
-        >
-          <Text style={styles.buttonText}>
-            {loading ? 'Sending...' : 'Send Reset Link'}
+      {/* Center Wrapper */}
+      <View style={styles.centerContainer}>
+        {/* Glossy Card Container */}
+        <View style={styles.cardContainer}>
+          
+          {/* Title & Subtitle */}
+          <Text style={styles.title}>Forgot Password?</Text>
+          <Text style={styles.subtitle}>
+            Enter your registered email address below to receive a password reset link.
           </Text>
-        </TouchableOpacity>
+
+          {/* Premium Input */}
+          <View style={styles.inputContainer}>
+            <Mail size={20} color="#5356FF" style={styles.inputIcon} />
+            <TextInput
+              style={styles.input}
+              placeholder="Enter your email"
+              placeholderTextColor="#94A3B8"
+              value={email}
+              onChangeText={setEmail}
+              keyboardType="email-address"
+              autoCapitalize="none"
+              editable={!loading}
+            />
+          </View>
+
+          {/* Primary Action Button */}
+          <TouchableOpacity
+            style={[styles.button, loading && { opacity: 0.75 }]}
+            onPress={handleResetPassword}
+            disabled={loading}
+            activeOpacity={0.85}
+          >
+            {loading ? (
+              <ActivityIndicator color="#FFFFFF" size="small" />
+            ) : (
+              <Text style={styles.buttonText}>Send Reset Link</Text>
+            )}
+          </TouchableOpacity>
+
+        </View>
       </View>
     </SafeAreaView>
   );
 }
 
 const styles = StyleSheet.create({
-  container: { flex: 1, backgroundColor: '#F8FAFC' },
+  container: { 
+    flex: 1, 
+    backgroundColor: '#E0F2FE', // Base Soft Cyan-Sky Aesthetic Tint
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  // Distinct Soft Mesh Orbs for Forgot Password Screen
+  orbTopRight: {
+    position: 'absolute',
+    top: -80,
+    right: -80,
+    width: 270,
+    height: 270,
+    borderRadius: 135,
+    backgroundColor: '#BAE6FD', // Soft Sky Blue
+    opacity: 0.7,
+  },
+  orbBottomLeft: {
+    position: 'absolute',
+    bottom: -90,
+    left: -70,
+    width: 280,
+    height: 280,
+    borderRadius: 140,
+    backgroundColor: '#E9D5FF', // Soft Purple/Pink Glow
+    opacity: 0.8,
+  },
   header: {
-    paddingTop: STATUS_BAR_HEIGHT + 10,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 6 : 10,
     paddingHorizontal: 20,
-    paddingBottom: 10,
+    paddingBottom: 4,
+    zIndex: 10,
   },
   backButton: {
-    width: 42,
-    height: 42,
-    borderRadius: 21,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: '#FFFFFF',
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 2,
-    shadowColor: '#000',
-    shadowOpacity: 0.08,
-    shadowRadius: 4,
+    elevation: 3,
+    shadowColor: '#0284C7',
     shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+    borderWidth: 1,
+    borderColor: 'rgba(255, 255, 255, 0.9)',
   },
-  content: { paddingHorizontal: 24, paddingTop: 30 },
-  title: { fontSize: 28, fontWeight: '800', color: '#0F172A', marginBottom: 8 },
-  subtitle: { fontSize: 14, color: '#64748B', lineHeight: 22, marginBottom: 30 },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center', // Perfect Vertical Centering
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    zIndex: 5,
+  },
+  cardContainer: {
+    width: '100%',
+    backgroundColor: 'rgba(255, 255, 255, 0.92)',
+    borderRadius: 32,
+    paddingVertical: 32,
+    paddingHorizontal: 22,
+    shadowColor: '#5356FF',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.12,
+    shadowRadius: 24,
+    elevation: 6,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+  },
+  title: { 
+    fontSize: 28, 
+    fontWeight: '900', 
+    color: '#0F172A', 
+    textAlign: 'center',
+    marginBottom: 6,
+    letterSpacing: -0.5,
+  },
+  subtitle: { 
+    fontSize: 13, 
+    color: '#64748B', 
+    textAlign: 'center',
+    lineHeight: 18, 
+    marginBottom: 26,
+    paddingHorizontal: 8,
+    fontWeight: '500',
+  },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#EEF2F6',
-    borderRadius: 16,
-    paddingHorizontal: 16,
-    height: 56,
-    marginBottom: 24,
+    backgroundColor: '#F8FAFC',
+    borderRadius: 28,
+    paddingHorizontal: 20,
+    height: 54,
+    marginBottom: 20,
+    borderWidth: 1.2,
+    borderColor: '#E2E8F0',
   },
-  inputIcon: { marginRight: 10 },
-  input: { flex: 1, fontSize: 15, color: '#0F172A' },
+  inputIcon: { 
+    marginRight: 12 
+  },
+  input: { 
+    flex: 1, 
+    fontSize: 15, 
+    color: '#0F172A',
+    fontWeight: '600',
+  },
   button: {
-    height: 56,
-    backgroundColor: '#4F46E5',
-    borderRadius: 16,
+    height: 54,
+    backgroundColor: '#5356FF',
+    borderRadius: 27,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 3,
+    shadowColor: '#5356FF',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.35,
+    shadowRadius: 10,
+    elevation: 5,
   },
-  buttonText: { color: '#FFFFFF', fontSize: 16, fontWeight: '700' },
+  buttonText: { 
+    color: '#FFFFFF', 
+    fontSize: 16, 
+    fontWeight: '800' 
+  },
 });

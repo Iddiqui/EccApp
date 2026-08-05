@@ -15,7 +15,8 @@ import firestore from '@react-native-firebase/firestore';
 import { useTheme } from '../../../hooks/useTheme';
 
 export default function PracticeScreen() {
-  const { theme, isDarkMode } = useTheme();
+  // 🌐 Global Theme Context & Translations Access
+  const { theme, isDarkMode, t } = useTheme() as any;
   const colors = theme.colors;
 
   // Real-time Firestore States
@@ -32,7 +33,7 @@ export default function PracticeScreen() {
         .doc(currentUser.uid)
         .onSnapshot(
           (documentSnapshot) => {
-            if (documentSnapshot.exists) {
+            if (documentSnapshot.exists()) {
               setPracticeData(documentSnapshot.data());
             } else {
               // Default structural fallback safely handles new profile documentations
@@ -83,8 +84,12 @@ export default function PracticeScreen() {
       
       {/* ─── FIXED HEADER SECTION ─── */}
       <View style={[styles.fixedHeader, { backgroundColor: colors.bgLight }]}>
-        <Text style={[styles.title, { color: colors.textPrimary }]}>Practice</Text>
-        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>Sharpen your speaking, your way</Text>
+        <Text style={[styles.title, { color: colors.textPrimary }]}>
+          {t?.practice?.title || 'Practice'}
+        </Text>
+        <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+          {t?.practice?.subtitle || 'Sharpen your speaking, your way'}
+        </Text>
       </View>
 
       {/* ─── SCROLLABLE CONTENT SECTION ─── */}
@@ -95,10 +100,12 @@ export default function PracticeScreen() {
       >
         {/* Hero Button */}
         <TouchableOpacity style={[styles.heroButton, { backgroundColor: colors.primary }]} activeOpacity={0.9}>
-          <Text style={styles.heroButtonText}>YOUR AI COACH</Text>
+          <Text style={styles.heroButtonText}>
+            {t?.practice?.yourCoach || 'YOUR AI COACH'}
+          </Text>
         </TouchableOpacity>
 
-        {/* Weekly Goal Card (DYNAMIC ARCHITECTURE INTEGRATED) */}
+        {/* Weekly Goal Card */}
         <View style={[styles.card, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]}>
           <View style={styles.row}>
             <View style={[styles.progressRingOuter, { borderColor: isDarkMode ? '#334155' : '#E2E8F0', borderLeftColor: colors.primary, borderTopColor: colors.primary }]}>
@@ -108,9 +115,13 @@ export default function PracticeScreen() {
             </View>
             
             <View style={styles.goalTextContainer}>
-              <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Weekly goal</Text>
+              <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+                {t?.practice?.weeklyGoal || 'Weekly goal'}
+              </Text>
               <Text style={[styles.goalStats, { color: colors.textSecondary }]}>
-                <Text style={[styles.boldText, { color: colors.textPrimary }]}>{spokenMinutes} of {targetGoalMinutes}</Text> minutes spoken today
+                <Text style={[styles.boldText, { color: colors.textPrimary }]}>
+                  {spokenMinutes} / {targetGoalMinutes}
+                </Text> {t?.practice?.spokenToday || 'minutes spoken today'}
               </Text>
             </View>
 
@@ -126,8 +137,12 @@ export default function PracticeScreen() {
             <Sparkles color="#14B8A6" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>AI Speaking Coach</Text>
-            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Have a real conversation and get instant feedback.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+              {t?.practice?.aiCoachTitle || 'AI Speaking Coach'}
+            </Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>
+              {t?.practice?.aiCoachDesc || 'Have a real conversation and get instant feedback.'}
+            </Text>
           </View>
           <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
@@ -138,8 +153,12 @@ export default function PracticeScreen() {
             <BookOpen color="#6366F1" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>Read & Record</Text>
-            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Read an article aloud and analyze your pronunciation.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+              {t?.practice?.readRecordTitle || 'Read & Record'}
+            </Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>
+              {t?.practice?.readRecordDesc || 'Read an article aloud and analyze your pronunciation.'}
+            </Text>
           </View>
           <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
@@ -150,22 +169,32 @@ export default function PracticeScreen() {
             <Calendar color="#EA580C" size={24} />
           </View>
           <View style={styles.cardRowTextContainer}>
-            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>1:1 with a Trainer</Text>
-            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>Book a live session with a certified coach.</Text>
+            <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>
+              {t?.practice?.trainerTitle || '1:1 with a Trainer'}
+            </Text>
+            <Text style={[styles.cardDescription, { color: colors.textSecondary }]}>
+              {t?.practice?.trainerDesc || 'Book a live session with a certified coach.'}
+            </Text>
           </View>
           <ArrowRight color={colors.textSecondary} size={20} />
         </TouchableOpacity>
 
         {/* Quick Drills Matrix */}
-        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Quick drills</Text>
+        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
+          {t?.practice?.quickDrills || 'Quick drills'}
+        </Text>
 
         <View style={styles.gridContainer}>
           <TouchableOpacity style={[styles.gridCard, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
             <View style={[styles.iconContainerGrid, { backgroundColor: isDarkMode ? '#1E1B4B' : '#EEF2FF' }]}>
               <Mic color="#2563EB" size={20} />
             </View>
-            <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>Tongue twisters</Text>
-            <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>3 min drill</Text>
+            <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>
+              {t?.practice?.tongueTwisters || 'Tongue twisters'}
+            </Text>
+            <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>
+              {t?.practice?.drillTime || '3 min drill'}
+            </Text>
           </TouchableOpacity>
 
           <TouchableOpacity style={[styles.gridCard, { backgroundColor: colors.bgCard, borderColor: colors.border, borderWidth: isDarkMode ? 1 : 0 }]} activeOpacity={0.8}>
@@ -173,8 +202,12 @@ export default function PracticeScreen() {
               <View style={[styles.iconContainerGrid, { backgroundColor: isDarkMode ? '#134E4A' : '#E0F7F6' }]}>
                 <Volume2 color="#0D9488" size={20} />
               </View>
-              <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>Minimal pairs</Text>
-              <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>3 min drill</Text>
+              <Text style={[styles.gridCardTitle, { color: colors.textPrimary }]}>
+                {t?.practice?.minimalPairs || 'Minimal pairs'}
+              </Text>
+              <Text style={[styles.gridCardSub, { color: colors.textSecondary }]}>
+                {t?.practice?.drillTime || '3 min drill'}
+              </Text>
             </View>
           </TouchableOpacity>
         </View>
