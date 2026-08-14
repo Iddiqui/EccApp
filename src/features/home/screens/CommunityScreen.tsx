@@ -129,9 +129,11 @@ const CommunityScreen = () => {
   const TABS = [t?.community?.feed || 'Feed', 'Chats', t?.community?.challenges || 'Challenges', t?.community?.leaderboard || 'Leaderboard'];
 
   const [activeTab, setActiveTab] = useState(1);
+  const pagerRef = useRef<ScrollView>(null);
+
   const [isAdmin, setIsAdmin] = useState(false);
 
-  // Real-time Stats
+  // Real-time Dynamic Member & Online Stats
   const [totalMembers, setTotalMembers] = useState(1);
   const [onlineMembers, setOnlineMembers] = useState(0);
 
@@ -183,6 +185,20 @@ const CommunityScreen = () => {
   const [showConfetti, setShowConfetti] = useState(false);
 
   const [leaderboardUsers, setLeaderboardUsers] = useState<any[]>([]);
+
+  // 🔄 TAB PRESS & SWIPE SYNC LOGIC
+  const handleTabPress = (idx: number) => {
+    setActiveTab(idx);
+    pagerRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: true });
+  };
+
+  const handleScrollEnd = (e: any) => {
+    const contentOffsetX = e.nativeEvent.contentOffset.x;
+    const pageIndex = Math.round(contentOffsetX / SCREEN_WIDTH);
+    if (pageIndex !== activeTab && pageIndex >= 0 && pageIndex < TABS.length) {
+      setActiveTab(pageIndex);
+    }
+  };
 
   // 🔊 QUIZ SOUND EFFECTS
   const playQuizSound = (isCorrect: boolean) => {
@@ -243,15 +259,25 @@ const CommunityScreen = () => {
     return () => { isMounted = false; };
   }, [currentUser?.email]);
 
-  // Subscriptions Listener
+  // Real-time Database Listener for Active Users
   useEffect(() => {
     const unsubUsers = firestore().collection('users').onSnapshot((snap) => {
       if (snap) {
-        setTotalMembers(snap.size > 0 ? snap.size : 1);
+        let validUsers = 0;
         let onlineCount = 0;
+
         snap.forEach(doc => {
-          if (doc.data().isOnline === true) onlineCount++;
+          const data = doc.data();
+          // Filter valid users only
+          if (data && (data.email || data.uid || data.fullName)) {
+            validUsers++;
+          }
+          if (data && data.isOnline === true) {
+            onlineCount++;
+          }
         });
+
+        setTotalMembers(validUsers > 0 ? validUsers : 1);
         setOnlineMembers(onlineCount);
       }
     });
@@ -307,6 +333,13 @@ const CommunityScreen = () => {
         setChatMessages(msgs);
       });
   }, [selectedGroup]);
+
+  // Initial scroll positioning
+  useEffect(() => {
+    setTimeout(() => {
+      pagerRef.current?.scrollTo({ x: SCREEN_WIDTH, animated: false });
+    }, 100);
+  }, []);
 
   // 🎙️ START RECORDING WITH DYNAMIC FILENAME
   const handleStartRecording = async () => {
@@ -719,15 +752,23 @@ const CommunityScreen = () => {
       {/* Navigation Tabs */}
       <View style={[styles.tabsContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#E2E8F0' }]}>
         {TABS.map((tab, idx) => (
-          <TouchableOpacity key={tab} style={[styles.tab, activeTab === idx && [styles.activeTab, { backgroundColor: colors.bgCard }]]} onPress={() => setActiveTab(idx)}>
+          <TouchableOpacity key={tab} style={[styles.tab, activeTab === idx && [styles.activeTab, { backgroundColor: colors.bgCard }]]} onPress={() => handleTabPress(idx)}>
             <Text style={[styles.tabText, { color: colors.textSecondary }, activeTab === idx && { color: primaryColor, fontWeight: '800' }]}>{tab}</Text>
           </TouchableOpacity>
         ))}
       </View>
 
-      {/* TAB 0: FEED */}
-      {activeTab === 0 && (
-        <View style={{ flex: 1 }}>
+      {/* 🌟 HORIZONTAL SWIPE PAGER */}
+      <ScrollView
+        ref={pagerRef}
+        horizontal
+        pagingEnabled
+        showsHorizontalScrollIndicator={false}
+        onMomentumScrollEnd={handleScrollEnd}
+        style={{ flex: 1 }}
+      >
+        {/* TAB 0: FEED */}
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
           <View style={[styles.createPostBox, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
             <TextInput style={[styles.postInput, { color: colors.textPrimary }]} placeholder="Post an update or query..." placeholderTextColor={colors.textSecondary} value={newPostText} onChangeText={setNewPostText} multiline />
             <TouchableOpacity style={[styles.sendBtn, { backgroundColor: primaryColor, shadowColor: primaryColor }, !newPostText.trim() && { opacity: 0.5 }]} onPress={handleCreatePost} disabled={isPosting || !newPostText.trim()}>
@@ -763,165 +804,168 @@ const CommunityScreen = () => {
             }}
           />
         </View>
-      )}
 
-      {/* TAB 1: CHATS & VOICE ROOMS */}
-      {activeTab === 1 && (
-        <ScrollView contentContainerStyle={styles.scrollList} showsVerticalScrollIndicator={false}>
-          <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Community Groups</Text>
-          
-          <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-              <View style={[styles.chatIconGlowWrap, { backgroundColor: primaryColor + '1F' }]}>
-                <MessageCircle color={primaryColor} size={28} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text style={{ color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>Ecc Community Chat</Text>
-                <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 2 }}>Official ECC Global Chat Room</Text>
-                <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                  <View style={[styles.badgePillPrimary, { backgroundColor: primaryColor + '20' }]}>
-                    <Users size={12} color={primaryColor} />
-                    <Text style={{ color: primaryColor, fontSize: 11, fontWeight: '700' }}>{totalMembers} members</Text>
+        {/* TAB 1: CHATS & VOICE ROOMS */}
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+          <ScrollView contentContainerStyle={styles.scrollList} showsVerticalScrollIndicator={false}>
+            <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Community Groups</Text>
+            
+            <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                <View style={[styles.chatIconGlowWrap, { backgroundColor: primaryColor + '1F' }]}>
+                  <MessageCircle color={primaryColor} size={28} />
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>Ecc Community Chat</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 2 }}>Official ECC Global Chat Room</Text>
+                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
+                    <View style={[styles.badgePillPrimary, { backgroundColor: primaryColor + '20' }]}>
+                      <Users size={12} color={primaryColor} />
+                      <Text style={{ color: primaryColor, fontSize: 11, fontWeight: '700' }}>{totalMembers} members</Text>
+                    </View>
+                    <View style={[styles.badgePillStatus, { backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.18)' }]}>
+                      <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
+                      <Text style={{ color: onlineMembers > 0 ? primaryColor : '#64748B', fontSize: 11, fontWeight: '700' }}>
+                        {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
+                      </Text>
+                    </View>
                   </View>
-                  <View style={[styles.badgePillStatus, { backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.18)' }]}>
+                </View>
+              </View>
+              <TouchableOpacity 
+                style={[styles.openGroupBtn, { backgroundColor: primaryColor, shadowColor: primaryColor }]}
+                onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'Ecc Community Chat' })}
+                activeOpacity={0.85}
+              >
+                <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15, marginRight: 6 }}>Open Group Chat</Text>
+                <ChevronRight size={18} color="#FFF" />
+              </TouchableOpacity>
+            </View>
+
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 12 }}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: primaryColor + '20', justifyContent: 'center', alignItems: 'center' }}>
+                  <Headset color={primaryColor} size={20} />
+                </View>
+                <Text style={[styles.sectionHeading, { marginTop: 0, color: colors.textPrimary }]}>Voice Rooms</Text>
+              </View>
+              <TouchableOpacity><Text style={{ color: primaryColor, fontWeight: '700', fontSize: 13 }}>Join Room ›</Text></TouchableOpacity>
+            </View>
+
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
+              {[{ title: 'Beginner', desc: 'New learners', emoji: '🚀' }, { title: 'Intermediate', desc: 'Growing together', emoji: '🎤' }, { title: 'Expert', desc: 'Advanced talk', emoji: '🎧' }].map((room, i) => (
+                <TouchableOpacity key={i} style={[styles.voiceRoomCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]} activeOpacity={0.85}>
+                  <View style={[styles.voiceEmojiWrap, { backgroundColor: primaryColor + '1F' }]}>
+                    <Text style={{ fontSize: 26 }}>{room.emoji}</Text>
+                  </View>
+                  <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800', marginTop: 6 }}>{room.title}</Text>
+                  <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{room.desc}</Text>
+                  <View style={[styles.onlineBadge, { marginTop: 12, backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.15)' }]}>
                     <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
-                    <Text style={{ color: onlineMembers > 0 ? primaryColor : '#64748B', fontSize: 11, fontWeight: '700' }}>
+                    <Text style={{ fontSize: 10, fontWeight: '800', color: onlineMembers > 0 ? primaryColor : '#64748B' }}>
                       {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
                     </Text>
                   </View>
-                </View>
-              </View>
-            </View>
-            <TouchableOpacity 
-              style={[styles.openGroupBtn, { backgroundColor: primaryColor, shadowColor: primaryColor }]}
-              onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'Ecc Community Chat', online: onlineMembers, members: totalMembers })}
-              activeOpacity={0.85}
-            >
-              <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15, marginRight: 6 }}>Open Group Chat</Text>
-              <ChevronRight size={18} color="#FFF" />
-            </TouchableOpacity>
-          </View>
-
-          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 12 }}>
-            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-              <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: primaryColor + '20', justifyContent: 'center', alignItems: 'center' }}>
-                <Headset color={primaryColor} size={20} />
-              </View>
-              <Text style={[styles.sectionHeading, { marginTop: 0, color: colors.textPrimary }]}>Voice Rooms</Text>
-            </View>
-            <TouchableOpacity><Text style={{ color: primaryColor, fontWeight: '700', fontSize: 13 }}>Join Room ›</Text></TouchableOpacity>
-          </View>
-
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
-            {[{ title: 'Beginner', desc: 'New learners', emoji: '🚀' }, { title: 'Intermediate', desc: 'Growing together', emoji: '🎤' }, { title: 'Expert', desc: 'Advanced talk', emoji: '🎧' }].map((room, i) => (
-              <TouchableOpacity key={i} style={[styles.voiceRoomCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]} activeOpacity={0.85}>
-                <View style={[styles.voiceEmojiWrap, { backgroundColor: primaryColor + '1F' }]}>
-                  <Text style={{ fontSize: 26 }}>{room.emoji}</Text>
-                </View>
-                <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800', marginTop: 6 }}>{room.title}</Text>
-                <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{room.desc}</Text>
-                <View style={[styles.onlineBadge, { marginTop: 12, backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.15)' }]}>
-                  <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
-                  <Text style={{ fontSize: 10, fontWeight: '800', color: onlineMembers > 0 ? primaryColor : '#64748B' }}>
-                    {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            ))}
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
           </ScrollView>
-        </ScrollView>
-      )}
+        </View>
 
-      {/* TAB 2: CHALLENGES / QUIZ */}
-      {activeTab === 2 && (
-        <FlatList 
-          data={challengesData} 
-          keyExtractor={item => item.id} 
-          contentContainerStyle={styles.scrollList} 
-          renderItem={({ item }) => {
-            const isDone = completedQuizIds.includes(item.id);
-            const totalQ = item?.questions?.length || item?.totalQuestions || 0;
+        {/* TAB 2: CHALLENGES / QUIZ */}
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+          <FlatList 
+            data={challengesData} 
+            keyExtractor={item => item.id} 
+            contentContainerStyle={styles.scrollList} 
+            renderItem={({ item }) => {
+              const isDone = completedQuizIds.includes(item.id);
+              const totalQ = item?.questions?.length || item?.totalQuestions || 0;
 
-            return (
-              <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-                <View style={styles.cardHeader}>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 }}>
-                    <View style={[styles.quizIconGlowContainer, { backgroundColor: 'rgba(245, 158, 11, 0.18)' }]}>
-                      <Trophy size={22} color="#F59E0B" />
-                    </View>
-                    <View style={{ flex: 1, paddingRight: 6 }}>
-                      <Text style={[styles.quizTitleText, { color: colors.textPrimary }]} numberOfLines={1}>{item.title}</Text>
-                      <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
-                        <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>{totalQ} Questions</Text>
-                        <View style={styles.xpPillBadge}>
-                          <Sparkles size={11} color="#F59E0B" />
-                          <Text style={styles.xpPillText}>+{totalQ * 10} XP</Text>
+              return (
+                <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
+                  <View style={styles.cardHeader}>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 }}>
+                      <View style={[styles.quizIconGlowContainer, { backgroundColor: 'rgba(245, 158, 11, 0.18)' }]}>
+                        <Trophy size={22} color="#F59E0B" />
+                      </View>
+                      <View style={{ flex: 1, paddingRight: 6 }}>
+                        <Text style={[styles.quizTitleText, { color: colors.textPrimary }]} numberOfLines={1}>{item.title}</Text>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
+                          <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>{totalQ} Questions</Text>
+                          <View style={styles.xpPillBadge}>
+                            <Sparkles size={11} color="#F59E0B" />
+                            <Text style={styles.xpPillText}>+{totalQ * 10} XP</Text>
+                          </View>
                         </View>
                       </View>
                     </View>
                   </View>
-                </View>
 
-                {isDone ? (
-                  <View style={[styles.completedStatusBanner, { backgroundColor: primaryColor + '20' }]}>
-                    <CheckCircle size={16} color={primaryColor} />
-                    <Text style={{ color: primaryColor, fontWeight: '800', fontSize: 13, marginLeft: 6 }}>Completed</Text>
+                  {isDone ? (
+                    <View style={[styles.completedStatusBanner, { backgroundColor: primaryColor + '20' }]}>
+                      <CheckCircle size={16} color={primaryColor} />
+                      <Text style={{ color: primaryColor, fontWeight: '800', fontSize: 13, marginLeft: 6 }}>Completed</Text>
+                    </View>
+                  ) : (
+                    <TouchableOpacity style={[styles.startQuizButton, { backgroundColor: primaryColor, shadowColor: primaryColor }]} onPress={() => handleStartQuiz(item)} activeOpacity={0.85}>
+                      <Text style={styles.actionBtnText}>Start Quiz Challenge</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              );
+            }} 
+          />
+        </View>
+
+        {/* TAB 3: LEADERBOARD */}
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+          <FlatList 
+            data={leaderboardUsers} 
+            keyExtractor={item => item.id} 
+            contentContainerStyle={styles.scrollList} 
+            renderItem={({ item, index }) => {
+              const rawName = item.fullName || item.userName || 'User';
+              const isTop1 = index === 0;
+              const isTop2 = index === 1;
+              const isTop3 = index === 2;
+
+              return (
+                <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', shadowColor: primaryColor }]}>
+                  <View style={{ width: 32, alignItems: 'center', justifyContent: 'center' }}>
+                    {isTop1 ? <Text style={{ fontSize: 22 }}>🥇</Text> : 
+                     isTop2 ? <Text style={{ fontSize: 22 }}>🥈</Text> : 
+                     isTop3 ? <Text style={{ fontSize: 22 }}>🥉</Text> : 
+                     <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textSecondary }}>#{index + 1}</Text>}
                   </View>
-                ) : (
-                  <TouchableOpacity style={[styles.startQuizButton, { backgroundColor: primaryColor, shadowColor: primaryColor }]} onPress={() => handleStartQuiz(item)} activeOpacity={0.85}>
-                    <Text style={styles.actionBtnText}>Start Quiz Challenge</Text>
-                  </TouchableOpacity>
-                )}
-              </View>
-            );
-          }} 
-        />
-      )}
 
-      {/* TAB 3: LEADERBOARD */}
-      {activeTab === 3 && (
-        <FlatList 
-          data={leaderboardUsers} 
-          keyExtractor={item => item.id} 
-          contentContainerStyle={styles.scrollList} 
-          renderItem={({ item, index }) => {
-            const rawName = item.fullName || item.userName || 'User';
-            const isTop1 = index === 0;
-            const isTop2 = index === 1;
-            const isTop3 = index === 2;
+                  <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(rawName), marginLeft: 8 }]}>
+                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>{rawName.charAt(0).toUpperCase()}</Text>
+                  </View>
 
-            return (
-              <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', shadowColor: primaryColor }]}>
-                <View style={{ width: 32, alignItems: 'center', justifyContent: 'center' }}>
-                  {isTop1 ? <Text style={{ fontSize: 22 }}>🥇</Text> : 
-                   isTop2 ? <Text style={{ fontSize: 22 }}>🥈</Text> : 
-                   isTop3 ? <Text style={{ fontSize: 22 }}>🥉</Text> : 
-                   <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textSecondary }}>#{index + 1}</Text>}
+                  <View style={{ flex: 1, marginLeft: 12 }}>
+                    <Text style={[styles.userNameText, { color: colors.textPrimary, fontSize: 15 }]}>{rawName}</Text>
+                  </View>
+
+                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 }}>
+                    <Flame size={16} color="#EF4444" />
+                    <Text style={{ fontWeight: '800', color: colors.textPrimary, marginLeft: 4, fontSize: 13 }}>{item.xp || 0} XP</Text>
+                  </View>
                 </View>
-
-                <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(rawName), marginLeft: 8 }]}>
-                  <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>{rawName.charAt(0).toUpperCase()}</Text>
-                </View>
-
-                <View style={{ flex: 1, marginLeft: 12 }}>
-                  <Text style={[styles.userNameText, { color: colors.textPrimary, fontSize: 15 }]}>{rawName}</Text>
-                </View>
-
-                <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 }}>
-                  <Flame size={16} color="#EF4444" />
-                  <Text style={{ fontWeight: '800', color: colors.textPrimary, marginLeft: 4, fontSize: 13 }}>{item.xp || 0} XP</Text>
-                </View>
-              </View>
-            );
-          }} 
-        />
-      )}
+              );
+            }} 
+          />
+        </View>
+      </ScrollView>
 
       {/* 💬 REAL CHAT APP GROUP MODAL */}
       <Modal visible={isChatModalVisible} animationType="slide" onRequestClose={closeChatModal}>
         <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgLight }}>
-          <KeyboardAvoidingView behavior={Platform.OS === 'ios' ? 'padding' : undefined} style={{ flex: 1 }}>
-            
+          <KeyboardAvoidingView 
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+            style={{ flex: 1 }}
+          >
             {/* Modal Header */}
             <View style={{ 
               flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 14, 
@@ -934,7 +978,7 @@ const CommunityScreen = () => {
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text style={{ fontSize: 17, fontWeight: '800', color: colors.textPrimary }}>{selectedGroup?.title}</Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{selectedGroup?.members || totalMembers} Members</Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{totalMembers} Members</Text>
                   <Text style={{ fontSize: 11, color: colors.textSecondary }}>•</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
@@ -952,6 +996,7 @@ const CommunityScreen = () => {
                 data={chatMessages}
                 keyExtractor={(item) => item.id}
                 inverted
+                keyboardShouldPersistTaps="handled"
                 contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}
                 renderItem={({ item, index }) => {
                   const isMe = item.senderId === (currentUser?.uid || 'guest_user');

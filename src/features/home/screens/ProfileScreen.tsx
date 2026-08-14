@@ -10,6 +10,7 @@ import {
   StatusBar,
   ActivityIndicator,
   Alert,
+  Image,
 } from 'react-native';
 import LinearGradient from 'react-native-linear-gradient';
 import {
@@ -211,6 +212,9 @@ export default function ProfileScreen({ navigation }: any) {
     currentUser?.displayName ||
     'ECC Learner';
 
+  // 🖼️ PROFILE PICTURE EXTRACTOR LOGIC
+  const profilePhotoUrl = userData?.photoURL || currentUser?.photoURL;
+
   // 🌐 NAME TRANSLATED DYNAMICALLY TO HINDI IN HINDI MODE
   const displayName = toHindiName(rawName, currentLang);
   const avatarInitials = rawName.substring(0, 2).toUpperCase();
@@ -287,14 +291,22 @@ export default function ProfileScreen({ navigation }: any) {
               { backgroundColor: colors.bgCard },
             ]}
           >
-            <View
-              style={[
-                styles.avatarMainCircle,
-                { backgroundColor: avatarBgColor },
-              ]}
-            >
-              <Text style={styles.avatarMainText}>{avatarInitials}</Text>
-            </View>
+            {profilePhotoUrl ? (
+              <Image
+                source={{ uri: profilePhotoUrl }}
+                style={styles.avatarMainImage}
+                resizeMode="cover"
+              />
+            ) : (
+              <View
+                style={[
+                  styles.avatarMainCircle,
+                  { backgroundColor: avatarBgColor },
+                ]}
+              >
+                <Text style={styles.avatarMainText}>{avatarInitials}</Text>
+              </View>
+            )}
           </View>
 
           {userData?.isPremium && (
@@ -628,6 +640,11 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.1,
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 4 },
+  },
+  avatarMainImage: {
+    width: 102,
+    height: 102,
+    borderRadius: 51,
   },
   avatarMainCircle: {
     width: 102,

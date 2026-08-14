@@ -11,7 +11,8 @@ import {
   SafeAreaView,
   ScrollView,
   Platform,
-  Image
+  Image,
+  KeyboardAvoidingView
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -59,7 +60,7 @@ export default function LoginScreen({ navigation }: any) {
     }
   };
 
-  // Email Login Handler
+  // Email Login Handler (No Photo Stored In Firestore)
   const handleEmailLoginSubmit = async () => {
     if (email.trim().length === 0 || password.length === 0) {
       Alert.alert("Error", "Please enter both email and password");
@@ -67,7 +68,33 @@ export default function LoginScreen({ navigation }: any) {
     }
     setLoading(true);
     try {
-      await auth().signInWithEmailAndPassword(email.trim(), password);
+      const userCredential = await auth().signInWithEmailAndPassword(email.trim(), password);
+      const user = userCredential.user;
+
+      if (user) {
+        const userDocRef = firestore().collection('users').doc(user.uid);
+        const userSnapshot = await userDocRef.get();
+
+        if (!userSnapshot.exists) {
+          await userDocRef.set({
+            uid: user.uid,
+            fullName: user.displayName || user.email?.split('@')[0] || 'Learner',
+            email: user.email,
+            role: 'user',
+            streak: 0,
+            speakingScore: 0,
+            fluency: 0,
+            isOnline: true,
+            createdAt: firestore.FieldValue.serverTimestamp()
+          });
+        } else {
+          await userDocRef.set({
+            isOnline: true,
+            lastSeen: firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        }
+      }
+
       setLoading(false);
       navigation.replace('Dashboard');
     } catch (error: any) {
@@ -76,7 +103,7 @@ export default function LoginScreen({ navigation }: any) {
     }
   };
 
-  // Google Sign-In
+  // Google Sign-In (Direct Auth Photo Session, ZERO Firestore Photo Storage)
   const handleGoogleLogin = async () => {
     setLoading(true);
     try {
@@ -116,13 +143,28 @@ export default function LoginScreen({ navigation }: any) {
       const user = userCredential.user;
 
       if (user) {
-        await firestore().collection('users').doc(user.uid).set({
-          uid: user.uid,
-          fullName: user.displayName || 'Learner',
-          email: user.email,
-          role: 'user',
-          createdAt: new Date().toISOString()
-        }, { merge: true });
+        const userDocRef = firestore().collection('users').doc(user.uid);
+        const userSnapshot = await userDocRef.get();
+
+        // 🌟 Pure Clean User Metadata Creation (NO photoURL in Firestore)
+        if (!userSnapshot.exists) {
+          await userDocRef.set({
+            uid: user.uid,
+            fullName: user.displayName || 'Learner',
+            email: user.email,
+            role: 'user',
+            streak: 0,
+            speakingScore: 0,
+            fluency: 0,
+            isOnline: true,
+            createdAt: firestore.FieldValue.serverTimestamp()
+          });
+        } else {
+          await userDocRef.set({
+            isOnline: true,
+            lastSeen: firestore.FieldValue.serverTimestamp()
+          }, { merge: true });
+        }
       }
       
       setLoading(false);
@@ -153,176 +195,185 @@ export default function LoginScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView contentContainerStyle={styles.scrollContent} showsVerticalScrollIndicator={false}>
-        
-        {/* LOCAL ASSET IMAGE */}
-        <View style={styles.heroWrapper}>
-          <Image 
-            source={require('../../../assets/login_img.png')} 
-            style={styles.heroImage} 
-            resizeMode="contain" 
-          />
-        </View>
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          
+          {/* LOCAL ASSET IMAGE */}
+          <View style={styles.heroWrapper}>
+            <Image 
+              source={require('../../../assets/login_img.png')} 
+              style={[styles.heroImage, showForm && styles.heroImageCompact]} 
+              resizeMode="contain" 
+            />
+          </View>
 
-        {/* Dynamic Title */}
-        <Text style={styles.heading}>
-          {mode === 'signup' ? (
-            <>Create Your <Text style={{ color: '#5356FF' }}>Account</Text></>
-          ) : (
-            <>Welcome{'\n'}<Text style={{ color: '#0F172A' }}>Back</Text></>
-          )}
-        </Text>
-        
-        {!showForm && (
-          <Text style={styles.subHeading}>
-            {mode === 'signup' 
-              ? 'Join ECC and start your journey towards fluent and confident English.'
-              : 'Log in to continue your journey towards fluent and confident English.'}
+          {/* Dynamic Title */}
+          <Text style={styles.heading}>
+            {mode === 'signup' ? (
+              <>Create Your <Text style={{ color: '#5356FF' }}>Account</Text></>
+            ) : (
+              <>Welcome{'\n'}<Text style={{ color: '#0F172A' }}>Back</Text></>
+            )}
           </Text>
-        )}
+          
+          {!showForm && (
+            <Text style={styles.subHeading}>
+              {mode === 'signup' 
+                ? 'Join ECC and start your journey towards fluent and confident English.'
+                : 'Log in to continue your journey towards fluent and confident English.'}
+            </Text>
+          )}
 
-        {/* VIEW 1: LANDING BUTTON OPTIONS */}
-        {!showForm ? (
-          <View style={styles.actionWrapper}>
-            
-            {/* Colorful Google Button */}
-            <TouchableOpacity 
-              onPress={handleGoogleLogin} 
-              style={[styles.socialButton, loading && { opacity: 0.6 }]}
-              disabled={loading}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.socialButtonText}>Continue with </Text>
-              <Text style={styles.googleBrandText}>
-                <Text style={{ color: '#4285F4' }}>G</Text>
-                <Text style={{ color: '#EA4335' }}>o</Text>
-                <Text style={{ color: '#FBBC05' }}>o</Text>
-                <Text style={{ color: '#4285F4' }}>g</Text>
-                <Text style={{ color: '#34A853' }}>l</Text>
-                <Text style={{ color: '#EA4335' }}>e</Text>
-              </Text>
-            </TouchableOpacity>
-
-            {/* Continue with Phone Button */}
-            <TouchableOpacity 
-              style={styles.socialButton}
-              onPress={() => navigation.navigate('MobileLogin')}
-              disabled={loading}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.socialButtonText}>Continue with </Text>
-              <Text style={styles.phoneIcon}>📱 Phone</Text>
-            </TouchableOpacity>
-
-            {/* Divider */}
-            <View style={styles.dividerContainer}>
-              <View style={styles.dividerLine} />
-              <Text style={styles.dividerText}>OR</Text>
-              <View style={styles.dividerLine} />
-            </View>
-
-            {/* Glossy Action Button */}
-            <TouchableOpacity 
-              style={styles.glossyPurpleBtn}
-              onPress={handleEmailAction}
-              activeOpacity={0.85}
-            >
-              <View style={styles.btnInnerCircle} />
-              <Text style={styles.glossyBtnText}>
-                {mode === 'signup' ? 'Sign Up with Email' : 'Log In with Email'}
-              </Text>
-              <Text style={styles.arrowIcon}>→</Text>
-            </TouchableOpacity>
-
-            {/* Mode Switcher */}
-            <View style={styles.footerContainer}>
-              <Text style={styles.footerText}>
-                {mode === 'signup' ? 'Already have an account? ' : "Don't have an account? "}
-              </Text>
-              <TouchableOpacity onPress={() => setMode(mode === 'signup' ? 'login' : 'signup')}>
-                <Text style={styles.registerLink}>
-                  {mode === 'signup' ? 'Log In' : 'Sign Up'}
+          {/* VIEW 1: LANDING BUTTON OPTIONS */}
+          {!showForm ? (
+            <View style={styles.actionWrapper}>
+              
+              {/* Colorful Google Button */}
+              <TouchableOpacity 
+                onPress={handleGoogleLogin} 
+                style={[styles.socialButton, loading && { opacity: 0.6 }]}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.socialButtonText}>Continue with </Text>
+                <Text style={styles.googleBrandText}>
+                  <Text style={{ color: '#4285F4' }}>G</Text>
+                  <Text style={{ color: '#EA4335' }}>o</Text>
+                  <Text style={{ color: '#FBBC05' }}>o</Text>
+                  <Text style={{ color: '#4285F4' }}>g</Text>
+                  <Text style={{ color: '#34A853' }}>l</Text>
+                  <Text style={{ color: '#EA4335' }}>e</Text>
                 </Text>
               </TouchableOpacity>
-            </View>
 
-            {/* Security Shield Tag */}
-            <View style={styles.securityTag}>
-              <Text style={{ fontSize: 13 }}>🛡️</Text>
-              <Text style={styles.securityTagText}>Your data is safe and secure with us.</Text>
-            </View>
-          </View>
-
-        ) : (
-
-          /* VIEW 2: PREMIUM GLOSSY FORM VIEW */
-          <View style={styles.glossyCardWrapper}>
-            
-            {/* Email Address Input */}
-            <View style={styles.glossyInputContainer}>
-              <TextInput 
-                placeholder="Email Address" 
-                placeholderTextColor="#A0AEC0"
-                onChangeText={setEmail} 
-                value={email}
-                style={styles.glossyInput} 
-                autoCapitalize="none"
-                keyboardType="email-address"
-                editable={!loading}
-              />
-            </View>
-
-            {/* Password Input */}
-            <View style={styles.glossyInputContainer}>
-              <TextInput 
-                placeholder="Password" 
-                placeholderTextColor="#A0AEC0"
-                onChangeText={setPassword} 
-                value={password}
-                style={styles.glossyInput} 
-                secureTextEntry={true} 
-                autoCapitalize="none"
-                editable={!loading}
-              />
-            </View>
-
-            {/* Forgot Password Link */}
-            <TouchableOpacity 
-              style={styles.forgotPassContainer}
-              onPress={() => navigation.navigate('ForgotPassword')}
-            >
-              <Text style={styles.forgotPassText}>Forgot Password?</Text>
-            </TouchableOpacity>
-
-            {/* Glossy Primary Login Button */}
-            <TouchableOpacity 
-              onPress={handleEmailLoginSubmit} 
-              style={[styles.glossySubmitBtn, loading && { opacity: 0.7 }]}
-              disabled={loading}
-              activeOpacity={0.85}
-            >
-              {loading ? (
-                <ActivityIndicator color="#FFFFFF" size="small" />
-              ) : (
-                <Text style={styles.glossySubmitBtnText}>Login</Text>
-              )}
-            </TouchableOpacity>
-
-            {/* Footer Redirect */}
-            <View style={styles.footerContainer}>
-              <Text style={styles.footerText}>Don't have an account? </Text>
-              <TouchableOpacity onPress={() => {
-                setShowForm(false);
-                setMode('signup');
-              }}>
-                <Text style={styles.registerLink}>Sign Up</Text>
+              {/* Continue with Phone Button */}
+              <TouchableOpacity 
+                style={styles.socialButton}
+                onPress={() => navigation.navigate('MobileLogin')}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.socialButtonText}>Continue with </Text>
+                <Text style={styles.phoneIcon}>📱 Phone</Text>
               </TouchableOpacity>
+
+              {/* Divider */}
+              <View style={styles.dividerContainer}>
+                <View style={styles.dividerLine} />
+                <Text style={styles.dividerText}>OR</Text>
+                <View style={styles.dividerLine} />
+              </View>
+
+              {/* Glossy Action Button */}
+              <TouchableOpacity 
+                style={styles.glossyPurpleBtn}
+                onPress={handleEmailAction}
+                activeOpacity={0.85}
+              >
+                <View style={styles.btnInnerCircle} />
+                <Text style={styles.glossyBtnText}>
+                  {mode === 'signup' ? 'Sign Up with Email' : 'Log In with Email'}
+                </Text>
+                <Text style={styles.arrowIcon}>→</Text>
+              </TouchableOpacity>
+
+              {/* Mode Switcher */}
+              <View style={styles.footerContainer}>
+                <Text style={styles.footerText}>
+                  {mode === 'signup' ? 'Already have an account? ' : "Don't have an account? "}
+                </Text>
+                <TouchableOpacity onPress={() => setMode(mode === 'signup' ? 'login' : 'signup')}>
+                  <Text style={styles.registerLink}>
+                    {mode === 'signup' ? 'Log In' : 'Sign Up'}
+                  </Text>
+                </TouchableOpacity>
+              </View>
+
+              {/* Security Shield Tag */}
+              <View style={styles.securityTag}>
+                <Text style={{ fontSize: 13 }}>🛡️</Text>
+                <Text style={styles.securityTagText}>Your data is safe and secure with us.</Text>
+              </View>
             </View>
 
-          </View>
-        )}
+          ) : (
 
-      </ScrollView>
+            /* VIEW 2: PREMIUM GLOSSY FORM VIEW */
+            <View style={styles.glossyCardWrapper}>
+              
+              {/* Email Address Input */}
+              <View style={styles.glossyInputContainer}>
+                <TextInput 
+                  placeholder="Email Address" 
+                  placeholderTextColor="#A0AEC0"
+                  onChangeText={setEmail} 
+                  value={email}
+                  style={styles.glossyInput} 
+                  autoCapitalize="none"
+                  keyboardType="email-address"
+                  editable={!loading}
+                />
+              </View>
+
+              {/* Password Input */}
+              <View style={styles.glossyInputContainer}>
+                <TextInput 
+                  placeholder="Password" 
+                  placeholderTextColor="#A0AEC0"
+                  onChangeText={setPassword} 
+                  value={password}
+                  style={styles.glossyInput} 
+                  secureTextEntry={true} 
+                  autoCapitalize="none"
+                  editable={!loading}
+                />
+              </View>
+
+              {/* Forgot Password Link */}
+              <TouchableOpacity 
+                style={styles.forgotPassContainer}
+                onPress={() => navigation.navigate('ForgotPassword')}
+              >
+                <Text style={styles.forgotPassText}>Forgot Password?</Text>
+              </TouchableOpacity>
+
+              {/* Glossy Primary Login Button */}
+              <TouchableOpacity 
+                onPress={handleEmailLoginSubmit} 
+                style={[styles.glossySubmitBtn, loading && { opacity: 0.7 }]}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.glossySubmitBtnText}>Login</Text>
+                )}
+              </TouchableOpacity>
+
+              {/* Footer Redirect */}
+              <View style={styles.footerContainer}>
+                <Text style={styles.footerText}>Don't have an account? </Text>
+                <TouchableOpacity onPress={() => {
+                  setShowForm(false);
+                  setMode('signup');
+                }}>
+                  <Text style={styles.registerLink}>Sign Up</Text>
+                </TouchableOpacity>
+              </View>
+
+            </View>
+          )}
+
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -330,19 +381,19 @@ export default function LoginScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: { 
     flex: 1, 
-    backgroundColor: '#F1F5F9', // Clean Modern Soft Slate Light
+    backgroundColor: '#F1F5F9',
     position: 'relative',
     overflow: 'hidden',
   },
 
-  /* 🌟 UNIQUE ROTATED SQUIRCLE MESH STYLING */
+  /* 🌟 ROTATED SQUIRCLE MESH STYLING */
   squircleTopRight: {
     position: 'absolute',
     top: -60,
     right: -50,
     width: 230,
     height: 230,
-    borderRadius: 56, // Modern Squircle Curve
+    borderRadius: 56,
     backgroundColor: '#C7D2FE',
     opacity: 0.65,
     transform: [{ rotate: '28deg' }],
@@ -414,13 +465,16 @@ const styles = StyleSheet.create({
     width: '100%',
     height: 220,
   },
+  heroImageCompact: {
+    height: 120,
+  },
   heading: { 
-    fontSize: 30, 
+    fontSize: 28, 
     fontWeight: '900', 
     textAlign: 'center', 
     color: '#0F172A',
     marginBottom: 6,
-    lineHeight: 36,
+    lineHeight: 34,
   },
   subHeading: {
     fontSize: 13,

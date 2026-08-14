@@ -11,7 +11,8 @@ import {
   Platform,
   ActivityIndicator,
   Animated,
-  Easing
+  Easing,
+  Image
 } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import auth from '@react-native-firebase/auth';
@@ -193,10 +194,14 @@ export default function HomeScreen() {
     );
   }
 
-  const rawFullDisplayName = userData?.fullName || auth().currentUser?.displayName || 'User';
+  const currentUser = auth().currentUser;
+  const rawFullDisplayName = userData?.fullName || currentUser?.displayName || 'User';
   const rawFirstName = rawFullDisplayName.split(' ')[0];
   const userFirstNameInHindi = toHindiName(rawFirstName, currentLang);
   const avatarInitials = rawFirstName.charAt(0).toUpperCase();
+
+  // 🖼️ DIRECT FIREBASE AUTH PROFILE PICTURE (0 Firestore Storage)
+  const profilePhotoUrl = currentUser?.photoURL;
 
   const greetingText = t?.home?.[greetingKey] || 
     (greetingKey === 'goodMorning' ? 'Good morning' : greetingKey === 'goodAfternoon' ? 'Good afternoon' : 'Good evening');
@@ -221,9 +226,21 @@ export default function HomeScreen() {
         {/* 1. TOP HEADER */}
         <View style={styles.header}>
           <View style={styles.headerLeft}>
-            <View style={[styles.avatarCircle, { backgroundColor: colors.primary, shadowColor: colors.primary }]}>
-              <Text style={styles.avatarText}>{avatarInitials}</Text>
-            </View>
+            <TouchableOpacity 
+              activeOpacity={0.8}
+              onPress={() => navigation.navigate('Profile')}
+              style={[styles.avatarCircle, { backgroundColor: colors.primary, shadowColor: colors.primary }]}
+            >
+              {profilePhotoUrl ? (
+                <Image 
+                  source={{ uri: profilePhotoUrl }} 
+                  style={{ width: 48, height: 48, borderRadius: 24 }}
+                  resizeMode="cover"
+                />
+              ) : (
+                <Text style={styles.avatarText}>{avatarInitials}</Text>
+              )}
+            </TouchableOpacity>
             <View style={styles.userTextContainer}>
               <Text style={[styles.greetingText, { color: colors.textSecondary }]}>{greetingText}</Text>
               <Text style={[styles.userNameText, { color: colors.textPrimary }]}>{userFirstNameInHindi}</Text>
@@ -511,7 +528,7 @@ const styles = StyleSheet.create({
   container: { flex: 1 },
   header: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginTop: 15, paddingBottom: 15 },
   headerLeft: { flexDirection: 'row', alignItems: 'center' },
-  avatarCircle: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6 },
+  avatarCircle: { width: 48, height: 48, borderRadius: 24, justifyContent: 'center', alignItems: 'center', elevation: 4, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 6, overflow: 'hidden' },
   avatarText: { color: '#FFFFFF', fontSize: 18, fontWeight: '800' },
   userTextContainer: { marginLeft: 12 },
   greetingText: { fontSize: 13, fontWeight: '600' },

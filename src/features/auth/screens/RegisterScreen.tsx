@@ -1,16 +1,17 @@
 import React, { useState } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  TextInput, 
-  TouchableOpacity, 
-  SafeAreaView, 
-  StatusBar, 
-  ScrollView, 
-  Alert, 
+import {
+  StyleSheet,
+  Text,
+  View,
+  TextInput,
+  TouchableOpacity,
+  SafeAreaView,
+  Alert,
+  StatusBar,
+  ScrollView,
   ActivityIndicator,
-  Platform
+  Platform,
+  KeyboardAvoidingView,
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -130,108 +131,114 @@ export default function RegisterScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}>
-        
-        {/* Glossy Floating Card Section */}
-        <View style={styles.cardContainer}>
+      {/* Keyboard Responsive Wrapper */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}>
+        <ScrollView
+          showsVerticalScrollIndicator={false}
+          contentContainerStyle={styles.scrollContent}
+          keyboardShouldPersistTaps="handled">
           
-          <Text style={styles.heading}>Create Account</Text>
-          <Text style={styles.subtitle}>Join ECC and start learning today.</Text>
+          {/* Glossy Floating Card Section */}
+          <View style={styles.cardContainer}>
+            
+            <Text style={styles.heading}>Create Account</Text>
+            <Text style={styles.subtitle}>Join ECC and start learning today.</Text>
 
-          {/* Full Name Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Full Name"
-              placeholderTextColor="#94A3B8"
-              style={styles.input}
-              value={fullName}
-              onChangeText={setFullName}
-              editable={!loading}
-            />
-          </View>
+            {/* Full Name Input */}
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Full Name"
+                placeholderTextColor="#94A3B8"
+                style={styles.input}
+                value={fullName}
+                onChangeText={setFullName}
+                editable={!loading}
+              />
+            </View>
 
-          {/* Email Address Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Email Address"
-              placeholderTextColor="#94A3B8"
-              keyboardType="email-address"
-              autoCapitalize="none"
-              style={styles.input}
-              value={email}
-              onChangeText={setEmail}
-              editable={!loading}
-            />
-          </View>
+            {/* Email Address Input */}
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Email Address"
+                placeholderTextColor="#94A3B8"
+                keyboardType="email-address"
+                autoCapitalize="none"
+                style={styles.input}
+                value={email}
+                onChangeText={setEmail}
+                editable={!loading}
+              />
+            </View>
 
-          {/* Mobile Number Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Mobile Number"
-              placeholderTextColor="#94A3B8"
-              keyboardType="phone-pad"
-              style={styles.input}
-              value={mobileNumber}
-              onChangeText={setMobileNumber}
-              editable={!loading}
-            />
-          </View>
+            {/* Mobile Number Input */}
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Mobile Number"
+                placeholderTextColor="#94A3B8"
+                keyboardType="phone-pad"
+                style={styles.input}
+                value={mobileNumber}
+                onChangeText={setMobileNumber}
+                editable={!loading}
+              />
+            </View>
 
-          {/* Password Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Password"
-              placeholderTextColor="#94A3B8"
-              secureTextEntry={true}
-              autoCapitalize="none"
-              style={styles.input}
-              value={password}
-              onChangeText={setPassword}
-              editable={!loading}
-            />
-          </View>
+            {/* Password Input */}
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Password"
+                placeholderTextColor="#94A3B8"
+                secureTextEntry={true}
+                autoCapitalize="none"
+                style={styles.input}
+                value={password}
+                onChangeText={setPassword}
+                editable={!loading}
+              />
+            </View>
 
-          {/* Confirm Password Input */}
-          <View style={styles.inputContainer}>
-            <TextInput
-              placeholder="Confirm Password"
-              placeholderTextColor="#94A3B8"
-              secureTextEntry={true}
-              autoCapitalize="none"
-              style={styles.input}
-              value={confirmPassword}
-              onChangeText={setConfirmPassword}
-              editable={!loading}
-            />
-          </View>
+            {/* Confirm Password Input */}
+            <View style={styles.inputContainer}>
+              <TextInput
+                placeholder="Confirm Password"
+                placeholderTextColor="#94A3B8"
+                secureTextEntry={true}
+                autoCapitalize="none"
+                style={styles.input}
+                value={confirmPassword}
+                onChangeText={setConfirmPassword}
+                editable={!loading}
+              />
+            </View>
 
-          {/* Primary Create Account Button */}
-          <TouchableOpacity
-            style={[styles.createButton, loading && { opacity: 0.7 }]}
-            onPress={handleRegister}
-            disabled={loading}
-            activeOpacity={0.85}>
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" size="small" />
-            ) : (
-              <Text style={styles.createButtonText}>Create Account</Text>
-            )}
-          </TouchableOpacity>
-
-          {/* Footer Link */}
-          <View style={styles.footerContainer}>
-            <Text style={styles.footerText}>Already have an account? </Text>
+            {/* Primary Create Account Button */}
             <TouchableOpacity
-              onPress={() => navigation.navigate('Login')}
-              disabled={loading}>
-              <Text style={styles.loginLink}>Login</Text>
+              style={[styles.createButton, loading && { opacity: 0.7 }]}
+              onPress={handleRegister}
+              disabled={loading}
+              activeOpacity={0.85}>
+              {loading ? (
+                <ActivityIndicator color="#FFFFFF" size="small" />
+              ) : (
+                <Text style={styles.createButtonText}>Create Account</Text>
+              )}
             </TouchableOpacity>
-          </View>
 
-        </View>
-      </ScrollView>
+            {/* Footer Link */}
+            <View style={styles.footerContainer}>
+              <Text style={styles.footerText}>Already have an account? </Text>
+              <TouchableOpacity
+                onPress={() => navigation.navigate('Login')}
+                disabled={loading}>
+                <Text style={styles.loginLink}>Login</Text>
+              </TouchableOpacity>
+            </View>
+
+          </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -243,7 +250,6 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
   },
-  // Aesthetic Background Orbs
   orbTopRight: {
     position: 'absolute',
     top: -80,
@@ -295,6 +301,7 @@ const styles = StyleSheet.create({
     flexGrow: 1,
     paddingHorizontal: 20,
     paddingBottom: 24,
+    paddingTop: 10,
     justifyContent: 'center',
     zIndex: 5,
   },

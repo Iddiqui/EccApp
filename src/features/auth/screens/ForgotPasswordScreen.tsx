@@ -10,6 +10,8 @@ import {
   StatusBar,
   Platform,
   ActivityIndicator,
+  KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import { ArrowLeft, Mail } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
@@ -60,48 +62,60 @@ export default function ForgotPasswordScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      {/* Center Wrapper */}
-      <View style={styles.centerContainer}>
-        {/* Glossy Card Container */}
-        <View style={styles.cardContainer}>
-          
-          {/* Title & Subtitle */}
-          <Text style={styles.title}>Forgot Password?</Text>
-          <Text style={styles.subtitle}>
-            Enter your registered email address below to receive a password reset link.
-          </Text>
+      {/* Keyboard Responsive Wrapper */}
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Center Wrapper */}
+          <View style={styles.centerContainer}>
+            {/* Glossy Card Container */}
+            <View style={styles.cardContainer}>
+              
+              {/* Title & Subtitle */}
+              <Text style={styles.title}>Forgot Password?</Text>
+              <Text style={styles.subtitle}>
+                Enter your registered email address below to receive a password reset link.
+              </Text>
 
-          {/* Premium Input */}
-          <View style={styles.inputContainer}>
-            <Mail size={20} color="#5356FF" style={styles.inputIcon} />
-            <TextInput
-              style={styles.input}
-              placeholder="Enter your email"
-              placeholderTextColor="#94A3B8"
-              value={email}
-              onChangeText={setEmail}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              editable={!loading}
-            />
+              {/* Premium Input */}
+              <View style={styles.inputContainer}>
+                <Mail size={20} color="#5356FF" style={styles.inputIcon} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter your email"
+                  placeholderTextColor="#94A3B8"
+                  value={email}
+                  onChangeText={setEmail}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={!loading}
+                />
+              </View>
+
+              {/* Primary Action Button */}
+              <TouchableOpacity
+                style={[styles.button, loading && { opacity: 0.75 }]}
+                onPress={handleResetPassword}
+                disabled={loading}
+                activeOpacity={0.85}
+              >
+                {loading ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <Text style={styles.buttonText}>Send Reset Link</Text>
+                )}
+              </TouchableOpacity>
+
+            </View>
           </View>
-
-          {/* Primary Action Button */}
-          <TouchableOpacity
-            style={[styles.button, loading && { opacity: 0.75 }]}
-            onPress={handleResetPassword}
-            disabled={loading}
-            activeOpacity={0.85}
-          >
-            {loading ? (
-              <ActivityIndicator color="#FFFFFF" size="small" />
-            ) : (
-              <Text style={styles.buttonText}>Send Reset Link</Text>
-            )}
-          </TouchableOpacity>
-
-        </View>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -113,7 +127,6 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
   },
-  // Distinct Soft Mesh Orbs for Forgot Password Screen
   orbTopRight: {
     position: 'absolute',
     top: -80,
@@ -121,7 +134,7 @@ const styles = StyleSheet.create({
     width: 270,
     height: 270,
     borderRadius: 135,
-    backgroundColor: '#BAE6FD', // Soft Sky Blue
+    backgroundColor: '#BAE6FD',
     opacity: 0.7,
   },
   orbBottomLeft: {
@@ -131,7 +144,7 @@ const styles = StyleSheet.create({
     width: 280,
     height: 280,
     borderRadius: 140,
-    backgroundColor: '#E9D5FF', // Soft Purple/Pink Glow
+    backgroundColor: '#E9D5FF',
     opacity: 0.8,
   },
   header: {
@@ -155,11 +168,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.9)',
   },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
   centerContainer: {
     flex: 1,
-    justifyContent: 'center', // Perfect Vertical Centering
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
+    paddingVertical: 20,
     zIndex: 5,
   },
   cardContainer: {

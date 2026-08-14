@@ -9,6 +9,8 @@ import {
   Alert,
   StatusBar,
   Platform,
+  KeyboardAvoidingView,
+  ScrollView,
 } from 'react-native';
 import { ArrowLeft } from 'lucide-react-native';
 
@@ -43,41 +45,53 @@ export default function MobileLoginScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      {/* Exact Vertical & Horizontal Centering Container */}
-      <View style={styles.centerContainer}>
-        {/* Glossy Card Section */}
-        <View style={styles.cardContainer}>
-          {/* Title & Subtitle */}
-          <Text style={styles.title}>Mobile Login</Text>
-          <Text style={styles.subtitle}>
-            Enter your mobile number to get a verification OTP code.
-          </Text>
+      {/* Keyboard Responsive Wrapper */}
+      <KeyboardAvoidingView 
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        style={{ flex: 1 }}
+      >
+        <ScrollView 
+          contentContainerStyle={styles.scrollContent} 
+          showsVerticalScrollIndicator={false}
+          keyboardShouldPersistTaps="handled"
+        >
+          {/* Exact Vertical & Horizontal Centering Container */}
+          <View style={styles.centerContainer}>
+            {/* Glossy Card Section */}
+            <View style={styles.cardContainer}>
+              {/* Title & Subtitle */}
+              <Text style={styles.title}>Mobile Login</Text>
+              <Text style={styles.subtitle}>
+                Enter your mobile number to get a verification OTP code.
+              </Text>
 
-          {/* Input Box */}
-          <View style={styles.inputContainer}>
-            <Text style={styles.countryCode}>+91</Text>
-            <View style={styles.divider} />
-            <TextInput
-              style={styles.input}
-              placeholder="Enter mobile number"
-              placeholderTextColor="#94A3B8"
-              value={phoneNumber}
-              onChangeText={setPhoneNumber}
-              keyboardType="phone-pad"
-              maxLength={10}
-            />
+              {/* Input Box */}
+              <View style={styles.inputContainer}>
+                <Text style={styles.countryCode}>+91</Text>
+                <View style={styles.divider} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Enter mobile number"
+                  placeholderTextColor="#94A3B8"
+                  value={phoneNumber}
+                  onChangeText={setPhoneNumber}
+                  keyboardType="phone-pad"
+                  maxLength={10}
+                />
+              </View>
+
+              {/* Primary Action Button */}
+              <TouchableOpacity 
+                style={styles.button} 
+                onPress={handleSendOTP}
+                activeOpacity={0.85}
+              >
+                <Text style={styles.buttonText}>Get OTP Code</Text>
+              </TouchableOpacity>
+            </View>
           </View>
-
-          {/* Primary Action Button */}
-          <TouchableOpacity 
-            style={styles.button} 
-            onPress={handleSendOTP}
-            activeOpacity={0.85}
-          >
-            <Text style={styles.buttonText}>Get OTP Code</Text>
-          </TouchableOpacity>
-        </View>
-      </View>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -89,7 +103,6 @@ const styles = StyleSheet.create({
     position: 'relative',
     overflow: 'hidden',
   },
-  // Top-Right Soft Glow Orb
   orbTopRight: {
     position: 'absolute',
     top: -80,
@@ -100,7 +113,6 @@ const styles = StyleSheet.create({
     backgroundColor: '#C7D2FE',
     opacity: 0.6,
   },
-  // Bottom-Left Magenta/Purple Soft Glow Orb
   orbBottomLeft: {
     position: 'absolute',
     bottom: -100,
@@ -132,11 +144,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: 'rgba(255, 255, 255, 0.9)',
   },
+  scrollContent: {
+    flexGrow: 1,
+    justifyContent: 'center',
+  },
   centerContainer: {
     flex: 1,
-    justifyContent: 'center', // Exact Center Alignment
+    justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
+    paddingVertical: 20,
     zIndex: 5,
   },
   cardContainer: {
