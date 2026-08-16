@@ -25,6 +25,7 @@ import {
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 
+
 // 🎙️ BULLETPROOF AUDIO RECORD & SOUND PLAYER
 import AudioRecord from 'react-native-audio-record';
 
@@ -1317,6 +1318,8 @@ const CommunityScreen = () => {
     </View>
   );
 };
+
+export default CommunityScreen;
 
 const styles = StyleSheet.create({
   container: { flex: 1 },

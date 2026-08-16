@@ -7,4 +7,26 @@
 # For more details, see
 #   http://developer.android.com/guide/developing/tools/proguard.html
 
-# Add any project specific keep options here:
+# ----------------------------------------------------
+# LiveKit & WebRTC Keep Rules
+# ----------------------------------------------------
+-keep class livekit.** { *; }
+-keep interface livekit.** { *; }
+-keep class org.webrtc.** { *; }
+-keep interface org.webrtc.** { *; }
+
+# ----------------------------------------------------
+# React Native & Native Bridge Rules
+# ----------------------------------------------------
+-keep class com.facebook.react.** { *; }
+-keep class com.facebook.hermes.** { *; }
+-keep class com.eclipsesource.v8.** { *; }
+
+# Audio & Media Native Modules
+-keep class com.dooboolab.audiopolicy.** { *; }
+-keep class com.rnim.rn.audio.** { *; }
+
+# Don't warn for missing references in 3rd party libs
+-dontwarn livekit.**
+-dontwarn org.webrtc.**
+-dontwarn com.facebook.react.**

@@ -3,16 +3,22 @@ import { View, ActivityIndicator, StyleSheet } from 'react-native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
 
-// Screens Imports
+// ─── LIVEKIT WEBRTC INITIALIZATION ───
+import { registerGlobals } from '@livekit/react-native';
+registerGlobals();
+
+// ─── SCREENS IMPORTS ───
 import AuthOnboardingFlow from '../screens/OnboardingScreen'; 
 import LoginScreen from '../features/auth/screens/LoginScreen';
 import RegisterScreen from '../features/auth/screens/RegisterScreen';
-import ForgotPasswordScreen from '../features/auth/screens/ForgotPasswordScreen'; // <-- Added Import
-import MobileLoginScreen from '../features/auth/screens/MobileLoginScreen';     // <-- Added Import
+import ForgotPasswordScreen from '../features/auth/screens/ForgotPasswordScreen';
+import MobileLoginScreen from '../features/auth/screens/MobileLoginScreen';
 import TabNavigator from './TabNavigator'; 
 import SettingsScreen from '../features/home/screens/SettingsScreen';
 import NotificationScreen from '../features/home/screens/NotificationScreen';
 import VoiceRoomScreen from '../features/home/screens/VoiceRoomScreen';
+import ClassRoomScreen from '../features/home/screens/ClassRoomScreen';
+import StudyRoomScreen from '../features/home/screens/StudyRoomScreen'; 
 
 const Stack = createNativeStackNavigator();
 
@@ -31,8 +37,8 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
       if (initializing) setInitializing(false);
     });
 
-    return subscriber; // Component unmount hone par listener unsubscribe hoga
-  }, []);
+    return subscriber; 
+  }, [initializing]);
 
   // Session status check hote waqt Loading Screen
   if (initializing) {
@@ -60,10 +66,24 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
             options={{ animation: 'slide_from_right' }} 
           />
 
-          {/* VoiceRoomScreen */}
+          {/* Voice Room Screen */}
           <Stack.Screen 
             name="VoiceRoomScreen" 
             component={VoiceRoomScreen} 
+            options={{ animation: 'slide_from_bottom' }} 
+          />
+
+          {/* 🎯 CLASS ROOM SCREEN (Video Room) */}
+          <Stack.Screen 
+            name="ClassRoomScreen" 
+            component={ClassRoomScreen} 
+            options={{ animation: 'slide_from_bottom' }} 
+          />
+
+          {/* 🎯 STUDY ROOM SCREEN (Audio Only Room) */}
+          <Stack.Screen 
+            name="StudyRoomScreen" 
+            component={StudyRoomScreen} 
             options={{ animation: 'slide_from_bottom' }} 
           />
         </>
