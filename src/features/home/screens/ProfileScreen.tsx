@@ -12,27 +12,27 @@ import {
   Alert,
   Image,
 } from 'react-native';
-import LinearGradient from 'react-native-linear-gradient';
 import {
   Settings,
   Award,
-  ChevronRight,
   Download,
   Flame,
-  Mic,
-  Sparkles,
+  Users,
   Trophy,
-  GraduationCap,
-  Crown,
   LogOut,
+  Volume2,
+  FileText,
+  BookOpen,
+  Zap,
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import { useTheme } from '../../../hooks/useTheme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const STATUS_BAR_HEIGHT =
-  StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
+const STATUS_BAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
+
+const IMG_PROFILE_BG = require('../../../assets/profile.png');
 
 // ─── ENGLISH NAME TO HINDI CONVERTER HELPER ───
 const toHindiName = (nameStr: string = '', lang: string = 'en') => {
@@ -40,6 +40,8 @@ const toHindiName = (nameStr: string = '', lang: string = 'en') => {
 
   const nameMap: Record<string, string> = {
     'Saad Siddiqui': 'साद सिद्दीकी',
+    'Saad': 'साद',
+    'Saad Sidd': 'साद सिद्द',
     'Jitendra Kumar': 'जितेन्द्र कुमार',
     'Aman Sharma': 'अमन शर्मा',
     'Sneha Patel': 'स्नेहा पटेल',
@@ -52,7 +54,6 @@ const toHindiName = (nameStr: string = '', lang: string = 'en') => {
     return nameMap[nameStr.trim()];
   }
 
-  // Common replacements if exact match not found
   let res = nameStr;
   res = res.replace(/Saad/gi, 'साद');
   res = res.replace(/Siddiqui/gi, 'सिद्दीकी');
@@ -66,86 +67,53 @@ const ALL_AVAILABLE_BADGES: {
     labelKey: string;
     labelDefault: string;
     icon: React.JSX.Element;
-    bgLight: string;
-    bgDark: string;
   };
 } = {
   streak_12: {
     labelKey: 'streak12',
-    labelDefault: '12-डे स्ट्रिक',
-    icon: <Flame size={24} color="#F59E0B" />,
-    bgLight: '#FFF7ED',
-    bgDark: '#451A03',
+    labelDefault: '12-Day Streak',
+    icon: <Flame size={20} color="#F59E0B" />,
   },
   rooms_50: {
     labelKey: 'rooms50',
-    labelDefault: '50 रूम्स',
-    icon: <Mic size={24} color="#2563EB" />,
-    bgLight: '#EFF6FF',
-    bgDark: '#1E293B',
-  },
-  ai_master: {
-    labelKey: 'aiMaster',
-    labelDefault: 'एआई मास्टर',
-    icon: <Sparkles size={24} color="#0D9488" />,
-    bgLight: '#E6F4F1',
-    bgDark: '#134E4A',
+    labelDefault: '50 Rooms',
+    icon: <Users size={20} color="#38BDF8" />,
   },
   top_10: {
     labelKey: 'top10',
-    labelDefault: 'टॉप 10%',
-    icon: <Trophy size={24} color="#10B981" />,
-    bgLight: '#E8F5E9',
-    bgDark: '#064E3B',
-  },
-  ielts_ready: {
-    labelKey: 'ieltsReady',
-    labelDefault: 'आईईएलटीएस रेडी',
-    icon: <GraduationCap size={24} color="#6366F1" />,
-    bgLight: '#EEF2FF',
-    bgDark: '#312E81',
-  },
-  club_legend: {
-    labelKey: 'clubLegend',
-    labelDefault: 'क्लब लेजेंड',
-    icon: <Crown size={24} color="#F59E0B" />,
-    bgLight: '#FFF7ED',
-    bgDark: '#451A03',
+    labelDefault: 'Top 10%',
+    icon: <Trophy size={20} color="#EAB308" />,
   },
 };
 
 export default function ProfileScreen({ navigation }: any) {
   const themeContext = useTheme() as any;
-  const isDarkMode = themeContext?.isDarkMode ?? false;
+  const isDarkMode = themeContext?.isDarkMode ?? true;
   const t = themeContext?.t;
   const currentLang = themeContext?.currentLang || 'en';
-  const colors = themeContext?.theme?.colors;
 
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
 
   const currentUser = auth().currentUser;
 
-  // Sign Out Handler with Confirmation Alert
+  // Sign Out Handler
   const handleLogout = () => {
     Alert.alert(
-      t?.profile?.signOut || 'साइन आउट',
+      t?.profile?.signOut || 'Sign Out',
       currentLang === 'hi'
         ? 'क्या आप वाकई अपने अकाउंट से लॉग आउट करना चाहते हैं?'
         : 'Are you sure you want to log out from your account?',
       [
         { text: currentLang === 'hi' ? 'रद्द करें' : 'Cancel', style: 'cancel' },
         {
-          text: t?.profile?.signOut || 'साइन आउट करें',
+          text: t?.profile?.signOut || 'Sign Out',
           style: 'destructive',
           onPress: async () => {
             try {
               await auth().signOut();
             } catch (error: any) {
-              Alert.alert(
-                'लॉगआउट विफल',
-                error.message || 'कुछ गलत हो गया',
-              );
+              Alert.alert('Error', error.message || 'Something went wrong');
             }
           },
         },
@@ -165,30 +133,30 @@ export default function ProfileScreen({ navigation }: any) {
       .doc(currentUser.uid)
       .onSnapshot(
         doc => {
-          if (doc.exists()) {
+          const isDocExist = typeof doc?.exists === 'function' ? doc.exists() : Boolean(doc?.exists);
+          if (isDocExist) {
             setUserData(doc.data());
           } else {
             setUserData({
-              name: currentUser.displayName || 'यूजर',
-              xp: 0,
+              name: currentUser.displayName || 'Saad Sidd',
+              xp: 30,
               streak: 0,
               roomsJoined: 0,
-              level: 'B1',
-              status: 'इंटरमीडिएट',
-              isPremium: false,
-              joinedDate: 'हाल ही में जॉइन किया',
+              level: 'B2',
+              status: 'Intermediate',
+              isPremium: true,
+              joinedDate: '2026',
               pronunciation: '0%',
               grammar: '0%',
               vocabulary: '0%',
               fluency: '0%',
               badges: [],
-              rankText: 'टॉप --',
             });
           }
           setLoading(false);
         },
         error => {
-          console.error('Profile sync dashboard error:', error);
+          console.error('Profile fetch error:', error);
           setLoading(false);
         },
       );
@@ -198,381 +166,234 @@ export default function ProfileScreen({ navigation }: any) {
 
   if (loading) {
     return (
-      <View
-        style={[styles.loadingContainer, { backgroundColor: colors.bgLight }]}
-      >
-        <ActivityIndicator size="large" color={colors.primary} />
+      <View style={[styles.loadingContainer, { backgroundColor: isDarkMode ? '#060813' : '#F8FAFC' }]}>
+        <ActivityIndicator size="large" color="#8B5CF6" />
       </View>
     );
   }
 
-  const rawName =
-    userData?.fullName ||
-    userData?.name ||
-    currentUser?.displayName ||
-    'ECC Learner';
-
-  // 🖼️ PROFILE PICTURE EXTRACTOR LOGIC
+  const rawName = userData?.fullName || userData?.name || currentUser?.displayName || 'Saad Sidd';
   const profilePhotoUrl = userData?.photoURL || currentUser?.photoURL;
-
-  // 🌐 NAME TRANSLATED DYNAMICALLY TO HINDI IN HINDI MODE
   const displayName = toHindiName(rawName, currentLang);
   const avatarInitials = rawName.substring(0, 2).toUpperCase();
-  const avatarBgColor = userData?.avatarBg || colors.primary;
 
   const liveProgressData = [
-    {
-      label: t?.profile?.pronunciation || 'प्रोनंसिएशन',
-      value: userData?.pronunciation || '0%',
-      color: '#10B981',
-    },
-    {
-      label: t?.profile?.grammar || 'ग्रामर',
-      value: userData?.grammar || '0%',
-      color: colors.primary,
-    },
-    {
-      label: t?.profile?.vocabulary || 'वोकैबुलरी',
-      value: userData?.vocabulary || '0%',
-      color: '#0D9488',
-    },
-    { 
-      label: t?.profile?.fluency || 'फ्लूएंसी', 
-      value: userData?.fluency || '0%', 
-      color: '#F59E0B' 
-    },
+    { label: 'Pronunciation', value: userData?.pronunciation || '0%', icon: <Volume2 size={16} color="#A855F7" />, iconBg: isDarkMode ? '#2E1065' : '#F3E8FF', barColor: '#A855F7' },
+    { label: 'Grammar', value: userData?.grammar || '0%', icon: <FileText size={16} color="#38BDF8" />, iconBg: isDarkMode ? '#082F49' : '#E0F2FE', barColor: '#38BDF8' },
+    { label: 'Vocabulary', value: userData?.vocabulary || '0%', icon: <BookOpen size={16} color="#2DD4BF" />, iconBg: isDarkMode ? '#042F2E' : '#CCFBF1', barColor: '#2DD4BF' },
+    { label: 'Fluency', value: userData?.fluency || '0%', icon: <Zap size={16} color="#F97316" />, iconBg: isDarkMode ? '#431407' : '#FFEDD5', barColor: '#F97316' },
   ];
 
   const activeUserBadges = Array.isArray(userData?.badges)
     ? userData.badges.filter((bKey: string) => ALL_AVAILABLE_BADGES[bKey])
     : [];
 
-  const currentXp = userData?.xp || 0;
+  const currentXp = userData?.xp ?? 30;
+  const roomsCount = userData?.roomsJoined ?? 0;
+  const streakCount = userData?.streak ?? 0;
 
   return (
-    <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
-      <StatusBar
-        barStyle="light-content"
-        translucent
-        backgroundColor="transparent"
+    <View style={[styles.mainContainer, { backgroundColor: isDarkMode ? '#060813' : '#F8FAFC' }]}>
+      <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} translucent backgroundColor="transparent" />
+
+      {/* 🌌 AMBIENT TOP BACKGROUND GLOW ART */}
+      <Image
+        source={IMG_PROFILE_BG}
+        style={[
+          styles.profileBgImageOverlay,
+          !isDarkMode && { opacity: 0.35 }
+        ]}
+        resizeMode="cover"
       />
 
-      {/* ─── FIXED TOP GRADIENT HEADER BAR ─── */}
-      <LinearGradient
-        colors={['#2563EB', '#0D9488']}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 1, y: 1 }}
-        style={styles.fixedTopBannerGradient}
-      >
-        <View style={styles.headerContentInline}>
-          <Text style={styles.fixedHeaderTitle}>
-            {t?.profile?.title || 'मेरी प्रोफाइल'}
-          </Text>
-          <TouchableOpacity
-            style={styles.settingsButton}
-            onPress={() => navigation.navigate('Settings')}
-            activeOpacity={0.8}
-          >
-            <Settings size={20} color="#FFFFFF" />
-          </TouchableOpacity>
-        </View>
-      </LinearGradient>
+      {/* ─── FIXED TOP HEADER ─── */}
+      <View style={[styles.topHeaderBar, { paddingTop: STATUS_BAR_HEIGHT + 8 }]}>
+        <Text style={[styles.headerTitleText, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>My Profile</Text>
+        
+        {/* TOP RIGHT SETTINGS BUTTON */}
+        <TouchableOpacity
+          style={[styles.settingsGearCircle, { 
+            backgroundColor: isDarkMode ? '#1E1B4B' : '#FFFFFF',
+            borderColor: isDarkMode ? '#6366F1' : '#CBD5E1',
+            shadowColor: isDarkMode ? '#8B5CF6' : '#000',
+          }]}
+          onPress={() => navigation.navigate('Settings')}
+          activeOpacity={0.8}
+        >
+          <Settings size={20} color={isDarkMode ? '#FFFFFF' : '#475569'} strokeWidth={2.4} />
+        </TouchableOpacity>
+      </View>
 
       {/* Main Scroll Content Area */}
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContainer}
       >
-        {/* Profile Info Block */}
+        {/* ─── AVATAR WITH NEON CIRCULAR RING (WITHOUT PENCIL) ─── */}
         <View style={styles.profileMetaWrapper}>
-          <View
-            style={[
-              styles.avatarWrapperContainer,
-              { backgroundColor: colors.bgCard },
-            ]}
-          >
+          <View style={[styles.avatarGlowContainer, {
+            borderColor: '#8B5CF6',
+            shadowColor: isDarkMode ? '#8B5CF6' : '#A855F7',
+            backgroundColor: isDarkMode ? '#060813' : '#FFFFFF'
+          }]}>
             {profilePhotoUrl ? (
-              <Image
-                source={{ uri: profilePhotoUrl }}
-                style={styles.avatarMainImage}
-                resizeMode="cover"
-              />
+              <Image source={{ uri: profilePhotoUrl }} style={styles.avatarMainImage} resizeMode="cover" />
             ) : (
-              <View
-                style={[
-                  styles.avatarMainCircle,
-                  { backgroundColor: avatarBgColor },
-                ]}
-              >
+              <View style={[styles.avatarMainCircle, { backgroundColor: '#6366F1' }]}>
                 <Text style={styles.avatarMainText}>{avatarInitials}</Text>
               </View>
             )}
           </View>
 
-          {userData?.isPremium && (
-            <View
-              style={[
-                styles.premiumBadge,
-                {
-                  backgroundColor: isDarkMode ? '#451A03' : '#FEF3C7',
-                  borderColor: isDarkMode ? '#78350F' : '#FDE68A',
-                },
-              ]}
-            >
-              <Crown size={13} color="#D97706" />
-              <Text style={styles.premiumText}>
-                {currentLang === 'hi' ? 'प्रीमियम' : 'Premium'}
-              </Text>
-            </View>
-          )}
-
-          {/* DISPLAY NAME IN PURE HINDI */}
-          <Text style={[styles.profileName, { color: colors.textPrimary }]}>
-            {displayName}
-          </Text>
-          <Text
-            style={[styles.profileSubText, { color: colors.textSecondary }]}
-          >
-            {t?.profile?.joined || 'लेवल B2 · इंटरमीडिएट · 2026 में जॉइन किया'}
+          <Text style={[styles.profileName, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{displayName}</Text>
+          <Text style={[styles.profileSubText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>
+            Level <Text style={{ color: '#818CF8', fontWeight: '800' }}>B2</Text> • Intermediate • Joined <Text style={{ color: '#818CF8', fontWeight: '800' }}>2026</Text>
           </Text>
         </View>
 
-        {/* Overview Stats Card Grid */}
-        <View
-          style={[
-            styles.statsCard,
-            { backgroundColor: colors.bgCard, borderColor: colors.border },
-          ]}
-        >
+        {/* ─── 1. STATS CARD ROW (Star, Users, Flame) ─── */}
+        <View style={[styles.statsCardContainer, { 
+          backgroundColor: isDarkMode ? 'rgba(13, 17, 34, 0.95)' : '#FFFFFF',
+          borderColor: isDarkMode ? '#1E1B4B' : '#E2E8F0',
+          shadowColor: isDarkMode ? '#8B5CF6' : '#000000',
+        }]}>
           {/* XP Stat Item */}
-          <View style={styles.statBox}>
-            <Text style={[styles.statNumber, { color: colors.textPrimary }]}>
-              {currentXp}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
-              {t?.profile?.xp || 'एक्सपी (XP)'}
-            </Text>
+          <View style={styles.statBoxItem}>
+            <View style={[styles.statIconBadgePurple, { backgroundColor: isDarkMode ? '#7C3AED' : '#9333EA' }]}>
+              <Text style={styles.exactStarIconText}>★</Text>
+            </View>
+            <Text style={[styles.statNumberText, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{currentXp}</Text>
+            <Text style={[styles.statLabelText, { color: '#C084FC' }]}>XP</Text>
           </View>
 
-          <View
-            style={[styles.verticalDivider, { backgroundColor: colors.border }]}
-          />
+          <View style={[styles.statDividerVertical, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : '#E2E8F0' }]} />
 
           {/* Rooms Joined Stat Item */}
-          <View style={styles.statBox}>
-            <Text style={[styles.statNumber, { color: colors.textPrimary }]}>
-              {userData?.roomsJoined || 0}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
-              {t?.profile?.roomsJoined || 'जॉइन किए गए रूम्स'}
-            </Text>
+          <View style={styles.statBoxItem}>
+            <View style={[styles.statIconBadgeBlue, { backgroundColor: isDarkMode ? '#2563EB' : '#3B82F6' }]}>
+              <Users size={16} color="#FFFFFF" strokeWidth={2.6} />
+            </View>
+            <Text style={[styles.statNumberText, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{roomsCount}</Text>
+            <Text style={[styles.statLabelText, { color: '#60A5FA' }]}>Rooms joined</Text>
           </View>
 
-          <View
-            style={[styles.verticalDivider, { backgroundColor: colors.border }]}
-          />
+          <View style={[styles.statDividerVertical, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : '#E2E8F0' }]} />
 
           {/* Day Streak Stat Item */}
-          <View style={styles.statBox}>
-            <Text style={[styles.statNumber, { color: '#F59E0B' }]}>
-              {userData?.streak || 0}
-            </Text>
-            <Text style={[styles.statLabel, { color: colors.textSecondary }]}>
-              {t?.profile?.dayStreak || 'डे स्ट्रिक'}
-            </Text>
+          <View style={styles.statBoxItem}>
+            <View style={[styles.statIconBadgeOrange, { backgroundColor: isDarkMode ? '#EA580C' : '#F97316' }]}>
+              <Flame size={16} color="#FFFFFF" />
+            </View>
+            <Text style={[styles.statNumberText, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{streakCount}</Text>
+            <Text style={[styles.statLabelText, { color: '#F97316' }]}>Day streak</Text>
           </View>
         </View>
 
-        {/* Core Metric Analytics Blocks */}
-        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
-          {t?.profile?.speakingProgress || 'स्पीकिंग प्रोग्रेस'}
-        </Text>
-        <View
-          style={[
-            styles.progressCardBlock,
-            { backgroundColor: colors.bgCard, borderColor: colors.border },
-          ]}
-        >
+        {/* ─── 2. SPEAKING PROGRESS BLOCK ─── */}
+        <View style={styles.sectionHeaderRow}>
+          <View style={styles.bulletIndicator} />
+          <Text style={[styles.sectionHeaderTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>Speaking Progress</Text>
+        </View>
+
+        <View style={[styles.progressCardContainer, { 
+          backgroundColor: isDarkMode ? 'rgba(13, 17, 34, 0.95)' : '#FFFFFF',
+          borderColor: isDarkMode ? 'rgba(139, 92, 246, 0.22)' : '#E2E8F0',
+          shadowColor: isDarkMode ? '#000' : '#E2E8F0'
+        }]}>
           {liveProgressData.map((item, idx) => (
-            <View key={idx} style={styles.progressRow}>
-              <View style={styles.progressLabelRow}>
-                <Text
-                  style={[
-                    styles.progressMetricName,
-                    { color: colors.textPrimary },
-                  ]}
-                >
-                  {item.label}
-                </Text>
-                <Text
-                  style={[
-                    styles.progressMetricValue,
-                    { color: colors.textPrimary },
-                  ]}
-                >
-                  {item.value}
-                </Text>
+            <View key={idx} style={styles.progressRowItem}>
+              <View style={[styles.progressIconBox, { backgroundColor: item.iconBg }]}>
+                {item.icon}
               </View>
-              <View
-                style={[
-                  styles.trackBg,
-                  { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' },
-                ]}
-              >
-                <View
-                  style={[
-                    styles.filledTrack,
-                    {
-                      width:
-                        typeof item.value === 'number'
-                          ? `${item.value}%`
-                          : item.value,
-                      backgroundColor: item.color || colors.primary,
-                    },
-                  ]}
-                />
+              <View style={{ flex: 1 }}>
+                <View style={styles.progressLabelRow}>
+                  <Text style={[styles.progressNameText, { color: isDarkMode ? '#E2E8F0' : '#1E293B' }]}>{item.label}</Text>
+                  <Text style={[styles.progressValText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>{item.value}</Text>
+                </View>
+                <View style={[styles.progressBarBg, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.06)' : '#F1F5F9' }]}>
+                  <View style={[styles.progressBarFill, { width: item.value, backgroundColor: item.barColor }]} />
+                </View>
               </View>
             </View>
           ))}
         </View>
 
-        {/* Badges Matrix Block */}
-        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
-          {t?.profile?.achievements || 'अचीवमेंट्स और बैजेस'}
-        </Text>
+        {/* ─── 3. ACHIEVEMENTS & BADGES BLOCK ─── */}
+        <View style={styles.sectionHeaderRow}>
+          <View style={styles.bulletIndicator} />
+          <Text style={[styles.sectionHeaderTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>Achievements & Badges</Text>
+        </View>
+
         {activeUserBadges.length === 0 ? (
-          <View
-            style={[
-              styles.emptyBadgesCard,
-              { backgroundColor: colors.bgCard, borderColor: colors.border },
-            ]}
-          >
-            <Text
-              style={[styles.emptyBadgesText, { color: colors.textSecondary }]}
-            >
-              {t?.profile?.noBadges || 'अभी कोई बैज अनलॉक नहीं हुआ। प्रैक्टिस जारी रखें!'}
+          <View style={[styles.emptyBadgesCard, { 
+            backgroundColor: isDarkMode ? 'rgba(13, 17, 34, 0.7)' : '#FFFFFF',
+            borderColor: isDarkMode ? 'rgba(139, 92, 246, 0.25)' : '#E2E8F0'
+          }]}>
+            <View style={styles.badgeLockedIconCircle}>
+              <Trophy size={18} color="#FFFFFF" />
+            </View>
+            <Text style={[styles.emptyBadgesMainText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>
+              No badges unlocked yet. <Text style={styles.emptyBadgesSubText}>Keep practicing!</Text>
             </Text>
           </View>
         ) : (
-          <View style={styles.badgesGrid}>
+          <View style={styles.badgesGridContainer}>
             {activeUserBadges.map((badgeKey: string) => {
               const badge = ALL_AVAILABLE_BADGES[badgeKey];
               return (
-                <View
-                  key={badgeKey}
-                  style={[
-                    styles.badgeItemCard,
-                    {
-                      backgroundColor: colors.bgCard,
-                      borderColor: colors.border,
-                    },
-                  ]}
-                >
-                  <View
-                    style={[
-                      styles.badgeIconOuterCircle,
-                      {
-                        backgroundColor: isDarkMode
-                          ? badge.bgDark
-                          : badge.bgLight,
-                      },
-                    ]}
-                  >
-                    {badge.icon}
-                  </View>
-                  <Text
-                    style={[
-                      styles.badgeItemText,
-                      { color: colors.textPrimary },
-                    ]}
-                    numberOfLines={2}
-                  >
-                    {badge.labelDefault}
-                  </Text>
+                <View key={badgeKey} style={[styles.badgeCardItem, { 
+                  backgroundColor: isDarkMode ? '#0D1122' : '#FFFFFF',
+                  borderColor: isDarkMode ? '#1E1B4B' : '#E2E8F0'
+                }]}>
+                  <View style={styles.badgeIconBox}>{badge.icon}</View>
+                  <Text style={[styles.badgeCardLabel, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{badge.labelDefault}</Text>
                 </View>
               );
             })}
           </View>
         )}
 
-        {/* Certificates Section */}
-        <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
-          {t?.profile?.certificates || 'सर्टिफिकेट्स'}
-        </Text>
-        <View
-          style={[
-            styles.certificateRowCard,
-            { backgroundColor: colors.bgCard, borderColor: colors.border },
-          ]}
-        >
-          <View
-            style={[
-              styles.certIconBlueCircle,
-              { backgroundColor: isDarkMode ? '#1E293B' : '#EFF6FF' },
-            ]}
-          >
-            <Award size={24} color={colors.primary} />
+        {/* ─── 4. CERTIFICATES BLOCK ─── */}
+        <View style={styles.sectionHeaderRow}>
+          <View style={styles.bulletIndicator} />
+          <Text style={[styles.sectionHeaderTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>Certificates</Text>
+        </View>
+
+        <View style={[styles.certificateRowBox, { 
+          backgroundColor: isDarkMode ? 'rgba(13, 17, 34, 0.95)' : '#FFFFFF',
+          borderColor: isDarkMode ? 'rgba(139, 92, 246, 0.25)' : '#E2E8F0',
+          shadowColor: isDarkMode ? '#000' : '#E2E8F0'
+        }]}>
+          <View style={styles.certIconPillWrap}>
+            <Award size={20} color="#8B5CF6" />
           </View>
-          <View style={styles.certDetails}>
-            <Text style={[styles.certTitle, { color: colors.textPrimary }]}>
-              {currentLang === 'hi' ? 'B2 कन्वर्सेशन फ्लूएंसी' : 'B2 Conversation Fluency'}
-            </Text>
-            <Text style={[styles.certSub, { color: colors.textSecondary }]}>
-              {t?.profile?.issuedDate || 'जनवरी 2026 में जारी · वेरीफाइड'}
-            </Text>
+          <View style={{ flex: 1, marginLeft: 12 }}>
+            <Text style={[styles.certMainTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>B2 Conversation Fluency</Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
+              <Text style={[styles.certSubTitle, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>Issued Jan 2026 • Verified </Text>
+              <View style={styles.blueCheckSmall}>
+                <Text style={{ color: '#FFFFFF', fontSize: 8, fontWeight: '900' }}>✓</Text>
+              </View>
+            </View>
           </View>
-          <TouchableOpacity
-            style={[
-              styles.certDownloadBtn,
-              { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' },
-            ]}
-          >
-            <Download size={18} color={colors.textSecondary} />
+          <TouchableOpacity style={[styles.certDownloadCircleBtn, { 
+            backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : '#F1F5F9' 
+          }]} activeOpacity={0.8}>
+            <Download size={15} color={isDarkMode ? '#CBD5E1' : '#475569'} />
           </TouchableOpacity>
         </View>
 
-        {/* Subscription Control Layer */}
-        {userData?.isPremium && (
-          <TouchableOpacity
-            style={[
-              styles.subscriptionCard,
-              { backgroundColor: isDarkMode ? '#1E293B' : '#0F172A' },
-            ]}
-            activeOpacity={0.95}
-          >
-            <View style={styles.subsIconOrangeCircle}>
-              <Crown size={22} color="#F59E0B" />
-            </View>
-            <View style={styles.subsDetails}>
-              <Text style={styles.subsTitle}>
-                {currentLang === 'hi' ? 'सब्सक्रिप्शन मैनेज करें' : 'Manage subscription'}
-              </Text>
-              <Text style={styles.subsSub}>
-                {currentLang === 'hi' ? 'प्रीमियम · एक्टिव' : 'Premium · Active'}
-              </Text>
-            </View>
-            <ChevronRight size={20} color="#94A3B8" />
-          </TouchableOpacity>
-        )}
-
-        {/* ─── DEDICATED SIGN OUT BUTTON BLOCK ─── */}
-        <TouchableOpacity
-          style={[
-            styles.signOutCard,
-            {
-              backgroundColor: isDarkMode ? '#3f1c1c' : '#FEF2F2',
-              borderColor: isDarkMode ? '#7f1d1d' : '#FCA5A5',
-            },
-          ]}
+        {/* ─── 5. SIGN OUT ACCOUNT BUTTON ─── */}
+        <TouchableOpacity 
+          style={[styles.signOutActionPill, {
+            backgroundColor: isDarkMode ? 'rgba(239, 68, 68, 0.1)' : '#FEF2F2',
+            borderColor: isDarkMode ? 'rgba(239, 68, 68, 0.35)' : '#FECACA'
+          }]} 
           onPress={handleLogout}
-          activeOpacity={0.8}
+          activeOpacity={0.85}
         >
-          <View style={styles.signOutIconContainer}>
-            <LogOut size={20} color="#DC2626" />
-          </View>
-          <Text style={styles.signOutCardText}>
-            {t?.profile?.signOut || 'साइन आउट करें'}
-          </Text>
+          <LogOut size={16} color="#EF4444" style={{ marginRight: 8 }} />
+          <Text style={styles.signOutActionText}>Sign Out Account</Text>
         </TouchableOpacity>
       </ScrollView>
     </View>
@@ -580,281 +401,351 @@ export default function ProfileScreen({ navigation }: any) {
 }
 
 const styles = StyleSheet.create({
-  mainContainer: { flex: 1 },
-  loadingContainer: { flex: 1, justifyContent: 'center', alignItems: 'center' },
-  fixedTopBannerGradient: {
-    paddingTop: STATUS_BAR_HEIGHT + 10,
-    paddingBottom: 14,
-    width: '100%',
+  mainContainer: { 
+    flex: 1, 
+    position: 'relative',
+  },
+  loadingContainer: { 
+    flex: 1, 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  profileBgImageOverlay: {
     position: 'absolute',
     top: 0,
     left: 0,
     right: 0,
-    zIndex: 100,
-    elevation: 8,
-    shadowColor: '#0F172A',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
+    width: SCREEN_WIDTH,
+    height: 180,
+    zIndex: 0,
+  },
+  topHeaderBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 20,
+    paddingBottom: 8,
+    zIndex: 50,
+  },
+  headerTitleText: {
+    fontSize: 22,
+    fontWeight: '900',
+    letterSpacing: -0.5,
+  },
+  settingsGearCircle: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1.5,
+    elevation: 6,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
     shadowRadius: 6,
   },
-  headerContentInline: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    width: '100%',
-  },
-  fixedHeaderTitle: {
-    color: '#FFFFFF',
-    fontSize: 20,
-    fontWeight: '800',
-    letterSpacing: -0.3,
-  },
-  settingsButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
-  },
+
   scrollContainer: {
-    paddingTop: STATUS_BAR_HEIGHT + 75,
-    paddingBottom: 140,
+    paddingHorizontal: 16,
+    paddingTop: 10,
+    paddingBottom: 110,
+    zIndex: 10,
   },
+
+  /* AVATAR */
   profileMetaWrapper: {
     alignItems: 'center',
-    paddingHorizontal: 20,
-    marginBottom: 10,
+    marginTop: 6,
+    marginBottom: 20,
   },
-  avatarWrapperContainer: {
-    width: 114,
-    height: 114,
-    borderRadius: 57,
+  avatarGlowContainer: {
+    width: 108,
+    height: 108,
+    borderRadius: 54,
     justifyContent: 'center',
     alignItems: 'center',
-    elevation: 6,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.1,
-    shadowRadius: 10,
+    borderWidth: 2.2,
     shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.45,
+    shadowRadius: 14,
+    elevation: 8,
   },
   avatarMainImage: {
-    width: 102,
-    height: 102,
-    borderRadius: 51,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
   },
   avatarMainCircle: {
-    width: 102,
-    height: 102,
-    borderRadius: 51,
+    width: 100,
+    height: 100,
+    borderRadius: 50,
     justifyContent: 'center',
     alignItems: 'center',
   },
   avatarMainText: {
     color: '#FFFFFF',
-    fontSize: 34,
-    fontWeight: '800',
-    letterSpacing: 0.5,
-  },
-  premiumBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 5,
-    borderRadius: 20,
-    marginTop: 14,
-    borderWidth: 1,
-  },
-  premiumText: {
-    color: '#D97706',
-    fontWeight: '700',
-    fontSize: 12,
-    marginLeft: 5,
+    fontSize: 32,
+    fontWeight: '900',
   },
   profileName: {
-    fontSize: 26,
-    fontWeight: '800',
+    fontSize: 22,
+    fontWeight: '900',
     marginTop: 12,
     letterSpacing: -0.3,
   },
   profileSubText: {
-    fontSize: 13,
-    marginTop: 6,
-    textAlign: 'center',
-    fontWeight: '500',
-    lineHeight: 18,
+    fontSize: 12,
+    marginTop: 4,
+    fontWeight: '600',
   },
-  statsCard: {
-    borderRadius: 24,
-    marginHorizontal: 20,
-    paddingVertical: 20,
+
+  /* 1. STATS CARD ROW */
+  statsCardContainer: {
+    borderRadius: 22,
+    borderWidth: 1.2,
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 20,
-    marginBottom: 26,
-    elevation: 3,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.05,
-    shadowRadius: 16,
-    shadowOffset: { width: 0, height: 4 },
+    paddingVertical: 14,
+    paddingHorizontal: 10,
+    marginBottom: 22,
+    elevation: 4,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
   },
-  statBox: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-  verticalDivider: { width: 1, height: 42 },
-  statNumber: { fontSize: 24, fontWeight: '800', letterSpacing: -0.5 },
-  statLabel: { fontSize: 12, fontWeight: '600', marginTop: 3 },
-  sectionHeading: {
-    fontSize: 17,
+  statBoxItem: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  statIconBadgePurple: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  exactStarIconText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  statIconBadgeBlue: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  statIconBadgeOrange: {
+    width: 32,
+    height: 32,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  statDividerVertical: {
+    width: 1,
+    height: 52,
+  },
+  statNumberText: {
+    fontSize: 18,
+    fontWeight: '900',
+    letterSpacing: -0.3,
+    marginBottom: 2,
+  },
+  statLabelText: {
+    fontSize: 11,
     fontWeight: '800',
-    marginHorizontal: 20,
-    marginBottom: 14,
+  },
+
+  /* SECTION HEADERS */
+  sectionHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 10,
     marginTop: 4,
+    gap: 8,
   },
-  progressCardBlock: {
-    borderRadius: 24,
-    paddingHorizontal: 20,
-    paddingTop: 22,
-    paddingBottom: 6,
-    marginHorizontal: 20,
-    marginBottom: 28,
-    elevation: 2,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.04,
-    shadowRadius: 12,
+  bulletIndicator: {
+    width: 10,
+    height: 3.5,
+    borderRadius: 2,
+    backgroundColor: '#8B5CF6',
   },
-  progressRow: { marginBottom: 18 },
+  sectionHeaderTitle: {
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: -0.2,
+  },
+
+  /* 2. PROGRESS CARD */
+  progressCardContainer: {
+    borderRadius: 22,
+    borderWidth: 1.2,
+    padding: 14,
+    marginBottom: 20,
+    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
+  },
+  progressRowItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 14,
+    gap: 12,
+  },
+  progressIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   progressLabelRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 8,
-  },
-  progressMetricName: { fontSize: 15, fontWeight: '700' },
-  progressMetricValue: { fontSize: 15, fontWeight: '800' },
-  trackBg: { height: 8, borderRadius: 4, overflow: 'hidden' },
-  filledTrack: { height: 8, borderRadius: 4 },
-  badgesGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'flex-start',
-    paddingHorizontal: 20,
-    marginBottom: 16,
-  },
-  badgeItemCard: {
-    width: (SCREEN_WIDTH - 54) / 3,
-    borderRadius: 24,
-    paddingVertical: 16,
-    paddingHorizontal: 8,
     alignItems: 'center',
-    marginBottom: 14,
-    marginRight: 6,
-    elevation: 2,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
+    marginBottom: 5,
   },
-  badgeIconOuterCircle: {
-    width: 54,
-    height: 54,
-    borderRadius: 27,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 10,
+  progressNameText: {
+    fontSize: 13,
+    fontWeight: '800',
   },
-  badgeItemText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-    lineHeight: 15,
+  progressValText: {
+    fontSize: 12.5,
+    fontWeight: '900',
   },
+  progressBarBg: {
+    height: 5,
+    borderRadius: 3,
+    overflow: 'hidden',
+  },
+  progressBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+
+  /* 3. ACHIEVEMENTS & BADGES */
   emptyBadgesCard: {
-    borderRadius: 24,
-    padding: 20,
-    marginHorizontal: 20,
-    alignItems: 'center',
+    borderRadius: 22,
+    borderWidth: 1.2,
     borderStyle: 'dashed',
-    borderWidth: 1,
+    paddingVertical: 18,
+    paddingHorizontal: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
     marginBottom: 20,
   },
-  emptyBadgesText: { fontSize: 14, fontWeight: '500' },
-  certificateRowCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    borderRadius: 24,
-    padding: 16,
-    marginHorizontal: 20,
-    marginBottom: 14,
-    elevation: 2,
-    borderWidth: 1,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.04,
-    shadowRadius: 10,
-  },
-  certIconBlueCircle: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+  badgeLockedIconCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 12,
+    backgroundColor: '#7C3AED',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
+    marginBottom: 8,
   },
-  certDetails: { flex: 1 },
-  certTitle: { fontSize: 15, fontWeight: '700' },
-  certSub: { fontSize: 13, marginTop: 3, fontWeight: '500' },
-  certDownloadBtn: {
+  emptyBadgesMainText: {
+    fontSize: 12,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+  emptyBadgesSubText: {
+    color: '#A855F7',
+    fontWeight: '900',
+  },
+  badgesGridContainer: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginBottom: 20,
+  },
+  badgeCardItem: {
+    width: '31%',
+    borderRadius: 18,
+    borderWidth: 1.2,
+    padding: 12,
+    alignItems: 'center',
+  },
+  badgeIconBox: {
     width: 38,
     height: 38,
     borderRadius: 19,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
     justifyContent: 'center',
     alignItems: 'center',
+    marginBottom: 6,
   },
-  subscriptionCard: {
+  badgeCardLabel: {
+    fontSize: 11,
+    fontWeight: '800',
+    textAlign: 'center',
+  },
+
+  /* 4. CERTIFICATES */
+  certificateRowBox: {
+    borderRadius: 22,
+    borderWidth: 1.2,
+    padding: 14,
     flexDirection: 'row',
     alignItems: 'center',
-    borderRadius: 24,
-    padding: 18,
-    marginHorizontal: 20,
-    marginTop: 4,
-    marginBottom: 20,
-    elevation: 4,
-    shadowColor: '#0F172A',
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
+    marginBottom: 22,
+    elevation: 3,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 6,
   },
-  subsIconOrangeCircle: {
-    width: 46,
-    height: 46,
-    borderRadius: 23,
-    backgroundColor: 'rgba(255, 255, 255, 0.1)',
+  certIconPillWrap: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    backgroundColor: 'rgba(139, 92, 246, 0.18)',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 14,
   },
-  subsDetails: { flex: 1 },
-  subsTitle: { fontSize: 16, fontWeight: '700', color: '#FFFFFF' },
-  subsSub: { fontSize: 13, color: '#94A3B8', marginTop: 3, fontWeight: '500' },
-  signOutCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 20,
-    paddingVertical: 16,
-    paddingHorizontal: 20,
-    marginHorizontal: 20,
-    marginTop: 10,
-    marginBottom: 20,
-    borderWidth: 1,
+  certMainTitle: {
+    fontSize: 14,
+    fontWeight: '900',
   },
-  signOutIconContainer: {
-    marginRight: 10,
-  },
-  signOutCardText: {
-    fontSize: 16,
+  certSubTitle: {
+    fontSize: 11,
     fontWeight: '700',
-    color: '#DC2626',
+  },
+  blueCheckSmall: {
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#3B82F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 3,
+  },
+  certDownloadCircleBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 10,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  /* 5. SIGN OUT */
+  signOutActionPill: {
+    borderRadius: 18,
+    borderWidth: 1.2,
+    paddingVertical: 13,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 20,
+  },
+  signOutActionText: {
+    color: '#EF4444',
+    fontSize: 14,
+    fontWeight: '900',
   },
 });

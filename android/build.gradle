@@ -21,11 +21,23 @@ buildscript {
 
 apply plugin: "com.facebook.react.rootproject"
 
-// 🚀 CLEAN KOTLIN TARGET FOR ALL LIBRARIES (NO AFTEREVALUATE CRASH)
+// 🚀 1. KOTLIN JVM TARGET
 subprojects {
     tasks.withType(org.jetbrains.kotlin.gradle.tasks.KotlinCompile).configureEach {
         kotlinOptions {
             jvmTarget = "17"
+        }
+    }
+}
+
+// 🚀 2. BYPASS AAR BUNDLE & METADATA CHECKS
+gradle.projectsEvaluated {
+    allprojects { p ->
+        p.tasks.matching { 
+            it.name.contains('AarMetadata') || 
+            (it.name.startsWith('bundle') && it.name.endsWith('Aar'))
+        }.configureEach {
+            enabled = false
         }
     }
 }

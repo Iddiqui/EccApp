@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   StyleSheet,
   Text,
@@ -11,7 +11,9 @@ import {
   ScrollView,
   ActivityIndicator,
   Platform,
-  KeyboardAvoidingView,
+  Keyboard,
+  Animated,
+  Easing,
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -29,8 +31,48 @@ export default function RegisterScreen({ navigation }: any) {
   const [confirmPassword, setConfirmPassword] = useState('');
   const [loading, setLoading] = useState(false);
 
+  // Smooth Keyboard Animation Value
+  const keyboardHeightAnim = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    const onKeyboardShow = (e: any) => {
+      const duration = e?.duration || 250;
+      Animated.timing(keyboardHeightAnim, {
+        toValue: e.endCoordinates.height,
+        duration: duration > 0 ? duration : 250,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const onKeyboardHide = (e: any) => {
+      const duration = e?.duration || 250;
+      Animated.timing(keyboardHeightAnim, {
+        toValue: 0,
+        duration: duration > 0 ? duration : 250,
+        easing: Easing.out(Easing.ease),
+        useNativeDriver: false,
+      }).start();
+    };
+
+    const showSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow',
+      onKeyboardShow
+    );
+    const hideSub = Keyboard.addListener(
+      Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide',
+      onKeyboardHide
+    );
+
+    return () => {
+      showSub.remove();
+      hideSub.remove();
+    };
+  }, [keyboardHeightAnim]);
+
   // 1-Click Instant Back
   const handleBackPress = () => {
+    Keyboard.dismiss();
     if (navigation.canGoBack()) {
       navigation.goBack();
     } else {
@@ -131,10 +173,8 @@ export default function RegisterScreen({ navigation }: any) {
         </TouchableOpacity>
       </View>
 
-      {/* Keyboard Responsive Wrapper */}
-      <KeyboardAvoidingView
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-        style={{ flex: 1 }}>
+      {/* Keyboard Responsive Animated Wrapper */}
+      <Animated.View style={{ flex: 1, paddingBottom: keyboardHeightAnim }}>
         <ScrollView
           showsVerticalScrollIndicator={false}
           contentContainerStyle={styles.scrollContent}
@@ -238,7 +278,7 @@ export default function RegisterScreen({ navigation }: any) {
 
           </View>
         </ScrollView>
-      </KeyboardAvoidingView>
+      </Animated.View>
     </SafeAreaView>
   );
 }
@@ -246,7 +286,7 @@ export default function RegisterScreen({ navigation }: any) {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#EEF2FF', // Aesthetic Base Background
+    backgroundColor: '#EEF2FF',
     position: 'relative',
     overflow: 'hidden',
   },

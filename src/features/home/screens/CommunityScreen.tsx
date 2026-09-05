@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { 
   StyleSheet, 
+  AppState,
   Text, 
   View, 
   FlatList, 
@@ -14,26 +15,30 @@ import {
   Modal,
   ScrollView,
   SafeAreaView,
-  KeyboardAvoidingView,
-  PermissionsAndroid
+  Keyboard,
+  PermissionsAndroid,
+  Animated,
+  Easing,
+  Image,
+  TouchableWithoutFeedback,
+  KeyboardAvoidingView
 } from 'react-native';
 import { 
   Trash2, Send, Trophy, Plus, X, CheckCircle, Flame, 
-  HelpCircle, Sparkles, MessageCircle, Users, Headset, Mic, Paperclip, 
-  Play, Pause, MoreVertical, XCircle, Check, CheckCheck, Clock, ShieldCheck, ChevronRight, AlertTriangle, Smile
+  Sparkles, MessageCircle, Users, Mic, Paperclip, 
+  Play, Pause, MoreVertical, XCircle, Check, CheckCheck, Clock, ShieldCheck, ChevronRight, AlertTriangle, Smile,
+  Radio, Puzzle, RotateCcw, Shuffle, ArrowLeft, BarChart2, Lightbulb,
+  Pin, PinOff, Camera, Image as ImageIcon, FileText, Music, MapPin, LogOut, UserPlus, Timer, ShieldAlert, UserX, Delete,
+  Edit3, Keyboard as KeyboardIcon
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
-
-
-// 🎙️ BULLETPROOF AUDIO RECORD & SOUND PLAYER
 import AudioRecord from 'react-native-audio-record';
 
-// Native Sound Player Initialization
 let SoundPlayer: any = null;
 try {
   const SoundModule = require('react-native-sound');
-  SoundPlayer = SoundModule.default ? SoundModule.default : SoundModule;
+  SoundModule.default ? (SoundPlayer = SoundModule.default) : (SoundPlayer = SoundModule);
   if (SoundPlayer && SoundPlayer.setCategory) {
     SoundPlayer.setCategory('Playback', true); 
   }
@@ -47,9 +52,28 @@ import { useTheme } from '../../../hooks/useTheme';
 
 const { height: SCREEN_HEIGHT, width: SCREEN_WIDTH } = Dimensions.get('window');
 
-const AVATAR_COLORS = ['#8B5CF6', '#6366F1', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#3B82F6', '#D946EF'];
+const KNOWN_ADMIN_EMAILS = [
+  'jitendrakumar2k4@gmail.com',
+  'codizumtech@gmail.com'
+];
 
-const QUICK_REACTIONS = ['❤️', '👍', '😂', '😮', '😢', '🔥', '👏', '🎉'];
+const IMG_CHILDREN_DEFAULT = require('../../../assets/child.png');
+const IMG_CHILD_CHALLENGES = require('../../../assets/child_2.png');
+const IMG_COMMUNITY_CARD = require('../../../assets/community.png');
+
+const AVATAR_COLORS = ['#8B5CF6', '#6366F1', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#3B82F6', '#D946EF'];
+const QUICK_REACTIONS = ['👍', '❤️', '😂', '😮', '😢', '🙏', '🔥', '🎉'];
+
+const DELETE_FOR_EVERYONE_WINDOW_MS = 60 * 60 * 1000;
+
+const snapshotExists = (snapshot: any): boolean => {
+  if (!snapshot) return false;
+  const value = snapshot.exists;
+  return typeof value === 'function' ? !!value.call(snapshot) : value === true;
+};
+
+const hasToDate = (value: any): boolean =>
+  !!value && typeof value.toDate === 'function';
 
 const EMOJI_LIST = [
   '😀', '😃', '😄', '😁', '😆', '😅', '😂', '🤣', '😊', '😇',
@@ -67,16 +91,117 @@ const EMOJI_LIST = [
   '❣️', '💕', '💞', '💓', '💗', '💖', '💘', '💝', '🔥', '✨'
 ];
 
+const DEFAULT_QUIZ_CHALLENGES = [
+  {
+    id: 'quiz_challenge_1',
+    title: 'Quiz: Listen & Grammar Focus',
+    rewardXP: 20,
+    timeLeft: '10h 30m Left',
+    questions: [
+      {
+        questionText: 'Choose the sentence with the correct natural spoken English rhythm:',
+        options: [
+          'A) She told me that she would arrive on time.',
+          'B) She told to me she will arrive on time.',
+          'C) She said me she is arriving on time.',
+          'D) She tell me that she arrive on time.'
+        ],
+        correctAnswerIndex: 0,
+        explanation: '"Told me that..." is the grammatically correct reporting structure in natural English speech.'
+      },
+      {
+        questionText: 'Which phrasal verb means "to cancel an arranged meeting"?',
+        options: [
+          'A) Call off',
+          'B) Call on',
+          'C) Call out',
+          'D) Call in'
+        ],
+        correctAnswerIndex: 0,
+        explanation: '"Call off" specifically means to cancel an event or meeting.'
+      }
+    ]
+  },
+  {
+    id: 'quiz_challenge_2',
+    title: 'Quiz: Vocabulary & Pronunciation',
+    rewardXP: 20,
+    timeLeft: '1d 2h Left',
+    questions: [
+      {
+        questionText: 'Which word has a silent "B" sound when pronounced clearly?',
+        options: [
+          'A) Subtle',
+          'B) Rubber',
+          'C) Bubble',
+          'D) Timber'
+        ],
+        correctAnswerIndex: 0,
+        explanation: 'In "Subtle" (/ˈsʌt.əl/), the "b" is completely silent.'
+      },
+      {
+        questionText: 'Select the best word: "He gave an ________ presentation that inspired everyone."',
+        options: [
+          'A) Eloquent',
+          'B) Awkward',
+          'C) Hesitant',
+          'D) Ambiguous'
+        ],
+        correctAnswerIndex: 0,
+        explanation: '"Eloquent" describes fluent, persuasive, and graceful speaking.'
+      }
+    ]
+  }
+];
+
+const WORD_ZIP_PUZZLES = [
+  {
+    id: 'zip_puz_1',
+    title: 'English Fluency & Speech',
+    theme: 'Communication & Speech',
+    grid: [
+      ['F', 'L', 'U', 'E'],
+      ['S', 'P', 'E', 'N'],
+      ['W', 'O', 'R', 'T'],
+      ['T', 'A', 'L', 'K']
+    ],
+    words: [
+      { word: 'FLUENT', meaning: 'Able to speak or express thoughts smoothly and easily.' },
+      { word: 'SPEAK', meaning: 'Say words to convey information, thoughts, or feelings.' },
+      { word: 'WORD', meaning: 'A single distinct meaningful element of speech.' },
+      { word: 'TALK', meaning: 'Engage in speech, conversation, or discussion.' },
+      { word: 'FLOW', meaning: 'Move along in a steady, effortless, continuous stream.' }
+    ]
+  },
+  {
+    id: 'zip_puz_2',
+    title: 'Active Learning & Growth',
+    theme: 'Progress & Vocabulary',
+    grid: [
+      ['G', 'R', 'O', 'W'],
+      ['B', 'E', 'S', 'T'],
+      ['H', 'E', 'A', 'R'],
+      ['R', 'E', 'A', 'D']
+    ],
+    words: [
+      { word: 'GROW', meaning: 'Progress and improve your English communication skills.' },
+      { word: 'BEST', meaning: 'Of the most excellent, effective, or desirable quality.' },
+      { word: 'HEAR', meaning: 'Perceive and understand spoken pronunciation clearly.' },
+      { word: 'READ', meaning: 'Look at and comprehend the meaning of written text.' }
+    ]
+  }
+];
+
 const getAvatarColor = (str: string = 'User') => {
   let hash = 0;
   for (let i = 0; i < str.length; i++) hash = str.charCodeAt(i) + ((hash << 5) - hash);
   return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 };
 
-const formatTimeAgo = (timestamp: any) => {
+const formatTimeAgo = (timestamp: any, nowMs: number = Date.now()) => {
   if (!timestamp) return 'Just now';
-  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
-  const seconds = Math.floor((new Date().getTime() - date.getTime()) / 1000);
+  const date = hasToDate(timestamp) ? timestamp.toDate() : new Date(timestamp);
+  const seconds = Math.floor((nowMs - date.getTime()) / 1000);
   if (seconds < 60) return 'Just now';
   const minutes = Math.floor(seconds / 60);
   if (minutes < 60) return `${minutes}m ago`;
@@ -85,16 +210,42 @@ const formatTimeAgo = (timestamp: any) => {
   return `${Math.floor(hours / 24)}d ago`;
 };
 
+const isPresenceFresh = (member: any, nowMs: number = Date.now()) => {
+  if (!member?.isChatActive || !member?.lastActive) return false;
+  const date = hasToDate(member.lastActive) ? member.lastActive.toDate() : new Date(member.lastActive);
+  const time = date.getTime();
+  return Number.isFinite(time) && nowMs - time <= 90 * 1000;
+};
+
 const formatMessageTime = (timestamp: any) => {
   if (!timestamp) return 'Just now';
-  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const date = hasToDate(timestamp) ? timestamp.toDate() : new Date(timestamp);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
-// 🗓️ DATE HEADER FORMATTER
+const isSingleEmojiText = (value: any): boolean => {
+  const text = String(value ?? '').trim();
+  if (!text) return false;
+
+  let hasEmojiCodePoint = false;
+  for (const char of Array.from(text)) {
+    const cp = char.codePointAt(0) || 0;
+    const isEmojiRange =
+      (cp >= 0x1F1E6 && cp <= 0x1F1FF) ||
+      (cp >= 0x1F300 && cp <= 0x1FAFF) ||
+      (cp >= 0x2300 && cp <= 0x23FF) ||
+      (cp >= 0x2600 && cp <= 0x27BF) ||
+      (cp >= 0x2B00 && cp <= 0x2BFF);
+    const isEmojiJoiner = cp === 0xFE0F || cp === 0x200D || cp === 0x20E3 || (cp >= 0x1F3FB && cp <= 0x1F3FF);
+    if (isEmojiRange) hasEmojiCodePoint = true;
+    if (!isEmojiRange && !isEmojiJoiner) return false;
+  }
+  return hasEmojiCodePoint;
+};
+
 const getMessageDateHeader = (timestamp: any) => {
   if (!timestamp) return 'Today';
-  const date = timestamp.toDate ? timestamp.toDate() : new Date(timestamp);
+  const date = hasToDate(timestamp) ? timestamp.toDate() : new Date(timestamp);
   const today = new Date();
   const yesterday = new Date();
   yesterday.setDate(today.getDate() - 1);
@@ -108,74 +259,166 @@ const getMessageDateHeader = (timestamp: any) => {
   }
 };
 
-const CommunityScreen = () => {
+const AnimatedReactionBadge = ({ item, onRemove }: { item: any; onRemove: (id: string) => void }) => {
+  const reactions = item?.reactions || {};
+  const reactionValues: string[] = Object.values(reactions);
+  const reactionScale = useRef(new Animated.Value(0.55)).current;
+  const reactionOpacity = useRef(new Animated.Value(0)).current;
+
+  useEffect(() => {
+    if (reactionValues.length > 0) {
+      reactionScale.setValue(0.55);
+      reactionOpacity.setValue(0);
+      Animated.parallel([
+        Animated.spring(reactionScale, {
+          toValue: 1,
+          friction: 7,
+          tension: 120,
+          useNativeDriver: true,
+        }),
+        Animated.timing(reactionOpacity, {
+          toValue: 1,
+          duration: 130,
+          useNativeDriver: true,
+        }),
+      ]).start();
+    } else {
+      reactionScale.setValue(0.55);
+      reactionOpacity.setValue(0);
+    }
+  }, [reactionValues.join('|')]);
+
+  if (reactionValues.length === 0) return null;
+
+  const uniqueEmojis = Array.from(new Set(reactionValues));
+  const badgeStyle = reactionValues.length === 1
+    ? styles.pureTransparentReactionBadge
+    : styles.whatsappReactionPillContainer;
+
+  const multiReactionLightStyle = reactionValues.length > 1
+    ? {
+        backgroundColor: 'rgba(255,255,255,0.82)',
+        borderColor: 'rgba(148,163,184,0.28)',
+      }
+    : null;
+
+  return (
+    <Animated.View
+      style={[
+        badgeStyle,
+        multiReactionLightStyle,
+        {
+          opacity: reactionOpacity,
+          transform: [{ scale: reactionScale }],
+        },
+      ]}
+    >
+      <TouchableOpacity onPress={() => onRemove(item.id)} activeOpacity={0.8} style={reactionValues.length > 1 ? styles.whatsappReactionInner : undefined}>
+        <Text style={{ fontSize: reactionValues.length === 1 ? 16 : 13 }}>
+          {uniqueEmojis.slice(0, 2).join('')}
+        </Text>
+        {reactionValues.length > 1 && (
+          <Text style={styles.whatsappReactionCountText}>{reactionValues.length}</Text>
+        )}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
+export default function CommunityScreen({ navigation }: any) {
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? false;
   const t = themeContext?.t;
   const currentUser = auth().currentUser;
 
-  // 🎨 DYNAMIC THEME COLORS SYNC
   const colors = themeContext?.theme?.colors || {
-    primary: '#8B5CF6', 
-    primaryGlow: 'rgba(139, 92, 246, 0.25)',
-    bgLight: isDarkMode ? '#0F172A' : '#F1F5F9',
+    primary: '#6366F1', 
+    primaryGlow: 'rgba(99, 102, 241, 0.25)',
+    bgLight: isDarkMode ? '#0F172A' : '#F8FAFC',
     bgCard: isDarkMode ? '#1E293B' : '#FFFFFF',
     border: isDarkMode ? '#334155' : '#E2E8F0',
     textPrimary: isDarkMode ? '#F8FAFC' : '#0F172A',
     textSecondary: isDarkMode ? '#94A3B8' : '#64748B'
   };
 
-  const primaryColor = colors.primary || '#8B5CF6';
+  const primaryColor = colors.primary || '#6366F1';
 
-  const TABS = [t?.community?.feed || 'Feed', 'Chats', t?.community?.challenges || 'Challenges', t?.community?.leaderboard || 'Leaderboard'];
-
+  const TABS = [
+    { title: t?.community?.feed || 'Feed', icon: 'sparkles' },
+    { title: 'Chats', icon: 'chat' },
+    { title: t?.community?.challenges || 'Challenges', icon: 'trophy' },
+    { title: t?.community?.leaderboard || 'Leaderboard', icon: 'flame' }
+  ];
+  
   const [activeTab, setActiveTab] = useState(1);
   const pagerRef = useRef<ScrollView>(null);
 
-  const [isAdmin, setIsAdmin] = useState(false);
+  const currentEmailClean = (currentUser?.email || '').toLowerCase().trim();
+  const initialIsAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean);
+  const [isAdmin, setIsAdmin] = useState(initialIsAdmin);
 
-  // Real-time Dynamic Member & Online Stats
-  const [totalMembers, setTotalMembers] = useState(1);
+  const [isMember, setIsMember] = useState(false);
+  const [isJoining, setIsJoining] = useState(false);
+  const [communityMembersList, setCommunityMembersList] = useState<any[]>([]);
+  const [totalMembers, setTotalMembers] = useState(0);
   const [onlineMembers, setOnlineMembers] = useState(0);
+  const [presenceNow, setPresenceNow] = useState(Date.now());
+  const [showThreeDotsMenu, setShowThreeDotsMenu] = useState(false);
+  const [showMembersListModal, setShowMembersListModal] = useState(false);
 
-  // Group Chat States
-  const [selectedGroup, setSelectedGroup] = useState<any>(null);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
+  const isSelectionMode = selectedMessageIds.length > 0;
+
+  const [showUndoToast, setShowUndoToast] = useState(false);
+  const [pendingDeletedMessages, setPendingDeletedMessages] = useState<any[]>([]);
+  const undoTimeoutRef = useRef<any>(null);
+
+  const [editingMessage, setEditingMessage] = useState<any>(null);
+
+  const [showJoinConfirmModal, setShowJoinConfirmModal] = useState(false);
+  const [showLeaveConfirmModal, setShowLeaveConfirmModal] = useState(false);
+  const [isLeaving, setIsLeaving] = useState(false);
+
+  const [memberToKick, setMemberToKick] = useState<any>(null);
+  const [showKickConfirmModal, setShowKickConfirmModal] = useState(false);
+  const [isKicking, setIsKicking] = useState(false);
+
+  const [selectedGroup, setSelectedGroup] = useState<any>({ id: 'ecc_community_chat', title: 'ECC Community Chat' });
   const [isChatModalVisible, setIsChatModalVisible] = useState(false);
   const [chatMessages, setChatMessages] = useState<any[]>([]);
+  const [pinnedMessages, setPinnedMessages] = useState<any[]>([]);
   const [chatInputText, setChatInputText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
 
-  // Emoji Picker Tray State
+  const [savedKeyboardHeight, setSavedKeyboardHeight] = useState(Platform.OS === 'ios' ? 290 : 270);
   const [showEmojiPicker, setShowEmojiPicker] = useState(false);
+  const textInputRef = useRef<TextInput>(null);
 
-  // Message Reaction Popover State
-  const [selectedMessageForReaction, setSelectedMessageForReaction] = useState<any>(null);
+  const mediaTrayAnim = useRef(new Animated.Value(0)).current;
+  const emojiTrayAnim = useRef(new Animated.Value(0)).current;
+  const reactionAnim = useRef(new Animated.Value(0)).current;
+  const shineAnim = useRef(new Animated.Value(0.6)).current;
 
-  // Custom Delete Modal States
+  const [showMediaPicker, setShowMediaPicker] = useState(false);
+  const [selectedMessageForAction, setSelectedMessageForAction] = useState<any>(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
-  const [messageToDelete, setMessageToDelete] = useState<string | null>(null);
-  const [isDeleting, setIsDeleting] = useState(false);
 
-  // Voice Recording & Playback States
   const [isRecording, setIsRecording] = useState(false);
   const [recordSecs, setRecordSecs] = useState(0);
   const [recordTime, setRecordTime] = useState('00:00');
   const [playingAudioId, setPlayingAudioId] = useState<string | null>(null);
 
-  // Recording Timer & Active Sound Ref
   const timerRef = useRef<any>(null);
   const activeSoundRef = useRef<any>(null);
 
-  // Feed States
   const [posts, setPosts] = useState<any[]>([]);
   const [newPostText, setNewPostText] = useState('');
   const [isPosting, setIsPosting] = useState(false);
+  const [challengesData, setChallengesData] = useState<any[]>(DEFAULT_QUIZ_CHALLENGES);
+  const [completedQuizIds, setCompletedQuizIds] = useState<string[]>(['quiz_challenge_2']);
+  const [leaderboardUsers, setLeaderboardUsers] = useState<any[]>([]);
 
-  // Challenges States
-  const [challengesData, setChallengesData] = useState<any[]>([]);
-  const [completedQuizIds, setCompletedQuizIds] = useState<string[]>([]);
-
-  // Student Quiz Attempt States
+  // Quiz States
   const [isStudentQuizModalVisible, setIsStudentQuizModalVisible] = useState(false);
   const [currentTakingQuiz, setCurrentTakingQuiz] = useState<any>(null);
   const [currentQuestionIndex, setCurrentQuestionIndex] = useState(0);
@@ -184,167 +427,678 @@ const CommunityScreen = () => {
   const [calculatedScore, setCalculatedScore] = useState(0);
   const [quizCompleted, setQuizCompleted] = useState(false);
   const [showConfetti, setShowConfetti] = useState(false);
+  const [quizTimerSeconds, setQuizTimerSeconds] = useState(15);
+  const quizTimerRef = useRef<any>(null);
 
-  const [leaderboardUsers, setLeaderboardUsers] = useState<any[]>([]);
+  // Word Zip States
+  const [isZipScreenVisible, setIsZipScreenVisible] = useState(false);
+  const [activeZipIndex, setActiveZipIndex] = useState(0);
+  const [selectedTappedCells, setSelectedTappedCells] = useState<{ r: number; c: number; char: string }[]>([]);
+  const [completedZipCells, setCompletedZipCells] = useState<{ r: number; c: number }[]>([]);
+  const [completedZipWords, setCompletedZipWords] = useState<{ word: string; meaning: string }[]>([]);
+  const [tapValidationStatus, setTapValidationStatus] = useState<'idle' | 'success' | 'wrong'>('idle');
+  const [zipConfetti, setZipConfetti] = useState(false);
 
-  // 🔄 TAB PRESS & SWIPE SYNC LOGIC
+  const [isResultsModalVisible, setIsResultsModalVisible] = useState(false);
+  const [puzzlePlayedUsers, setPuzzlePlayedUsers] = useState<any[]>([]);
+
+  useEffect(() => {
+    Animated.loop(
+      Animated.sequence([
+        Animated.timing(shineAnim, {
+          toValue: 1,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+        Animated.timing(shineAnim, {
+          toValue: 0.55,
+          duration: 900,
+          easing: Easing.inOut(Easing.ease),
+          useNativeDriver: true,
+        }),
+      ])
+    ).start();
+  }, [shineAnim]);
+
+  useEffect(() => {
+    if (selectedMessageForAction) {
+      Animated.timing(reactionAnim, {
+        toValue: 1,
+        duration: 120,
+        easing: Easing.out(Easing.quad),
+        useNativeDriver: true,
+      }).start();
+    } else {
+      reactionAnim.setValue(0);
+    }
+  }, [selectedMessageForAction]);
+
+  const openMediaPicker = () => {
+    setShowEmojiPicker(false);
+    setShowMediaPicker(true);
+    Animated.timing(mediaTrayAnim, {
+      toValue: 1,
+      duration: 180,
+      useNativeDriver: true,
+    }).start();
+  };
+
+  const closeMediaPicker = () => {
+    Animated.timing(mediaTrayAnim, {
+      toValue: 0,
+      duration: 150,
+      useNativeDriver: true,
+    }).start(() => setShowMediaPicker(false));
+  };
+
+  useEffect(() => {
+    const unsubMembers = firestore()
+      .collection('community_members')
+      .where('membershipStatus', '==', 'approved')
+      .onSnapshot((snap: any) => {
+        const rawList = snap?.docs?.map((doc: any) => ({ id: doc.id, ...doc.data() })) || [];
+        setCommunityMembersList(rawList);
+        setTotalMembers(rawList.length);
+
+        if (currentUser?.uid) {
+          const me = rawList.find((member: any) => (member.uid || member.id) === currentUser.uid);
+          setIsMember(!!me);
+        } else {
+          setIsMember(false);
+        }
+
+        const now = Date.now();
+        const PRESENCE_TTL_MS = 90 * 1000;
+        let activeCount = 0;
+        rawList.forEach((data: any) => {
+          if (data?.isChatActive !== true) return;
+          const lastActiveMs = hasToDate(data?.lastActive)
+            ? data.lastActive.toDate().getTime()
+            : 0;
+          if (lastActiveMs > 0 && now - lastActiveMs <= PRESENCE_TTL_MS) activeCount += 1;
+        });
+        setOnlineMembers(activeCount);
+
+        Promise.all(rawList.map(async (member: any) => {
+          const uid = member.uid || member.id;
+          if (!uid) return member;
+          try {
+            const userSnap = await firestore().collection('users').doc(uid).get();
+            if (snapshotExists(userSnap)) {
+              const user = userSnap.data() || {};
+              return {
+                ...member,
+                uid,
+                userName: user.fullName || user.name || member.userName || 'Learner',
+                photoURL: user.photoURL || member.photoURL || '',
+              };
+            }
+          } catch (_) {}
+          return { ...member, uid };
+        })).then(setCommunityMembersList).catch(() => {});
+      }, (err) => console.log('Members load error:', err));
+
+    return () => unsubMembers();
+  }, [currentUser?.uid]);
+
+  useEffect(() => {
+    const timer = setInterval(() => setPresenceNow(Date.now()), 15000);
+    return () => clearInterval(timer);
+  }, []);
+
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+
+    const presenceRef = firestore()
+      .collection('community_members')
+      .doc(uid);
+
+    const markOnline = async () => {
+      try {
+        await presenceRef.set(
+          {
+            isChatActive: true,
+            lastActive: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        );
+      } catch (e) {
+        console.log('Presence online update error:', e);
+      }
+    };
+
+    const chatAllowed = isMember || isAdmin;
+
+    if (isChatModalVisible && chatAllowed) {
+      markOnline();
+
+      const heartbeatRef = setInterval(() => {
+        if (AppState.currentState === 'active') {
+          markOnline();
+        }
+      }, 30 * 1000);
+
+      return () => {
+        clearInterval(heartbeatRef);
+      };
+    }
+
+    return undefined;
+  }, [isChatModalVisible, isMember, isAdmin, currentUser?.uid]);
+
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+
+    const presenceRef = firestore()
+      .collection('community_members')
+      .doc(uid);
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (
+        nextState !== 'active' &&
+        isChatModalVisible &&
+        (isMember || isAdmin)
+      ) {
+        presenceRef
+          .set(
+            {
+              isChatActive: false,
+              lastSeen: firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+          .catch(() => {});
+      } else if (
+        nextState === 'active' &&
+        isChatModalVisible &&
+        (isMember || isAdmin)
+      ) {
+        presenceRef
+          .set(
+            {
+              isChatActive: true,
+              lastActive: firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          )
+          .catch(() => {});
+      }
+    });
+
+    return () => subscription.remove();
+  }, [currentUser?.uid, isChatModalVisible, isMember, isAdmin]);
+
+  const handleExecuteJoinCommunity = async () => {
+    if (!currentUser?.uid) {
+      setShowJoinConfirmModal(false);
+      Alert.alert('Sign In Required', 'Please sign in to join the community.');
+      return;
+    }
+
+    if (isAdmin) {
+      setShowJoinConfirmModal(false);
+      setSelectedGroup({ id: 'ecc_community_chat', title: 'ECC Community Chat' });
+      setIsChatModalVisible(true);
+      return;
+    }
+
+    setIsJoining(true);
+    try {
+      const uid = currentUser.uid;
+      let profile: any = {};
+
+      try {
+        const userSnap = await firestore().collection('users').doc(uid).get();
+        if (snapshotExists(userSnap)) profile = userSnap.data() || {};
+      } catch (_) {}
+
+      const userName =
+        profile.fullName ||
+        profile.name ||
+        currentUser.displayName ||
+        currentUser.email?.split('@')[0] ||
+        'Learner';
+      const photoURL = profile.photoURL || currentUser.photoURL || '';
+
+      await firestore().collection('community_members').doc(uid).set({
+        uid,
+        userName,
+        photoURL,
+        email: currentUser.email || profile.email || '',
+        membershipStatus: 'approved',
+        joinedAt: firestore.FieldValue.serverTimestamp(),
+        isChatActive: false,
+        lastActive: firestore.FieldValue.serverTimestamp(),
+      }, { merge: true });
+
+      try {
+        await firestore().collection('community_join_requests').doc(uid).delete();
+      } catch (_) {}
+
+      setIsMember(true);
+      setShowJoinConfirmModal(false);
+      setShowThreeDotsMenu(false);
+      setSelectedGroup({ id: 'ecc_community_chat', title: 'ECC Community Chat' });
+      setIsChatModalVisible(true);
+    } catch (err: any) {
+      Alert.alert('Join Failed', err?.message || 'Unable to join the community.');
+    } finally {
+      setIsJoining(false);
+    }
+  };
+
+  const handleExecuteLeaveCommunity = async () => {
+    if (!currentUser?.uid) return;
+    setIsLeaving(true);
+    try {
+      await firestore().collection('community_members').doc(currentUser.uid).delete();
+      await firestore().collection('community_join_requests').doc(currentUser.uid).delete().catch(() => {});
+      setIsMember(false);
+      setShowLeaveConfirmModal(false);
+      setShowThreeDotsMenu(false);
+      closeChatModal();
+    } catch (err: any) {
+      Alert.alert('Error', err.message || 'Unable to leave group.');
+    } finally {
+      setIsLeaving(false);
+    }
+  };
+
+  const handleExecuteAdminKick = async () => {
+    if (!isAdmin || !memberToKick) return;
+    setIsKicking(true);
+    try {
+      const kickedUid = memberToKick.uid || memberToKick.id;
+      await firestore().collection('community_members').doc(kickedUid).delete();
+      await firestore().collection('community_join_requests').doc(kickedUid).delete().catch(() => {});
+      setShowKickConfirmModal(false);
+      setMemberToKick(null);
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+    } finally {
+      setIsKicking(false);
+    }
+  };
+
+  const openChatModal = (groupData: any = { id: 'ecc_community_chat', title: 'ECC Community Chat' }) => {
+    if (!isMember && !isAdmin) {
+      setShowJoinConfirmModal(true);
+      return;
+    }
+    setSelectedGroup(groupData);
+    setIsChatModalVisible(true);
+    setShowEmojiPicker(false);
+    setShowMediaPicker(false);
+    setShowThreeDotsMenu(false);
+    setSelectedMessageIds([]);
+    setEditingMessage(null);
+  };
+
+  const closeChatModal = () => {
+    Keyboard.dismiss();
+
+    const uid = currentUser?.uid;
+
+    if (uid && isChatModalVisible && (isMember || isAdmin)) {
+      firestore()
+        .collection('community_members')
+        .doc(uid)
+        .set(
+          {
+            isChatActive: false,
+            lastSeen: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true }
+        )
+        .catch(() => {});
+    }
+
+    setShowEmojiPicker(false);
+    setIsChatModalVisible(false);
+    setShowMediaPicker(false);
+    setShowThreeDotsMenu(false);
+    setSelectedMessageForAction(null);
+    setSelectedMessageIds([]);
+    setEditingMessage(null);
+    setChatInputText('');
+
+    if (activeSoundRef.current) {
+      try {
+        activeSoundRef.current.stop();
+        activeSoundRef.current.release();
+      } catch (e) {}
+
+      activeSoundRef.current = null;
+    }
+
+    setPlayingAudioId(null);
+  };
+
+  const canOpenDeleteForMessage = (item: any) => !!item;
+
+  const canDeleteForEveryone = (item: any) => {
+    if (!item) return false;
+    if (isAdmin) return true;
+    if (item.senderId !== currentUser?.uid) return false;
+
+    const createdDate = hasToDate(item.createdAt)
+      ? item.createdAt.toDate()
+      : new Date(item.createdAt);
+    if (Number.isNaN(createdDate.getTime())) return false;
+
+    return Date.now() - createdDate.getTime() <= DELETE_FOR_EVERYONE_WINDOW_MS;
+  };
+
+  const handleMessagePress = (item: any) => {
+    if (isSelectionMode) {
+      toggleSelectMessage(item.id);
+    }
+  };
+
+  const handleMessageLongPress = (item: any) => {
+    toggleSelectMessage(item.id);
+  };
+
+  const toggleSelectMessage = (id: string) => {
+    setSelectedMessageIds(prev => {
+      if (prev.includes(id)) {
+        return prev.filter(mId => mId !== id);
+      } else {
+        return [...prev, id];
+      }
+    });
+  };
+
+  const clearSelectionMode = () => {
+    setSelectedMessageIds([]);
+  };
+
+  const handleOpenReactionTray = (item: any) => {
+    if (isSelectionMode) return;
+    setSelectedMessageForAction(item);
+  };
+
+  const getSingleSelectedEditableMessage = () => {
+    if (selectedMessageIds.length !== 1) return null;
+    const targetMsg = chatMessages.find(m => m.id === selectedMessageIds[0]);
+    if (!targetMsg || targetMsg.type === 'voice') return null;
+    if (targetMsg.senderId !== (currentUser?.uid || 'guest_user')) return null;
+
+    const createdDate = hasToDate(targetMsg.createdAt) ? targetMsg.createdAt.toDate() : new Date(targetMsg.createdAt);
+    const diffMs = Date.now() - createdDate.getTime();
+    if (diffMs > 2 * 60 * 1000) return null;
+
+    return targetMsg;
+  };
+
+  const handleTriggerEditSelectedMessage = () => {
+    const targetMsg = getSingleSelectedEditableMessage();
+    if (!targetMsg) return;
+
+    setEditingMessage(targetMsg);
+    setChatInputText(targetMsg.text || '');
+    clearSelectionMode();
+  };
+
+  const handleCancelInlineEdit = () => {
+    setEditingMessage(null);
+    setChatInputText('');
+  };
+
+  useEffect(() => {
+    const onKeyboardShow = (e: any) => {
+      setShowEmojiPicker(false);
+      const kHeight = e?.endCoordinates?.height || 280;
+      if (kHeight > 100) {
+        setSavedKeyboardHeight(kHeight);
+      }
+    };
+
+    const showSub = Keyboard.addListener(Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow', onKeyboardShow);
+    return () => {
+      showSub.remove();
+    };
+  }, []);
+
+  const handleToggleEmojiOrKeyboard = () => {
+    setShowMediaPicker(false);
+
+    if (showEmojiPicker) {
+      setShowEmojiPicker(false);
+      emojiTrayAnim.setValue(0);
+      requestAnimationFrame(() => {
+        textInputRef.current?.focus();
+      });
+      return;
+    }
+
+    setShowEmojiPicker(true);
+    emojiTrayAnim.setValue(0);
+    Animated.timing(emojiTrayAnim, {
+      toValue: 1,
+      duration: 140,
+      easing: Easing.out(Easing.quad),
+      useNativeDriver: true,
+    }).start();
+    Keyboard.dismiss();
+  };
+
+  // Smooth Tab Navigation: Handles both click and touch-slider gestures
   const handleTabPress = (idx: number) => {
     setActiveTab(idx);
     pagerRef.current?.scrollTo({ x: idx * SCREEN_WIDTH, animated: true });
   };
 
-  const handleScrollEnd = (e: any) => {
+  const handleMomentumScrollEnd = (e: any) => {
     const contentOffsetX = e.nativeEvent.contentOffset.x;
     const pageIndex = Math.round(contentOffsetX / SCREEN_WIDTH);
-    if (pageIndex !== activeTab && pageIndex >= 0 && pageIndex < TABS.length) {
+    if (pageIndex >= 0 && pageIndex < TABS.length) {
       setActiveTab(pageIndex);
     }
   };
 
-  // 🔊 QUIZ SOUND EFFECTS
   const playQuizSound = (isCorrect: boolean) => {
     if (!SoundPlayer) return;
-    try {
-      const fileName = isCorrect ? 'correct_sound.wav' : 'wrong_sound.wav';
-      const sound = new SoundPlayer(fileName, SoundPlayer.MAIN_BUNDLE, (error: any) => {
-        if (!error) {
-          if (sound.setSpeakerphoneOn) sound.setSpeakerphoneOn(true);
-          sound.play(() => sound.release());
-        }
-      });
-    } catch (e) {}
-  };
-
-  // 🚀 CHAT ONLINE/OFFLINE STATUS
-  const openChatModal = (groupData: any) => {
-    setSelectedGroup(groupData);
-    setIsChatModalVisible(true);
-    setShowEmojiPicker(false);
-    if (currentUser?.uid) {
-      firestore().collection('users').doc(currentUser.uid).set({
-        isOnline: true,
-        lastSeen: firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-    }
-  };
-
-  const closeChatModal = () => {
-    setIsChatModalVisible(false);
-    setShowEmojiPicker(false);
-    setSelectedMessageForReaction(null);
-    if (activeSoundRef.current) {
-      try { activeSoundRef.current.stop(); activeSoundRef.current.release(); } catch (e) {}
-      activeSoundRef.current = null;
-    }
-    setPlayingAudioId(null);
-
-    if (currentUser?.uid) {
-      firestore().collection('users').doc(currentUser.uid).set({
-        isOnline: false,
-        lastSeen: firestore.FieldValue.serverTimestamp()
-      }, { merge: true });
-    }
-  };
-
-  // Admin Check
-  useEffect(() => {
-    let isMounted = true;
-    const checkAdmin = async () => {
-      if (!currentUser?.email) return;
+    const candidateFiles = isCorrect ? ['correct_sound.wav'] : ['wrong_sound.wav'];
+    const playCandidate = (index: number) => {
+      if (index >= candidateFiles.length) return;
       try {
-        const q = await firestore().collection('admins').where('email', '==', currentUser.email).get();
-        if (isMounted) setIsAdmin(!q.empty);
-      } catch (e) {}
-    };
-    checkAdmin();
-    return () => { isMounted = false; };
-  }, [currentUser?.email]);
-
-  // Real-time Database Listener for Active Users
-  useEffect(() => {
-    const unsubUsers = firestore().collection('users').onSnapshot((snap) => {
-      if (snap) {
-        let validUsers = 0;
-        let onlineCount = 0;
-
-        snap.forEach(doc => {
-          const data = doc.data();
-          // Filter valid users only
-          if (data && (data.email || data.uid || data.fullName)) {
-            validUsers++;
-          }
-          if (data && data.isOnline === true) {
-            onlineCount++;
-          }
+        const sound = new SoundPlayer(candidateFiles[index], SoundPlayer.MAIN_BUNDLE, (error: any) => {
+          if (error) { playCandidate(index + 1); return; }
+          if (typeof sound.setSpeakerphoneOn === 'function') sound.setSpeakerphoneOn(true);
+          sound.play(() => { try { sound.release(); } catch (e) {} });
         });
+      } catch (e) { playCandidate(index + 1); }
+    };
+    playCandidate(0);
+  };
 
-        setTotalMembers(validUsers > 0 ? validUsers : 1);
-        setOnlineMembers(onlineCount);
+  const playQuizCompletionSound = () => {
+    if (!SoundPlayer) return;
+    const candidateFiles = ['party_boom.wav', 'party-boom.wav', 'partyboom.wav', 'celebration.wav', 'quiz_complete.wav', 'correct_sound.wav'];
+    const playCandidate = (index: number) => {
+      if (index >= candidateFiles.length) return;
+      try {
+        const sound = new SoundPlayer(candidateFiles[index], SoundPlayer.MAIN_BUNDLE, (error: any) => {
+          if (error) { playCandidate(index + 1); return; }
+          if (typeof sound.setSpeakerphoneOn === 'function') sound.setSpeakerphoneOn(true);
+          sound.play(() => { try { sound.release(); } catch (e) {} });
+        });
+      } catch (e) { playCandidate(index + 1); }
+    };
+    playCandidate(0);
+  };
+
+  const openWordZipScreen = (index = 0) => {
+    setActiveZipIndex(index);
+    setSelectedTappedCells([]);
+    setCompletedZipCells([]);
+    setCompletedZipWords([]);
+    setTapValidationStatus('idle');
+    setZipConfetti(false);
+    setIsZipScreenVisible(true);
+  };
+
+  const handleTapCell = (r: number, c: number, char: string) => {
+    const existingIndex = selectedTappedCells.findIndex(item => item.r === r && item.c === c);
+    if (existingIndex !== -1) {
+      if (existingIndex === selectedTappedCells.length - 1) {
+        setSelectedTappedCells(prev => prev.slice(0, -1));
       }
-    });
+      return;
+    }
 
-    const unsubPosts = firestore().collection('posts').orderBy('createdAt', 'desc').onSnapshot((snap) => {
+    setSelectedTappedCells(prev => [...prev, { r, c, char }]);
+    setTapValidationStatus('idle');
+  };
+
+  const handleClearTappedWord = () => {
+    setSelectedTappedCells([]);
+    setTapValidationStatus('idle');
+  };
+
+  const handleCheckTappedWord = () => {
+    if (selectedTappedCells.length < 2) return;
+
+    const constructedWord = selectedTappedCells.map(item => item.char).join('');
+    const puzzle = WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length];
+    const matchedItem = puzzle.words.find(w => w.word === constructedWord);
+    const alreadyFound = completedZipWords.some(w => w.word === constructedWord);
+
+    if (matchedItem && !alreadyFound) {
+      setTapValidationStatus('success');
+      const newlyLocked = selectedTappedCells.map(item => ({ r: item.r, c: item.c }));
+      setCompletedZipCells(prev => [...prev, ...newlyLocked]);
+      setCompletedZipWords(prev => [matchedItem, ...prev]);
+      setZipConfetti(true);
+      playQuizSound(true);
+
+      // Streak untouched: Streak only increments from daily lectures
+      if (currentUser?.uid) {
+        firestore().collection('users').doc(currentUser.uid).set({
+          xp: firestore.FieldValue.increment(20),
+          lastPuzzlePlayedAt: firestore.FieldValue.serverTimestamp()
+        }, { merge: true });
+
+        firestore().collection('puzzle_results').add({
+          userId: currentUser.uid,
+          userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
+          word: constructedWord,
+          meaning: matchedItem.meaning,
+          earnedXP: 20,
+          playedAt: firestore.FieldValue.serverTimestamp()
+        });
+      }
+
+      setTimeout(() => {
+        setSelectedTappedCells([]);
+        setTapValidationStatus('idle');
+        setZipConfetti(false);
+      }, 900);
+    } else {
+      setTapValidationStatus('wrong');
+      playQuizSound(false);
+      setTimeout(() => {
+        setTapValidationStatus('idle');
+      }, 700);
+    }
+  };
+
+  const handleShowHint = () => {
+    const puzzle = WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length];
+    const unfound = puzzle.words.find(w => !completedZipWords.some(c => c.word === w.word));
+    if (unfound) {
+      Alert.alert("💡 Word Hint", `Search for "${unfound.word.charAt(0)}..." (${unfound.word.length} letters)\nMeaning: ${unfound.meaning}`);
+    } else {
+      Alert.alert("🎉 Mastered!", "You found all target words in this level!");
+    }
+  };
+
+  useEffect(() => {
+    const unsubPosts = firestore().collection('posts').orderBy('createdAt', 'desc').onSnapshot((snap: any) => {
       let list: any[] = [];
-      snap?.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
+      snap?.forEach((doc: any) => list.push({ id: doc.id, ...doc.data() }));
       setPosts(list);
     });
 
-    const unsubQuiz = firestore().collection('challenges').orderBy('createdAt', 'desc').onSnapshot((snap) => {
-      let list: any[] = [];
-      snap?.forEach((doc) => list.push({ id: doc.id, ...doc.data() }));
-      setChallengesData(list);
+    const unsubQuiz = firestore().collection('challenges').orderBy('createdAt', 'desc').onSnapshot((snap: any) => {
+      if (snap && !snap.empty) {
+        let list: any[] = [];
+        snap.forEach((doc: any) => list.push({ id: doc.id, ...doc.data() }));
+        setChallengesData(list);
+      } else {
+        setChallengesData(DEFAULT_QUIZ_CHALLENGES);
+      }
     });
 
     let unsubResults = () => {};
     if (currentUser?.uid) {
-      unsubResults = firestore().collection('quiz_results').where('userId', '==', currentUser.uid).onSnapshot((snap) => {
-        let done: string[] = [];
-        snap?.forEach((doc) => done.push(doc.data().quizId));
-        setCompletedQuizIds(done);
+      unsubResults = firestore().collection('quiz_results').where('userId', '==', currentUser.uid).onSnapshot((snap: any) => {
+        let done: string[] = ['quiz_challenge_2'];
+        snap?.forEach((doc: any) => done.push(doc.data().quizId));
+        setCompletedQuizIds(Array.from(new Set(done)));
       });
     }
 
-    const unsubLB = firestore().collection('users').orderBy('xp', 'desc').limit(20).onSnapshot((snap) => {
+    const unsubLB = firestore().collection('users').orderBy('xp', 'desc').limit(20).onSnapshot((snap: any) => {
       let list: any[] = [];
-      snap?.forEach((doc) => {
+      snap?.forEach((doc: any) => {
         if (doc.data().xp && doc.data().xp > 0) list.push({ id: doc.id, ...doc.data() });
       });
       setLeaderboardUsers(list);
     });
 
+    const unsubPuzzlePlayed = firestore().collection('puzzle_results').orderBy('playedAt', 'desc').limit(25).onSnapshot((snap: any) => {
+      let list: any[] = [];
+      snap?.forEach((doc: any) => list.push({ id: doc.id, ...doc.data() }));
+      setPuzzlePlayedUsers(list);
+    });
+
     return () => {
-      unsubUsers();
       unsubPosts();
       unsubQuiz();
       unsubResults();
       unsubLB();
+      unsubPuzzlePlayed();
     };
   }, [currentUser?.uid]);
 
   useEffect(() => {
-    if (!selectedGroup) return;
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
     return firestore()
       .collection('community_groups')
-      .doc(selectedGroup.id)
+      .doc(targetGroupId)
       .collection('messages')
       .orderBy('createdAt', 'desc')
-      .onSnapshot((snap) => {
+      .onSnapshot((snap: any) => {
         let msgs: any[] = [];
-        snap?.forEach((doc) => msgs.push({ id: doc.id, ...doc.data() }));
+        let pinned: any[] = [];
+        snap?.forEach((doc: any) => {
+          const item: any = { id: doc.id, ...doc.data() };
+          const deletedFor = Array.isArray(item?.deletedFor) ? item.deletedFor : [];
+          if (currentUser?.uid && deletedFor.includes(currentUser.uid)) {
+            return;
+          }
+          msgs.push(item);
+          if (item?.isPinned) pinned.push(item);
+        });
         setChatMessages(msgs);
+        setPinnedMessages(pinned);
       });
-  }, [selectedGroup]);
+  }, [selectedGroup?.id]);
 
-  // Initial scroll positioning
   useEffect(() => {
     setTimeout(() => {
       pagerRef.current?.scrollTo({ x: SCREEN_WIDTH, animated: false });
     }, 100);
   }, []);
 
-  // 🎙️ START RECORDING WITH DYNAMIC FILENAME
   const handleStartRecording = async () => {
     setShowEmojiPicker(false);
+    setShowMediaPicker(false);
     if (Platform.OS === 'android') {
       try {
         const granted = await PermissionsAndroid.request(
@@ -366,10 +1120,9 @@ const CommunityScreen = () => {
         sampleRate: 16000,
         channels: 1,
         bitsPerSample: 16,
-        audioSource: 6, // MIC
+        audioSource: 6,
         wavFile: uniqueFileName
       });
-
       setIsRecording(true);
       setRecordSecs(0);
       setRecordTime('00:00');
@@ -401,9 +1154,8 @@ const CommunityScreen = () => {
     setRecordSecs(0);
   };
 
-  // 🎙️ STOP AND SEND VOICE NOTE TO FIRESTORE
   const handleStopAndSendRecording = async () => {
-    if (!selectedGroup) return;
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
 
     try {
       if (timerRef.current) clearInterval(timerRef.current);
@@ -412,15 +1164,17 @@ const CommunityScreen = () => {
 
       const finalDuration = recordSecs > 0 ? recordSecs : 2;
 
-      await firestore().collection('community_groups').doc(selectedGroup.id).collection('messages').add({
+      await firestore().collection('community_groups').doc(targetGroupId).collection('messages').add({
         text: `Voice Note`,
         type: 'voice',
         duration: finalDuration,
         mediaUrl: audioFilePath, 
         senderId: currentUser?.uid || 'guest_user',
         senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
+        senderPhoto: currentUser?.photoURL || null,
         status: 'sent',
         reactions: {},
+        isPinned: false,
         createdAt: firestore.FieldValue.serverTimestamp()
       });
     } catch (e: any) {
@@ -429,7 +1183,6 @@ const CommunityScreen = () => {
     }
   };
 
-  // 🔊 UNIVERSAL AUDIO PLAYBACK LOGIC
   const handleTogglePlayAudio = async (msgId: string, durationInSec: number = 2, mediaUrl?: string) => {
     if (playingAudioId === msgId) {
       if (activeSoundRef.current) {
@@ -472,20 +1225,16 @@ const CommunityScreen = () => {
 
       const sound = new SoundPlayer(targetPath, Platform.OS === 'android' ? '' : SoundPlayer.MAIN_BUNDLE, (error: any) => {
         if (error) {
-          console.log('Failed to load sound:', error);
           setPlayingAudioId(null);
           activeSoundRef.current = null;
           return;
         }
 
         activeSoundRef.current = sound;
-
-        if (sound.setSpeakerphoneOn) {
-          sound.setSpeakerphoneOn(true);
-        }
+        if (typeof sound.setSpeakerphoneOn === 'function') sound.setSpeakerphoneOn(true);
         sound.setVolume(1.0);
 
-        sound.play((success: boolean) => {
+        sound.play(() => {
           try { sound.release(); } catch(e){}
           activeSoundRef.current = null;
           setPlayingAudioId(null);
@@ -497,13 +1246,30 @@ const CommunityScreen = () => {
     }
   };
 
-  // 💖 REACTION TOGGLE & REMOVE LOGIC
+  const handleTogglePinMessage = async (message: any) => {
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    try {
+      await firestore()
+        .collection('community_groups')
+        .doc(targetGroupId)
+        .collection('messages')
+        .doc(message.id)
+        .update({
+          isPinned: !message?.isPinned
+        });
+    } catch (e) {}
+    finally {
+      setSelectedMessageForAction(null);
+    }
+  };
+
   const handleAddReaction = async (messageId: string, emoji: string) => {
-    if (!selectedGroup || !currentUser?.uid) return;
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    if (!currentUser?.uid) return;
     try {
       const msgRef = firestore()
         .collection('community_groups')
-        .doc(selectedGroup.id)
+        .doc(targetGroupId)
         .collection('messages')
         .doc(messageId);
 
@@ -518,19 +1284,18 @@ const CommunityScreen = () => {
 
       await msgRef.update({ reactions: existingReactions });
     } catch (e) {
-      console.log('Reaction Error:', e);
     } finally {
-      setSelectedMessageForReaction(null);
+      setSelectedMessageForAction(null);
     }
   };
 
-  // 🛑 DIRECT REMOVE REACTION VIA BADGE TAP
   const handleRemoveMyReaction = async (messageId: string) => {
-    if (!selectedGroup || !currentUser?.uid) return;
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    if (!currentUser?.uid) return;
     try {
       const msgRef = firestore()
         .collection('community_groups')
-        .doc(selectedGroup.id)
+        .doc(targetGroupId)
         .collection('messages')
         .doc(messageId);
 
@@ -541,35 +1306,175 @@ const CommunityScreen = () => {
         delete existingReactions[currentUser.uid];
         await msgRef.update({ reactions: existingReactions });
       }
-    } catch (e) {
-      console.log('Remove Reaction Error:', e);
+    } catch (e) {}
+  };
+
+  const confirmDeleteSelectedMessages = async () => {
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    if (selectedMessageIds.length === 0) return;
+
+    const selectedMessages = selectedMessageIds
+      .map(id => chatMessages.find(m => m.id === id))
+      .filter(Boolean);
+
+    const canDeleteAllForEveryone = selectedMessages.length === selectedMessageIds.length &&
+      selectedMessages.every((message: any) => canDeleteForEveryone(message));
+
+    if (!canDeleteAllForEveryone) {
+      setDeleteModalVisible(false);
+      Alert.alert(
+        'Delete for everyone',
+        isAdmin
+          ? 'Unable to delete one or more selected messages.'
+          : 'You can delete your own messages for everyone only within 1 hour of sending them. Other messages can be deleted for you.'
+      );
+      return;
+    }
+
+    const idsToDelete = selectedMessages.map((message: any) => message.id);
+    const messagesBackup = chatMessages.filter(m => idsToDelete.includes(m.id));
+
+    setChatMessages(prev => prev.filter(m => !idsToDelete.includes(m.id)));
+    setSelectedMessageIds([]);
+    setDeleteModalVisible(false);
+
+    setPendingDeletedMessages(messagesBackup);
+    setShowUndoToast(true);
+
+    if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+
+    undoTimeoutRef.current = setTimeout(async () => {
+      setShowUndoToast(false);
+      setPendingDeletedMessages([]);
+      try {
+        const batch = firestore().batch();
+        idsToDelete.forEach((id) => {
+          const docRef = firestore()
+            .collection('community_groups')
+            .doc(targetGroupId)
+            .collection('messages')
+            .doc(id);
+          batch.delete(docRef);
+        });
+        await batch.commit();
+      } catch (error) {
+        setChatMessages(prev => [...messagesBackup, ...prev]);
+      }
+    }, 5000);
+  };
+
+  const deleteSelectedMessagesForMe = async () => {
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    const uid = currentUser?.uid;
+    if (!uid || selectedMessageIds.length === 0) return;
+
+    const idsToHide = [...selectedMessageIds];
+    setDeleteModalVisible(false);
+    setSelectedMessageIds([]);
+    setChatMessages(prev => prev.filter(m => !idsToHide.includes(m.id)));
+
+    try {
+      const batch = firestore().batch();
+      idsToHide.forEach((id) => {
+        const docRef = firestore()
+          .collection('community_groups')
+          .doc(targetGroupId)
+          .collection('messages')
+          .doc(id);
+        batch.update(docRef, {
+          deletedFor: firestore.FieldValue.arrayUnion(uid),
+        });
+      });
+      await batch.commit();
+    } catch (error: any) {
+      const restore = chatMessages.filter(m => idsToHide.includes(m.id));
+      setChatMessages(prev => {
+        const existingIds = prev.map(m => m.id);
+        return [...restore.filter(m => !existingIds.includes(m.id)), ...prev];
+      });
+      Alert.alert('Delete failed', error?.message || 'Could not delete the selected message(s) for you.');
     }
   };
 
-  // Trigger Custom Delete Modal
-  const promptDeleteChatMessage = (messageId: string) => {
-    setMessageToDelete(messageId);
-    setDeleteModalVisible(true);
+  const handleUndoDelete = () => {
+    if (undoTimeoutRef.current) clearTimeout(undoTimeoutRef.current);
+    setShowUndoToast(false);
+    if (pendingDeletedMessages.length > 0) {
+      setChatMessages(prev => {
+        const existingIds = prev.map(m => m.id);
+        const restored = pendingDeletedMessages.filter(m => !existingIds.includes(m.id));
+        return [...restored, ...prev];
+      });
+      setPendingDeletedMessages([]);
+    }
   };
 
-  // Confirm Delete Action
-  const confirmDeleteChatMessage = async () => {
-    if (!selectedGroup || !messageToDelete) return;
-    setIsDeleting(true);
+  const handleDeletePost = (id: string) => {
+    Alert.alert('Delete Post', 'Are you sure?', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Delete', style: 'destructive', onPress: () => firestore().collection('posts').doc(id).delete() }
+    ]);
+  };
+
+  const handleSendGroupMessage = async () => {
+    if (!chatInputText.trim()) return;
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    const messageContent = chatInputText.trim();
+    setChatInputText('');
+    setShowEmojiPicker(false);
+
+    if (editingMessage) {
+      const targetId = editingMessage.id;
+      setEditingMessage(null);
+      try {
+        await firestore()
+          .collection('community_groups')
+          .doc(targetGroupId)
+          .collection('messages')
+          .doc(targetId)
+          .update({
+            text: messageContent,
+            isEdited: true,
+            editedAt: firestore.FieldValue.serverTimestamp()
+          });
+      } catch (e: any) {
+        Alert.alert('Edit Failed', e.message || 'Could not update message.');
+      }
+      return;
+    }
+
+    const tempId = `temp_${Date.now()}`;
+    const messageType = isSingleEmojiText(messageContent) ? 'emoji' : 'text';
+    const optimisticMessage = {
+      id: tempId,
+      text: messageContent,
+      type: messageType,
+      senderId: currentUser?.uid || 'guest_user',
+      senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
+      senderPhoto: currentUser?.photoURL || null,
+      status: 'sending',
+      reactions: {},
+      isPinned: false,
+      createdAt: new Date(),
+    };
+
+    setChatMessages(prev => [optimisticMessage, ...prev]);
+
     try {
-      setChatMessages(prev => prev.filter(msg => msg.id !== messageToDelete));
-      await firestore()
-        .collection('community_groups')
-        .doc(selectedGroup.id)
-        .collection('messages')
-        .doc(messageToDelete)
-        .delete();
-    } catch (error: any) {
-      Alert.alert('Error', error.message);
-    } finally {
-      setIsDeleting(false);
-      setDeleteModalVisible(false);
-      setMessageToDelete(null);
+      await firestore().collection('community_groups').doc(targetGroupId).collection('messages').add({
+        text: messageContent,
+        type: messageType,
+        senderId: currentUser?.uid || 'guest_user',
+        senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
+        senderPhoto: currentUser?.photoURL || null,
+        status: 'sent',
+        reactions: {},
+        isPinned: false,
+        createdAt: firestore.FieldValue.serverTimestamp()
+      });
+    } catch (e: any) {
+      Alert.alert('Error', e.message);
+      setChatMessages(prev => prev.filter(m => m.id !== tempId));
     }
   };
 
@@ -588,54 +1493,27 @@ const CommunityScreen = () => {
     finally { setIsPosting(false); }
   };
 
-  const handleDeletePost = (id: string) => {
-    Alert.alert('Delete Post', 'Are you sure?', [
-      { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => firestore().collection('posts').doc(id).delete() }
-    ]);
-  };
-
-  const handleSendGroupMessage = async () => {
-    if (!chatInputText.trim() || !selectedGroup) return;
-    setIsSendingChat(true);
-    setShowEmojiPicker(false);
-    try {
-      await firestore().collection('community_groups').doc(selectedGroup.id).collection('messages').add({
-        text: chatInputText.trim(),
-        type: 'text',
-        senderId: currentUser?.uid || 'guest_user',
-        senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
-        status: 'sent',
-        reactions: {},
-        createdAt: firestore.FieldValue.serverTimestamp()
-      });
-      setChatInputText('');
-    } catch (e: any) { Alert.alert('Error', e.message); } 
-    finally { setIsSendingChat(false); }
-  };
-
-  const handleShareMedia = () => {
-    Alert.alert("Share File", "Choose media type to upload", [
-      { text: "📷 Camera", onPress: () => console.log("Camera") },
-      { text: "🖼️ Gallery Image", onPress: () => console.log("Image") },
-      { text: "📄 PDF Document", onPress: () => console.log("PDF") },
-      { text: "Cancel", style: "cancel" }
-    ]);
-  };
-
-  // Quiz Attempt Handlers
   const handleStartQuiz = (quiz: any) => {
-    if (completedQuizIds.includes(quiz.id)) {
-      Alert.alert('Attempted', 'You already attempted this quiz.');
+    const sourceQuiz = quiz || DEFAULT_QUIZ_CHALLENGES[0];
+    const normalizedQuestions = Array.isArray(sourceQuiz?.questions) && sourceQuiz.questions.length > 0
+      ? sourceQuiz.questions
+      : DEFAULT_QUIZ_CHALLENGES[0].questions;
+    const safeQuiz = { ...sourceQuiz, questions: normalizedQuestions };
+
+    if (completedQuizIds.includes(safeQuiz.id)) {
+      Alert.alert('Attempted', 'You already completed this challenge.');
       return;
     }
-    setCurrentTakingQuiz(quiz);
+
+    if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+    setCurrentTakingQuiz(safeQuiz);
     setCurrentQuestionIndex(0);
     setUserSelectedOption(null);
     setIsAnswerSubmitted(false);
     setCalculatedScore(0);
     setQuizCompleted(false);
     setShowConfetti(false);
+    setQuizTimerSeconds(15);
     setIsStudentQuizModalVisible(true);
   };
 
@@ -645,9 +1523,11 @@ const CommunityScreen = () => {
   };
 
   const handleConfirmAnswer = () => {
-    if (userSelectedOption === null) return;
+    if (userSelectedOption === null || isAnswerSubmitted) return;
+    if (quizTimerRef.current) clearInterval(quizTimerRef.current);
     const activeQ = currentTakingQuiz?.questions?.[currentQuestionIndex];
-    if (userSelectedOption === activeQ?.correctAnswerIndex) {
+    const isCorrect = userSelectedOption === activeQ?.correctAnswerIndex;
+    if (isCorrect) {
       setCalculatedScore(s => s + 1);
       setShowConfetti(true);
       playQuizSound(true);
@@ -659,22 +1539,64 @@ const CommunityScreen = () => {
   };
 
   const handleNextQuestion = () => {
-    const totalQ = currentTakingQuiz?.questions?.length || 0;
+    const totalQ = currentTakingQuiz?.questions?.length || 2;
+    const finalScore = calculatedScore;
+
     setShowConfetti(false);
     if (currentQuestionIndex + 1 < totalQ) {
       setCurrentQuestionIndex(i => i + 1);
       setUserSelectedOption(null);
       setIsAnswerSubmitted(false);
+      setQuizTimerSeconds(15);
     } else {
+      if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+      setCalculatedScore(finalScore);
       setQuizCompleted(true);
-      submitScoreToLeaderboard(calculatedScore, totalQ);
+      setShowConfetti(true);
+      playQuizCompletionSound();
+      submitScoreToLeaderboard(finalScore, totalQ);
     }
+  };
+
+  useEffect(() => {
+    if (!isStudentQuizModalVisible || quizCompleted || isAnswerSubmitted || !currentTakingQuiz) {
+      if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+      return;
+    }
+
+    quizTimerRef.current = setInterval(() => {
+      setQuizTimerSeconds(prev => {
+        if (prev <= 1) {
+          if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+          setUserSelectedOption(null);
+          setIsAnswerSubmitted(true);
+          setShowConfetti(false);
+          playQuizSound(false);
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+    };
+  }, [isStudentQuizModalVisible, quizCompleted, isAnswerSubmitted, currentTakingQuiz, currentQuestionIndex]);
+
+  const closeQuizModal = () => {
+    if (quizTimerRef.current) clearInterval(quizTimerRef.current);
+    setIsStudentQuizModalVisible(false);
+    setCurrentTakingQuiz(null);
+    setUserSelectedOption(null);
+    setIsAnswerSubmitted(false);
+    setShowConfetti(false);
+    setQuizCompleted(false);
   };
 
   const submitScoreToLeaderboard = async (finalScore: number, totalQ: number) => {
     if (!currentUser || !currentTakingQuiz) return;
     try {
-      const earnedXP = finalScore * 10;
+      const earnedXP = 20;
       await firestore().collection('quiz_results').add({
         quizId: currentTakingQuiz.id,
         quizTitle: currentTakingQuiz.title || 'Challenge',
@@ -686,16 +1608,16 @@ const CommunityScreen = () => {
         completedAt: firestore.FieldValue.serverTimestamp()
       });
 
+      // Strictly awards XP only. No streak increments.
       await firestore().collection('users').doc(currentUser.uid).set({
         xp: firestore.FieldValue.increment(earnedXP)
       }, { merge: true });
     } catch (error) {}
   };
 
-  const activeQuizTotal = currentTakingQuiz?.questions?.length || 0;
+  const activeQuizTotal = currentTakingQuiz?.questions?.length || 2;
   const activeQuizQuestion = currentTakingQuiz?.questions?.[currentQuestionIndex];
 
-  // Helper to Render Message Status Ticks
   const renderMessageTicks = (item: any) => {
     if (onlineMembers > 1) {
       return <CheckCheck size={13} color="#38BDF8" style={{ marginLeft: 4 }} />;
@@ -706,682 +1628,2885 @@ const CommunityScreen = () => {
     }
   };
 
-  // Helper to Render Reaction Badges
-  const renderReactionsSummary = (item: any) => {
-    const reactions = item?.reactions || {};
-    const reactionValues: string[] = Object.values(reactions);
-    if (reactionValues.length === 0) return null;
-
-    const uniqueEmojis = Array.from(new Set(reactionValues)).slice(0, 3);
-    const hasMyReaction = currentUser?.uid && reactions[currentUser.uid];
-
-    return (
-      <TouchableOpacity 
-        style={[
-          styles.reactionsSummaryBadge, 
-          hasMyReaction && { borderColor: primaryColor, backgroundColor: primaryColor + '25' }
-        ]}
-        onPress={() => handleRemoveMyReaction(item.id)}
-        activeOpacity={0.8}
-      >
-        <Text style={{ fontSize: 11 }}>{uniqueEmojis.join(' ')}</Text>
-        {reactionValues.length > 1 && (
-          <Text style={styles.reactionCountText}>{reactionValues.length}</Text>
-        )}
-      </TouchableOpacity>
-    );
-  };
+  const currentHeaderImage = activeTab === 2 ? IMG_CHILD_CHALLENGES : IMG_CHILDREN_DEFAULT;
+  const editableMsg = getSingleSelectedEditableMessage();
 
   return (
     <View style={[styles.container, { backgroundColor: colors.bgLight }]}>
       <StatusBar barStyle={isDarkMode ? "light-content" : "dark-content"} backgroundColor={colors.bgLight} translucent />
 
-      {/* Main Header */}
-      <View style={[styles.header, { paddingTop: (StatusBar.currentHeight || 0) + 12 }]}>
-        <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
-          <View>
-            <Text style={[styles.title, { color: colors.textPrimary }]}>{t?.community?.title || 'Community'}</Text>
-            <Text style={[styles.subtitleText, { color: colors.textSecondary }]}>{t?.community?.subtitle || 'Connect, Learn & Rank'}</Text>
+      {/* ─── 1. TOP HERO HEADER ─── */}
+      <View style={styles.responsiveCenterWrapper}>
+        <View style={[styles.topHeroHeader, { paddingTop: (StatusBar.currentHeight || 0) + 12 }]}>
+          <View style={styles.headerLeftBlock}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+              <View style={styles.realChatLogoPill}>
+                <MessageCircle size={22} color="#3B82F6" strokeWidth={2.4} />
+              </View>
+              <Text style={[styles.mainScreenTitle, { color: colors.textPrimary }]}>Community</Text>
+            </View>
+            <Text style={[styles.mainScreenSubtitle, { color: colors.textSecondary }]}>
+              Learn • Speak • Grow Together ✨
+            </Text>
           </View>
-          <View style={[styles.verifiedGlowBadge, { backgroundColor: primaryColor + '1F' }]}>
-            <ShieldCheck size={16} color={primaryColor} />
-            <Text style={[styles.verifiedGlowText, { color: primaryColor }]}>Official</Text>
+
+          <View style={styles.headerRightBlock}>
+            <Image 
+              source={currentHeaderImage} 
+              style={styles.childrenArtworkTouching} 
+              resizeMode="contain" 
+            />
           </View>
+        </View>
+
+        {/* ─── 2. 4-TABS NAVIGATION ─── */}
+        <View style={[styles.tabsContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#E2E8F0' }]}>
+          {TABS.map((tabItem, idx) => (
+            <TouchableOpacity 
+              key={tabItem.title} 
+              style={[styles.tab, activeTab === idx && [styles.activeTab, { backgroundColor: colors.bgCard }]]} 
+              onPress={() => handleTabPress(idx)}
+              activeOpacity={0.85}
+            >
+              {idx === 0 ? (
+                <Sparkles size={14} color={activeTab === idx ? primaryColor : colors.textSecondary} />
+              ) : idx === 1 ? (
+                <MessageCircle size={14} color={activeTab === idx ? primaryColor : colors.textSecondary} />
+              ) : idx === 2 ? (
+                <Trophy size={14} color={activeTab === idx ? '#8B5CF6' : colors.textSecondary} />
+              ) : (
+                <Flame size={14} color={activeTab === idx ? '#EF4444' : colors.textSecondary} />
+              )}
+              <Text style={[styles.tabText, { color: colors.textSecondary }, activeTab === idx && { color: activeTab === 2 ? '#8B5CF6' : primaryColor, fontWeight: '900' }]}>
+                {tabItem.title}
+              </Text>
+            </TouchableOpacity>
+          ))}
         </View>
       </View>
 
-      {/* Navigation Tabs */}
-      <View style={[styles.tabsContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#E2E8F0' }]}>
-        {TABS.map((tab, idx) => (
-          <TouchableOpacity key={tab} style={[styles.tab, activeTab === idx && [styles.activeTab, { backgroundColor: colors.bgCard }]]} onPress={() => handleTabPress(idx)}>
-            <Text style={[styles.tabText, { color: colors.textSecondary }, activeTab === idx && { color: primaryColor, fontWeight: '800' }]}>{tab}</Text>
-          </TouchableOpacity>
-        ))}
-      </View>
-
-      {/* 🌟 HORIZONTAL SWIPE PAGER */}
+      {/* ─── 3. REAL-TIME SWIPE PAGER (Touch-Slider Responsive) ─── */}
       <ScrollView
         ref={pagerRef}
         horizontal
         pagingEnabled
         showsHorizontalScrollIndicator={false}
-        onMomentumScrollEnd={handleScrollEnd}
+        onMomentumScrollEnd={handleMomentumScrollEnd}
+        scrollEventThrottle={16}
         style={{ flex: 1 }}
       >
         {/* TAB 0: FEED */}
         <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
-          <View style={[styles.createPostBox, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-            <TextInput style={[styles.postInput, { color: colors.textPrimary }]} placeholder="Post an update or query..." placeholderTextColor={colors.textSecondary} value={newPostText} onChangeText={setNewPostText} multiline />
-            <TouchableOpacity style={[styles.sendBtn, { backgroundColor: primaryColor, shadowColor: primaryColor }, !newPostText.trim() && { opacity: 0.5 }]} onPress={handleCreatePost} disabled={isPosting || !newPostText.trim()}>
-              {isPosting ? <ActivityIndicator size="small" color="#FFF" /> : <Send size={16} color="#FFF" />}
-            </TouchableOpacity>
-          </View>
-          <FlatList 
-            data={posts} 
-            keyExtractor={item => item.id} 
-            showsVerticalScrollIndicator={false} 
-            contentContainerStyle={styles.scrollList} 
-            renderItem={({ item }) => {
-              const canDelete = isAdmin || (currentUser?.uid && item.uid === currentUser.uid);
-              return (
-                <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-                  <View style={styles.cardHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
-                      <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(item.userName) }]}><Text style={styles.avatarText}>{item.userName?.charAt(0).toUpperCase() || 'U'}</Text></View>
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.userNameText, { color: colors.textPrimary }]}>{item.userName || 'User'}</Text>
-                        <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 1 }}>{formatTimeAgo(item.createdAt)}</Text>
+          <View style={styles.responsiveCenterWrapper}>
+            <View style={[styles.createPostBox, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+              <TextInput 
+                style={[styles.postInput, { color: colors.textPrimary }]} 
+                placeholder="Post an update or query..." 
+                placeholderTextColor={colors.textSecondary} 
+                value={newPostText} 
+                onChangeText={setNewPostText} 
+                multiline 
+              />
+              <TouchableOpacity style={[styles.sendBtn, { backgroundColor: primaryColor }, !newPostText.trim() && { opacity: 0.5 }]} onPress={handleCreatePost} disabled={isPosting || !newPostText.trim()}>
+                {isPosting ? <ActivityIndicator size="small" color="#FFF" /> : <Send size={16} color="#FFF" />}
+              </TouchableOpacity>
+            </View>
+            <FlatList 
+              data={posts} 
+              keyExtractor={item => item.id} 
+              showsVerticalScrollIndicator={false} 
+              contentContainerStyle={styles.scrollList} 
+              renderItem={({ item }) => {
+                const canDelete = isAdmin || (currentUser?.uid && item.uid === currentUser.uid);
+                return (
+                  <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                    <View style={styles.cardHeader}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                        <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(item.userName) }]}>
+                          <Text style={styles.avatarText}>{item.userName?.charAt(0).toUpperCase() || 'U'}</Text>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={[styles.userNameText, { color: colors.textPrimary }]}>{item.userName || 'User'}</Text>
+                          <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 1 }}>{formatTimeAgo(item.createdAt)}</Text>
+                        </View>
                       </View>
+                      {canDelete && (
+                        <TouchableOpacity onPress={() => handleDeletePost(item.id)} style={styles.deleteIconButton}>
+                          <Trash2 size={16} color="#EF4444" />
+                        </TouchableOpacity>
+                      )}
                     </View>
-                    {canDelete && (
-                      <TouchableOpacity onPress={() => handleDeletePost(item.id)} style={styles.deleteIconButton}>
-                        <Trash2 size={16} color="#EF4444" />
-                      </TouchableOpacity>
-                    )}
+                    <Text style={{ color: colors.textPrimary, marginTop: 10, fontSize: 14, lineHeight: 21 }}>{item.text}</Text>
                   </View>
-                  <Text style={{ color: colors.textPrimary, marginTop: 10, fontSize: 14, lineHeight: 21 }}>{item.text}</Text>
-                </View>
-              );
-            }}
-          />
+                );
+              }}
+            />
+          </View>
         </View>
 
         {/* TAB 1: CHATS & VOICE ROOMS */}
         <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
           <ScrollView contentContainerStyle={styles.scrollList} showsVerticalScrollIndicator={false}>
-            <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>Community Groups</Text>
-            
-            <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
-                <View style={[styles.chatIconGlowWrap, { backgroundColor: primaryColor + '1F' }]}>
-                  <MessageCircle color={primaryColor} size={28} />
-                </View>
-                <View style={{ flex: 1 }}>
-                  <Text style={{ color: colors.textPrimary, fontSize: 18, fontWeight: '800' }}>Ecc Community Chat</Text>
-                  <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 2 }}>Official ECC Global Chat Room</Text>
-                  <View style={{ flexDirection: 'row', gap: 8, marginTop: 10 }}>
-                    <View style={[styles.badgePillPrimary, { backgroundColor: primaryColor + '20' }]}>
-                      <Users size={12} color={primaryColor} />
-                      <Text style={{ color: primaryColor, fontSize: 11, fontWeight: '700' }}>{totalMembers} members</Text>
-                    </View>
-                    <View style={[styles.badgePillStatus, { backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.18)' }]}>
-                      <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
-                      <Text style={{ color: onlineMembers > 0 ? primaryColor : '#64748B', fontSize: 11, fontWeight: '700' }}>
-                        {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-              </View>
-              <TouchableOpacity 
-                style={[styles.openGroupBtn, { backgroundColor: primaryColor, shadowColor: primaryColor }]}
-                onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'Ecc Community Chat' })}
-                activeOpacity={0.85}
-              >
-                <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 15, marginRight: 6 }}>Open Group Chat</Text>
-                <ChevronRight size={18} color="#FFF" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginTop: 20, marginBottom: 12 }}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <View style={{ width: 36, height: 36, borderRadius: 12, backgroundColor: primaryColor + '20', justifyContent: 'center', alignItems: 'center' }}>
-                  <Headset color={primaryColor} size={20} />
-                </View>
-                <Text style={[styles.sectionHeading, { marginTop: 0, color: colors.textPrimary }]}>Voice Rooms</Text>
-              </View>
-              <TouchableOpacity><Text style={{ color: primaryColor, fontWeight: '700', fontSize: 13 }}>Join Room ›</Text></TouchableOpacity>
-            </View>
-
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 10 }}>
-              {[{ title: 'Beginner', desc: 'New learners', emoji: '🚀' }, { title: 'Intermediate', desc: 'Growing together', emoji: '🎤' }, { title: 'Expert', desc: 'Advanced talk', emoji: '🎧' }].map((room, i) => (
-                <TouchableOpacity key={i} style={[styles.voiceRoomCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]} activeOpacity={0.85}>
-                  <View style={[styles.voiceEmojiWrap, { backgroundColor: primaryColor + '1F' }]}>
-                    <Text style={{ fontSize: 26 }}>{room.emoji}</Text>
-                  </View>
-                  <Text style={{ color: colors.textPrimary, fontSize: 15, fontWeight: '800', marginTop: 6 }}>{room.title}</Text>
-                  <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>{room.desc}</Text>
-                  <View style={[styles.onlineBadge, { marginTop: 12, backgroundColor: onlineMembers > 0 ? primaryColor + '20' : 'rgba(148, 163, 184, 0.15)' }]}>
-                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
-                    <Text style={{ fontSize: 10, fontWeight: '800', color: onlineMembers > 0 ? primaryColor : '#64748B' }}>
-                      {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
-                    </Text>
-                  </View>
+            <View style={styles.responsiveCenterWrapper}>
+              <View style={styles.sectionTitleRow}>
+                <Text style={[styles.sectionHeadingTitle, { color: colors.textPrimary }]}>Community Groups</Text>
+                <TouchableOpacity onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'ECC Community Chat' })}>
+                  <Text style={{ color: primaryColor, fontWeight: '900', fontSize: 13 }}>See All ›</Text>
                 </TouchableOpacity>
-              ))}
-            </ScrollView>
-          </ScrollView>
-        </View>
+              </View>
 
-        {/* TAB 2: CHALLENGES / QUIZ */}
-        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
-          <FlatList 
-            data={challengesData} 
-            keyExtractor={item => item.id} 
-            contentContainerStyle={styles.scrollList} 
-            renderItem={({ item }) => {
-              const isDone = completedQuizIds.includes(item.id);
-              const totalQ = item?.questions?.length || item?.totalQuestions || 0;
-
-              return (
-                <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, shadowColor: primaryColor }]}>
-                  <View style={styles.cardHeader}>
-                    <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14, flex: 1 }}>
-                      <View style={[styles.quizIconGlowContainer, { backgroundColor: 'rgba(245, 158, 11, 0.18)' }]}>
-                        <Trophy size={22} color="#F59E0B" />
-                      </View>
-                      <View style={{ flex: 1, paddingRight: 6 }}>
-                        <Text style={[styles.quizTitleText, { color: colors.textPrimary }]} numberOfLines={1}>{item.title}</Text>
-                        <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
-                          <Text style={[styles.cardSubtitle, { color: colors.textSecondary }]}>{totalQ} Questions</Text>
-                          <View style={styles.xpPillBadge}>
-                            <Sparkles size={11} color="#F59E0B" />
-                            <Text style={styles.xpPillText}>+{totalQ * 10} XP</Text>
+              {/* CHATS BANNER CARD */}
+              <View style={styles.chatCardOuterWrapper}>
+                <Image source={IMG_COMMUNITY_CARD} style={styles.chatBannerImageTight} resizeMode="cover" />
+                
+                <View style={styles.communityContentLayer}>
+                  <View style={styles.communityTopRow}>
+                    <View style={styles.eccAvatarPillWrap}>
+                      <Text style={styles.eccAvatarText}>ECC</Text>
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' }}>
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 5 }}>
+                          <Text style={styles.chatCardTitle}>
+                            ECC Community Chat
+                          </Text>
+                          <View style={styles.realBlueTickBadge}>
+                            <Check size={10} color="#FFFFFF" strokeWidth={3.5} />
                           </View>
+                        </View>
+
+                        {communityMembersList.length > 0 && (
+                          <TouchableOpacity 
+                            style={styles.membersAvatarRow} 
+                            onPress={() => setShowMembersListModal(true)} 
+                            activeOpacity={0.8}
+                          >
+                            {communityMembersList.slice(0, 3).map((m, mIdx) => (
+                              <View 
+                                key={m.id || mIdx} 
+                                style={[
+                                  styles.memberCircleAvatar, 
+                                  { 
+                                    marginLeft: mIdx > 0 ? -10 : 0, 
+                                    backgroundColor: getAvatarColor(m.userName),
+                                    zIndex: 10 - mIdx
+                                  }
+                                ]}
+                              >
+                                {m.photoURL ? (
+                                  <Image source={{ uri: m.photoURL }} style={styles.memberImg} />
+                                ) : (
+                                  <Text style={styles.memberInitialsText}>
+                                    {(m.userName || 'U').charAt(0).toUpperCase()}
+                                  </Text>
+                                )}
+                              </View>
+                            ))}
+                            {totalMembers > 3 && (
+                              <View style={[styles.memberCircleAvatarPlus, { marginLeft: -10, zIndex: 5 }]}>
+                                <Text style={styles.memberPlusText}>+{totalMembers - 3}</Text>
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                      </View>
+
+                      <Text style={styles.chatCardSub}>
+                        Official ECC Learners Group
+                      </Text>
+                      
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
+                        <View style={styles.memberTagBadge}>
+                          <Users size={11} color="#0F172A" />
+                          <Text style={styles.memberTagBadgeText}>{totalMembers} Members</Text>
+                        </View>
+                        <View style={styles.activeTagBadge}>
+                          <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
+                          <Text style={[styles.activeTagBadgeText, { color: onlineMembers > 0 ? '#059669' : '#64748B' }]}>
+                            {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
+                          </Text>
                         </View>
                       </View>
                     </View>
                   </View>
 
-                  {isDone ? (
-                    <View style={[styles.completedStatusBanner, { backgroundColor: primaryColor + '20' }]}>
-                      <CheckCircle size={16} color={primaryColor} />
-                      <Text style={{ color: primaryColor, fontWeight: '800', fontSize: 13, marginLeft: 6 }}>Completed</Text>
+                  {isAdmin ? (
+                    <TouchableOpacity 
+                      style={[styles.openChatActionBtn, { backgroundColor: '#8B5CF6' }]}
+                      onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'ECC Community Chat' })}
+                      activeOpacity={0.88}
+                    >
+                      <ShieldCheck size={16} color="#FFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.openChatActionBtnText}>Open Group Chat (Admin Access)</Text>
+                      <ChevronRight size={16} color="#FFF" style={{ marginLeft: 4 }} />
+                    </TouchableOpacity>
+                  ) : !isMember ? (
+                    <View style={styles.neonGlowWrapper}>
+                      <TouchableOpacity 
+                        style={styles.premiumShineJoinBtn} 
+                        onPress={() => setShowJoinConfirmModal(true)}
+                        disabled={isJoining}
+                        activeOpacity={0.88}
+                      >
+                        {isJoining ? (
+                          <ActivityIndicator size="small" color="#FFFFFF" />
+                        ) : (
+                          <>
+                            <UserPlus size={17} color="#FFFFFF" style={{ marginRight: 8 }} />
+                            <Text style={styles.premiumShineJoinBtnText}>Join Community ✨</Text>
+                          </>
+                        )}
+                      </TouchableOpacity>
                     </View>
                   ) : (
-                    <TouchableOpacity style={[styles.startQuizButton, { backgroundColor: primaryColor, shadowColor: primaryColor }]} onPress={() => handleStartQuiz(item)} activeOpacity={0.85}>
-                      <Text style={styles.actionBtnText}>Start Quiz Challenge</Text>
+                    <TouchableOpacity 
+                      style={[styles.openChatActionBtn, { backgroundColor: primaryColor }]}
+                      onPress={() => openChatModal({ id: 'ecc_community_chat', title: 'ECC Community Chat' })}
+                      activeOpacity={0.88}
+                    >
+                      <MessageCircle size={16} color="#FFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.openChatActionBtnText}>Open Group Chat</Text>
+                      <ChevronRight size={16} color="#FFF" style={{ marginLeft: 4 }} />
                     </TouchableOpacity>
                   )}
                 </View>
-              );
-            }} 
-          />
+              </View>
+
+              {/* VOICE ROOMS SECTION */}
+              <View style={[styles.sectionTitleRow, { marginTop: 26 }]}>
+                <Text style={[styles.sectionHeadingTitle, { color: colors.textPrimary }]}>Voice Rooms</Text>
+                <View style={styles.liveNowPill}>
+                  <Radio size={12} color="#3B82F6" />
+                  <Text style={styles.liveNowPillText}>Live Now</Text>
+                </View>
+              </View>
+
+              <View style={styles.voiceRoomsRow}>
+                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#FEE2E2' }]}>
+                    <Text style={{ fontSize: 26 }}>🚀</Text>
+                  </View>
+                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>English Learners</Text>
+                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]} numberOfLines={1}>Practice Together</Text>
+                  <View style={styles.roomOnlineStatusRow}>
+                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
+                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>{onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}</Text>
+                  </View>
+                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
+                    <Mic size={13} color={primaryColor} />
+                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#E0E7FF' }]}>
+                    <Text style={{ fontSize: 26 }}>🎤</Text>
+                  </View>
+                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>Interview Prep</Text>
+                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]} numberOfLines={1}>Mock Sessions</Text>
+                  <View style={styles.roomOnlineStatusRow}>
+                    <View style={[styles.greenDot, { backgroundColor: '#64748B' }]} />
+                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>Offline</Text>
+                  </View>
+                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
+                    <Mic size={13} color={primaryColor} />
+                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
+                  </TouchableOpacity>
+                </View>
+
+                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#E0F2FE' }]}>
+                    <Text style={{ fontSize: 26 }}>🎧</Text>
+                  </View>
+                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>Accent Boost</Text>
+                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]}>Speak Confidently</Text>
+                  <View style={styles.roomOnlineStatusRow}>
+                    <View style={[styles.greenDot, { backgroundColor: '#64748B' }]} />
+                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>Offline</Text>
+                  </View>
+                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
+                    <Mic size={13} color={primaryColor} />
+                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+
+              <View style={[styles.fluencyTipBanner, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFBEB', borderColor: isDarkMode ? '#334155' : '#FDE68A', marginTop: 22 }]}>
+                <Text style={{ fontSize: 16, marginRight: 8 }}>💡</Text>
+                <Text style={[styles.fluencyTipText, { color: isDarkMode ? '#F8FAFC' : '#92400E' }]}>
+                  <Text style={{ fontWeight: '900' }}>Tip: </Text>Join voice rooms to improve your fluency faster! 😊
+                </Text>
+              </View>
+            </View>
+          </ScrollView>
+        </View>
+
+        {/* TAB 2: CHALLENGES */}
+        <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
+          <ScrollView contentContainerStyle={styles.scrollList} showsVerticalScrollIndicator={false}>
+            <View style={styles.responsiveCenterWrapper}>
+              <View style={styles.sectionTitleRow}>
+                <Text style={[styles.sectionHeadingTitle, { color: colors.textPrimary }]}>Daily Challenges</Text>
+                <TouchableOpacity><Text style={{ color: '#8B5CF6', fontWeight: '900', fontSize: 13 }}>View History ›</Text></TouchableOpacity>
+              </View>
+
+              {/* Quiz Card 1 */}
+              <View style={[styles.challengeCardBox, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                    <View style={styles.challengeIconBubble3D}>
+                      <Text style={{ fontSize: 22 }}>🏆</Text>
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.challengeCardTitle, { color: colors.textPrimary }]}>Quiz: Listen & Grammar Focus</Text>
+                      <Text style={[styles.challengeCardSub, { color: colors.textSecondary }]}>Complete 2 questions on natural rhythm & grammar</Text>
+                    </View>
+                  </View>
+                  <View style={styles.timeLeftBadge}>
+                    <Clock size={11} color="#3B82F6" />
+                    <Text style={styles.timeLeftBadgeText}>10h 30m Left</Text>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.textSecondary }}>Reward: <Text style={{ color: '#F59E0B', fontWeight: '900' }}>🪙 20 XP</Text></Text>
+                </View>
+
+                {completedQuizIds.includes('quiz_challenge_1') ? (
+                  <View style={styles.completedChallengePill}>
+                    <CheckCircle size={15} color="#10B981" />
+                    <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 13, marginLeft: 6 }}>Completed</Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity style={styles.startChallengeActionBtn} onPress={() => handleStartQuiz(challengesData.find((q: any) => q.id === 'quiz_challenge_1') || DEFAULT_QUIZ_CHALLENGES[0])} activeOpacity={0.85}>
+                    <Text style={styles.startChallengeActionBtnText}>Start Challenge</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Quiz Card 2 */}
+              <View style={[styles.challengeCardBoxGreen, { backgroundColor: isDarkMode ? 'rgba(16, 185, 129, 0.08)' : '#F0FDF4', borderColor: '#BBF7D0' }]}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12, flex: 1 }}>
+                    <View style={[styles.challengeIconBubble3D, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
+                      <CheckCircle size={22} color="#10B981" />
+                    </View>
+                    <View style={{ flex: 1 }}>
+                      <Text style={[styles.challengeCardTitle, { color: colors.textPrimary }]}>Quiz: Vocabulary & Pronunciation</Text>
+                      <Text style={[styles.challengeCardSub, { color: colors.textSecondary }]}>Test subtle sounds and advanced vocabulary</Text>
+                    </View>
+                  </View>
+                  <View style={[styles.timeLeftBadge, { backgroundColor: 'rgba(16, 185, 129, 0.12)' }]}>
+                    <Clock size={11} color="#10B981" />
+                    <Text style={[styles.timeLeftBadgeText, { color: '#10B981' }]}>1d 2h Left</Text>
+                  </View>
+                </View>
+
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginBottom: 14 }}>
+                  <Text style={{ fontSize: 12.5, fontWeight: '700', color: colors.textSecondary }}>Reward: <Text style={{ color: '#F59E0B', fontWeight: '900' }}>🪙 20 XP</Text></Text>
+                </View>
+
+                {completedQuizIds.includes('quiz_challenge_2') ? (
+                  <View style={styles.completedChallengePill}>
+                    <CheckCircle size={15} color="#10B981" />
+                    <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 13, marginLeft: 6 }}>Completed</Text>
+                  </View>
+                ) : (
+                  <TouchableOpacity style={[styles.startChallengeActionBtn, { backgroundColor: '#10B981', shadowColor: '#10B981' }]} onPress={() => handleStartQuiz(challengesData.find((q: any) => q.id === 'quiz_challenge_2') || DEFAULT_QUIZ_CHALLENGES[1])} activeOpacity={0.85}>
+                    <Text style={styles.startChallengeActionBtnText}>Start Challenge</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+
+              {/* Play & Learn */}
+              <View style={[styles.sectionTitleRow, { marginTop: 18 }]}>
+                <View>
+                  <Text style={[styles.sectionHeadingTitle, { color: colors.textPrimary }]}>Play & Learn</Text>
+                  <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>Tap letters to form words and learn vocabulary!</Text>
+                </View>
+                <TouchableOpacity onPress={() => setIsResultsModalVisible(true)} activeOpacity={0.8}>
+                  <Text style={{ color: '#8B5CF6', fontWeight: '900', fontSize: 13 }}>See Results ›</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.playLearnSingleContainer}>
+                <TouchableOpacity 
+                  style={[styles.singleGameCard, { backgroundColor: '#F3E8FF', borderColor: '#D8B4FE' }]} 
+                  onPress={() => openWordZipScreen(0)}
+                  activeOpacity={0.88}
+                >
+                  <View style={styles.singleGameLeftRow}>
+                    <View style={[styles.gameIconBubbleLarge, { backgroundColor: '#E9D5FF' }]}>
+                      <Puzzle size={28} color="#9333EA" />
+                    </View>
+                    <View style={{ flex: 1, marginLeft: 14 }}>
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Text style={[styles.gameCardTitle, { color: '#581C87', fontSize: 17 }]}>Word Zip Puzzle</Text>
+                        <View style={styles.xpBonusBadge}>
+                          <Text style={styles.xpBonusBadgeText}>+20 XP</Text>
+                        </View>
+                      </View>
+                      <Text style={[styles.gameCardSub, { marginTop: 4, minHeight: 0 }]}>
+                        Tap letters to discover vocabulary & meanings
+                      </Text>
+                    </View>
+                  </View>
+
+                  <View style={styles.singleGamePlayButton}>
+                    <Text style={styles.singleGamePlayButtonText}>Play Now ›</Text>
+                  </View>
+                </TouchableOpacity>
+              </View>
+
+              <View style={[styles.fluencyTipBanner, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFBEB', borderColor: isDarkMode ? '#334155' : '#FDE68A', marginTop: 16 }]}>
+                <Text style={{ fontSize: 16, marginRight: 8 }}>💡</Text>
+                <Text style={[styles.fluencyTipText, { color: isDarkMode ? '#F8FAFC' : '#92400E' }]}>
+                  <Text style={{ fontWeight: '900' }}>Tip: </Text>Complete challenges daily to build your vocabulary! 😊
+                </Text>
+              </View>
+            </View>
+          </ScrollView>
         </View>
 
         {/* TAB 3: LEADERBOARD */}
         <View style={{ width: SCREEN_WIDTH, flex: 1 }}>
-          <FlatList 
-            data={leaderboardUsers} 
-            keyExtractor={item => item.id} 
-            contentContainerStyle={styles.scrollList} 
-            renderItem={({ item, index }) => {
-              const rawName = item.fullName || item.userName || 'User';
-              const isTop1 = index === 0;
-              const isTop2 = index === 1;
-              const isTop3 = index === 2;
+          <View style={styles.responsiveCenterWrapper}>
+            <FlatList 
+              data={leaderboardUsers} 
+              keyExtractor={item => item.id} 
+              contentContainerStyle={styles.scrollList} 
+              renderItem={({ item, index }) => {
+                const rawName = item.fullName || item.userName || 'User';
+                const isTop1 = index === 0;
+                const isTop2 = index === 1;
+                const isTop3 = index === 2;
 
-              return (
-                <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, flexDirection: 'row', alignItems: 'center', shadowColor: primaryColor }]}>
-                  <View style={{ width: 32, alignItems: 'center', justifyContent: 'center' }}>
-                    {isTop1 ? <Text style={{ fontSize: 22 }}>🥇</Text> : 
-                     isTop2 ? <Text style={{ fontSize: 22 }}>🥈</Text> : 
-                     isTop3 ? <Text style={{ fontSize: 22 }}>🥉</Text> : 
-                     <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textSecondary }}>#{index + 1}</Text>}
-                  </View>
+                return (
+                  <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border, flexDirection: 'row', alignItems: 'center' }]}>
+                    <View style={{ width: 32, alignItems: 'center', justifyContent: 'center' }}>
+                      {isTop1 ? <Text style={{ fontSize: 22 }}>🥇</Text> : 
+                       isTop2 ? <Text style={{ fontSize: 22 }}>🥈</Text> : 
+                       isTop3 ? <Text style={{ fontSize: 22 }}>🥉</Text> : 
+                       <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textSecondary }}>#{index + 1}</Text>}
+                    </View>
 
-                  <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(rawName), marginLeft: 8 }]}>
-                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>{rawName.charAt(0).toUpperCase()}</Text>
-                  </View>
+                    <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(rawName), marginLeft: 8 }]}>
+                      <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>{rawName.charAt(0).toUpperCase()}</Text>
+                    </View>
 
-                  <View style={{ flex: 1, marginLeft: 12 }}>
-                    <Text style={[styles.userNameText, { color: colors.textPrimary, fontSize: 15 }]}>{rawName}</Text>
-                  </View>
+                    <View style={{ flex: 1, marginLeft: 12 }}>
+                      <Text style={[styles.userNameText, { color: colors.textPrimary, fontSize: 15 }]}>{rawName}</Text>
+                    </View>
 
-                  <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 }}>
-                    <Flame size={16} color="#EF4444" />
-                    <Text style={{ fontWeight: '800', color: colors.textPrimary, marginLeft: 4, fontSize: 13 }}>{item.xp || 0} XP</Text>
+                    <View style={{ flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.12)', paddingHorizontal: 12, paddingVertical: 6, borderRadius: 12 }}>
+                      <Flame size={16} color="#EF4444" />
+                      <Text style={{ fontWeight: '800', color: colors.textPrimary, marginLeft: 4, fontSize: 13 }}>{item.xp || 0} XP</Text>
+                    </View>
                   </View>
-                </View>
-              );
-            }} 
-          />
+                );
+              }} 
+            />
+          </View>
         </View>
       </ScrollView>
 
-      {/* 💬 REAL CHAT APP GROUP MODAL */}
-      <Modal visible={isChatModalVisible} animationType="slide" onRequestClose={closeChatModal}>
+      {/* WORD ZIP MODAL */}
+      <Modal visible={isZipScreenVisible} animationType="slide" onRequestClose={() => setIsZipScreenVisible(false)}>
         <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgLight }}>
-          <KeyboardAvoidingView 
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined} 
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
-            style={{ flex: 1 }}
-          >
-            {/* Modal Header */}
-            <View style={{ 
-              flexDirection: 'row', alignItems: 'center', paddingHorizontal: 16, paddingBottom: 14, 
-              backgroundColor: colors.bgCard, borderBottomWidth: 1, borderColor: colors.border,
-              paddingTop: Platform.OS === 'ios' ? 55 : (StatusBar.currentHeight || 0) + 15
-            }}>
-              <TouchableOpacity onPress={closeChatModal} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}>
-                <X size={24} color={colors.textPrimary} />
-              </TouchableOpacity>
-              <View style={{ flex: 1, marginLeft: 12 }}>
-                <Text style={{ fontSize: 17, fontWeight: '800', color: colors.textPrimary }}>{selectedGroup?.title}</Text>
-                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{totalMembers} Members</Text>
-                  <Text style={{ fontSize: 11, color: colors.textSecondary }}>•</Text>
-                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? primaryColor : '#64748B' }]} />
-                    <Text style={{ fontSize: 11, color: onlineMembers > 0 ? primaryColor : '#64748B', fontWeight: '700' }}>
-                      {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
-                    </Text>
-                  </View>
-                </View>
-              </View>
-            </View>
-
-            {/* Chat List */}
-            <View style={{ flex: 1, width: '100%' }}>
-              <FlatList
-                data={chatMessages}
-                keyExtractor={(item) => item.id}
-                inverted
-                keyboardShouldPersistTaps="handled"
-                contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12 }}
-                renderItem={({ item, index }) => {
-                  const isMe = item.senderId === (currentUser?.uid || 'guest_user');
-                  const isPlaying = playingAudioId === item.id;
-                  const canDelete = isAdmin || isMe;
-
-                  const currentDateHeader = getMessageDateHeader(item.createdAt);
-                  const nextMessage = chatMessages[index + 1];
-                  const nextDateHeader = nextMessage ? getMessageDateHeader(nextMessage.createdAt) : null;
-                  const showDateHeader = currentDateHeader !== nextDateHeader;
-
-                  return (
-                    <View style={{ width: '100%' }}>
-                      {showDateHeader && (
-                        <View style={{ alignItems: 'center', marginVertical: 12 }}>
-                          <View style={{ backgroundColor: isDarkMode ? '#2A2A2A' : '#E2E8F0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-                            <Text style={{ fontSize: 10, fontWeight: '700', color: colors.textSecondary }}>
-                              {currentDateHeader}
-                            </Text>
-                          </View>
-                        </View>
-                      )}
-
-                      <View style={{ alignSelf: isMe ? 'flex-end' : 'flex-start', marginVertical: 6, maxWidth: '85%' }}>
-                        {!isMe && <Text style={{ fontSize: 11, color: colors.textSecondary, marginBottom: 2, fontWeight: '700', marginLeft: 4 }}>{item.senderName}</Text>}
-                        
-                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
-                          <TouchableOpacity 
-                            activeOpacity={0.9} 
-                            onLongPress={() => setSelectedMessageForReaction(item)}
-                            onPress={() => setSelectedMessageForReaction(selectedMessageForReaction?.id === item.id ? null : item)}
-                            style={{ 
-                              backgroundColor: isMe ? primaryColor : colors.bgCard, 
-                              padding: 12, 
-                              borderRadius: 18, 
-                              borderWidth: isMe ? 0 : 1, 
-                              borderColor: colors.border, 
-                              shadowColor: primaryColor 
-                            }}
-                          >
-                            {item.type === 'voice' ? (
-                              <TouchableOpacity onPress={() => handleTogglePlayAudio(item.id, item.duration, item.mediaUrl)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 140 }}>
-                                <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isMe ? '#FFF' : primaryColor, justifyContent: 'center', alignItems: 'center' }}>
-                                  {isPlaying ? <Pause size={18} color={isMe ? primaryColor : '#FFF'} /> : <Play size={18} color={isMe ? primaryColor : '#FFF'} style={{ marginLeft: 2 }} />}
-                                </View>
-                                <View>
-                                  <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '800', fontSize: 13 }}>Voice Note</Text>
-                                  <Text style={{ color: isMe ? 'rgba(255,255,255,0.85)' : colors.textSecondary, fontSize: 11 }}>{item.duration || 2}s</Text>
-                                </View>
-                              </TouchableOpacity>
-                            ) : (
-                              <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontSize: 14, lineHeight: 20 }}>{item.text}</Text>
-                            )}
-                            
-                            <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 4 }}>
-                              <Text style={{ color: isMe ? 'rgba(255,255,255,0.75)' : colors.textSecondary, fontSize: 9, fontWeight: '500' }}>
-                                {formatMessageTime(item.createdAt)}
-                              </Text>
-                              {isMe && renderMessageTicks(item)}
-                            </View>
-
-                            {renderReactionsSummary(item)}
-                          </TouchableOpacity>
-
-                          {canDelete && (
-                            <TouchableOpacity onPress={() => promptDeleteChatMessage(item.id)} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }} style={{ padding: 4 }}>
-                              <MoreVertical size={16} color={colors.textSecondary} />
-                            </TouchableOpacity>
-                          )}
-                        </View>
-                      </View>
-                    </View>
-                  );
-                }}
-              />
-            </View>
-
-            {/* Emoji Picker Tray */}
-            {showEmojiPicker && (
-              <View style={[styles.emojiPickerTray, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 8, borderBottomWidth: 1, borderColor: colors.border }}>
-                  <Text style={{ fontSize: 12, fontWeight: '800', color: colors.textSecondary }}>Choose Emoji</Text>
-                  <TouchableOpacity onPress={() => setShowEmojiPicker(false)}><X size={16} color={colors.textSecondary} /></TouchableOpacity>
-                </View>
-                <ScrollView contentContainerStyle={{ flexDirection: 'row', flexWrap: 'wrap', padding: 8 }}>
-                  {EMOJI_LIST.map((emoji, idx) => (
-                    <TouchableOpacity 
-                      key={idx} 
-                      style={{ width: '10%', paddingVertical: 8, alignItems: 'center' }}
-                      onPress={() => setChatInputText(prev => prev + emoji)}
-                    >
-                      <Text style={{ fontSize: 22 }}>{emoji}</Text>
-                    </TouchableOpacity>
-                  ))}
-                </ScrollView>
-              </View>
-            )}
-
-            {/* Input Bar */}
-            <View style={{ flexDirection: 'row', alignItems: 'center', padding: 10, borderTopWidth: 1, backgroundColor: colors.bgCard, borderColor: colors.border }}>
-              <TouchableOpacity onPress={() => setShowEmojiPicker(!showEmojiPicker)} style={{ padding: 6 }}>
-                <Smile size={22} color={showEmojiPicker ? primaryColor : colors.textSecondary} />
-              </TouchableOpacity>
-
-              <TouchableOpacity onPress={handleShareMedia} style={{ padding: 6 }}>
-                <Paperclip size={20} color={colors.textSecondary} />
-              </TouchableOpacity>
-
-              {isRecording ? (
-                <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.15)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, marginHorizontal: 6 }}>
-                  <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#EF4444', marginRight: 8 }} />
-                  <Text style={{ color: '#EF4444', fontWeight: '800', fontSize: 13, flex: 1 }}>{recordTime}</Text>
-                  <TouchableOpacity onPress={handleCancelRecording} style={{ padding: 4 }}>
-                    <Trash2 size={20} color="#EF4444" />
-                  </TouchableOpacity>
-                </View>
-              ) : (
-                <TextInput
-                  style={{ flex: 1, color: colors.textPrimary, backgroundColor: colors.bgLight, paddingHorizontal: 14, paddingVertical: 8, borderRadius: 20, fontSize: 14, marginHorizontal: 6 }}
-                  placeholder="Type a message..."
-                  placeholderTextColor={colors.textSecondary}
-                  value={chatInputText}
-                  onChangeText={setChatInputText}
-                  onFocus={() => setShowEmojiPicker(false)}
-                />
-              )}
-
-              {isRecording ? (
-                <TouchableOpacity onPress={handleStopAndSendRecording} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: primaryColor, justifyContent: 'center', alignItems: 'center', shadowColor: primaryColor }}>
-                  <Send size={16} color="#FFF" />
-                </TouchableOpacity>
-              ) : chatInputText.trim().length > 0 ? (
-                <TouchableOpacity onPress={handleSendGroupMessage} disabled={isSendingChat} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: primaryColor, justifyContent: 'center', alignItems: 'center', shadowColor: primaryColor }}>
-                  {isSendingChat ? <ActivityIndicator size="small" color="#FFF" /> : <Send size={18} color="#FFF" />}
-                </TouchableOpacity>
-              ) : (
-                <TouchableOpacity onPress={handleStartRecording} style={{ width: 40, height: 40, borderRadius: 20, backgroundColor: primaryColor, justifyContent: 'center', alignItems: 'center', shadowColor: primaryColor }}>
-                  <Mic size={18} color="#FFF" />
-                </TouchableOpacity>
-              )}
-            </View>
-          </KeyboardAvoidingView>
-        </SafeAreaView>
-
-        {/* Reaction Picker Overlay */}
-        {selectedMessageForReaction && (
-          <Modal transparent visible={true} animationType="fade" onRequestClose={() => setSelectedMessageForReaction(null)}>
-            <TouchableOpacity style={styles.reactionOverlayBg} activeOpacity={1} onPress={() => setSelectedMessageForReaction(null)}>
-              <View style={[styles.reactionPickerBar, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]}>
-                {QUICK_REACTIONS.map((emoji) => (
-                  <TouchableOpacity 
-                    key={emoji} 
-                    style={styles.reactionEmojiItem} 
-                    onPress={() => handleAddReaction(selectedMessageForReaction.id, emoji)}
-                  >
-                    <Text style={{ fontSize: 24 }}>{emoji}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
-            </TouchableOpacity>
-          </Modal>
-        )}
-      </Modal>
-
-      {/* Delete Confirmation Modal */}
-      <Modal visible={deleteModalVisible} animationType="fade" transparent={true} onRequestClose={() => setDeleteModalVisible(false)}>
-        <View style={styles.deleteModalOverlay}>
-          <View style={[styles.deleteModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}>
-            
-            <View style={styles.deleteIconBadge}>
-              <AlertTriangle size={28} color="#EF4444" />
-            </View>
-
-            <Text style={[styles.deleteTitle, { color: colors.textPrimary }]}>Delete Message</Text>
-            <Text style={[styles.deleteSubtitle, { color: colors.textSecondary }]}>
-              Are you sure you want to permanently delete this message? This action cannot be undone.
-            </Text>
-
-            <View style={styles.deleteActionContainer}>
-              <TouchableOpacity 
-                style={[styles.cancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]} 
-                onPress={() => setDeleteModalVisible(false)}
-                disabled={isDeleting}
-              >
-                <Text style={[styles.cancelBtnText, { color: colors.textPrimary }]}>Cancel</Text>
-              </TouchableOpacity>
-
-              <TouchableOpacity 
-                style={styles.confirmDeleteBtn} 
-                onPress={confirmDeleteChatMessage}
-                disabled={isDeleting}
-              >
-                {isDeleting ? (
-                  <ActivityIndicator size="small" color="#FFF" />
-                ) : (
-                  <Text style={styles.confirmDeleteBtnText}>Delete</Text>
-                )}
-              </TouchableOpacity>
-            </View>
-
-          </View>
-        </View>
-      </Modal>
-
-      {/* Student Quiz Modal */}
-      <Modal visible={isStudentQuizModalVisible && currentTakingQuiz !== null} animationType="fade" transparent={true} onRequestClose={() => setIsStudentQuizModalVisible(false)}>
-        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 16 }}>
-          {showConfetti && (
+          {zipConfetti && (
             <View style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 99 }} pointerEvents="none">
               <ConfettiCannon count={150} origin={{ x: SCREEN_WIDTH / 2, y: -20 }} fadeOut autoStart />
             </View>
           )}
 
-          <View style={{ backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderRadius: 20, padding: 20, maxHeight: SCREEN_HEIGHT * 0.85, shadowColor: primaryColor }}>
-            {quizCompleted ? (
-              <View style={{ alignItems: 'center', padding: 20 }}>
-                <CheckCircle size={60} color={primaryColor} />
-                <Text style={{ fontSize: 20, fontWeight: '800', color: colors.textPrimary, marginTop: 10 }}>Quiz Finished!</Text>
-                <Text style={{ fontSize: 16, color: primaryColor, fontWeight: '700', marginTop: 6 }}>Score: {calculatedScore} / {activeQuizTotal}</Text>
-                <TouchableOpacity style={{ backgroundColor: primaryColor, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 20, paddingHorizontal: 30, shadowColor: primaryColor }} onPress={() => setIsStudentQuizModalVisible(false)}>
-                  <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>Done</Text>
+          <View style={[styles.puzzleTopBar, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+            <TouchableOpacity onPress={() => setIsZipScreenVisible(false)} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+              <ArrowLeft size={24} color={colors.textPrimary} />
+            </TouchableOpacity>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <View style={styles.zipLogoBadge}><Puzzle size={14} color="#FFF" /></View>
+              <Text style={{ fontSize: 18, fontWeight: '900', color: colors.textPrimary }}>Word Zip</Text>
+            </View>
+
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 12 }}>
+              <TouchableOpacity onPress={() => openWordZipScreen(activeZipIndex)}>
+                <RotateCcw size={20} color={colors.textPrimary} />
+              </TouchableOpacity>
+              <TouchableOpacity onPress={() => setIsResultsModalVisible(true)}>
+                <BarChart2 size={20} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+          </View>
+
+          <ScrollView contentContainerStyle={{ padding: 16, alignItems: 'center' }}>
+            <View style={{ alignItems: 'center', marginVertical: 8 }}>
+              <Text style={{ fontSize: 18, fontWeight: '900', color: colors.textPrimary, textAlign: 'center' }}>
+                {WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length].theme}
+              </Text>
+              <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
+                Tap letters on the grid to build words, then tap Check!
+              </Text>
+            </View>
+
+            <View style={styles.tapWordActionsRow}>
+              <TouchableOpacity 
+                style={[styles.wordDisplayStripTap, { 
+                  borderColor: tapValidationStatus === 'success' ? '#10B981' : (tapValidationStatus === 'wrong' ? '#EF4444' : primaryColor),
+                  backgroundColor: tapValidationStatus === 'success' ? '#DCFCE7' : (tapValidationStatus === 'wrong' ? '#FEE2E2' : (isDarkMode ? '#1E293B' : '#EFF6FF'))
+                }]}
+                onPress={handleClearTappedWord}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.wordDisplayText, {
+                  color: tapValidationStatus === 'success' ? '#166534' : (tapValidationStatus === 'wrong' ? '#991B1B' : '#4F46E5')
+                }]}>
+                  {selectedTappedCells.length > 0 ? selectedTappedCells.map(item => item.char).join('') : 'Tap letters...'}
+                </Text>
+              </TouchableOpacity>
+
+              {selectedTappedCells.length > 0 && (
+                <TouchableOpacity style={styles.clearWordBtn} onPress={handleClearTappedWord} activeOpacity={0.8}>
+                  <Delete size={18} color="#EF4444" />
                 </TouchableOpacity>
-              </View>
-            ) : (
-              <ScrollView showsVerticalScrollIndicator={false}>
-                <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
-                  <Text style={{ fontSize: 18, fontWeight: '700', flex: 1, color: colors.textPrimary }}>{currentTakingQuiz?.title}</Text>
-                  <TouchableOpacity onPress={() => setIsStudentQuizModalVisible(false)}>
-                    <X size={20} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                </View>
+              )}
 
-                <Text style={{ fontSize: 12, fontWeight: '700', color: primaryColor, marginBottom: 8 }}>
-                  Question {currentQuestionIndex + 1} / {activeQuizTotal}
-                </Text>
+              <TouchableOpacity 
+                style={[styles.checkWordBtn, { backgroundColor: selectedTappedCells.length >= 2 ? '#10B981' : '#94A3B8' }]}
+                onPress={handleCheckTappedWord}
+                disabled={selectedTappedCells.length < 2}
+                activeOpacity={0.85}
+              >
+                <Check size={18} color="#FFFFFF" strokeWidth={3} />
+                <Text style={styles.checkWordBtnText}>Check</Text>
+              </TouchableOpacity>
+            </View>
 
-                <Text style={{ fontSize: 16, fontWeight: '800', color: colors.textPrimary, marginBottom: 16 }}>
-                  {activeQuizQuestion?.questionText}
-                </Text>
+            <View style={[styles.zipBoardFrame, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+              {WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length].grid.map((rowArr, rIdx) => (
+                <View key={`row_${rIdx}`} style={styles.zipBoardRow}>
+                  {rowArr.map((char, cIdx) => {
+                    const tappedOrderIndex = selectedTappedCells.findIndex(item => item.r === rIdx && item.c === cIdx);
+                    const isSelected = tappedOrderIndex !== -1;
+                    const isLocked = completedZipCells.some(item => item.r === rIdx && item.c === cIdx);
 
-                {activeQuizQuestion?.options?.map((opt: string, index: number) => {
-                  const isSelected = userSelectedOption === index;
-                  const isCorrect = index === activeQuizQuestion?.correctAnswerIndex;
+                    let bg = colors.bgCard;
+                    let border = colors.border;
+                    let textClr = colors.textPrimary;
 
-                  let optionBg = isDarkMode ? '#2A2A2A' : '#F8FAFC';
-                  let optionBorder = colors.border;
-                  let textColor = colors.textPrimary;
-
-                  if (isAnswerSubmitted) {
-                    if (isCorrect) {
-                      optionBg = isDarkMode ? primaryColor + '33' : '#DCFCE7';
-                      optionBorder = primaryColor;
-                    } else if (isSelected && !isCorrect) {
-                      optionBg = isDarkMode ? 'rgba(239, 68, 68, 0.2)' : '#FEE2E2';
-                      optionBorder = '#EF4444';
+                    if (isLocked) {
+                      bg = '#10B981';
+                      border = '#059669';
+                      textClr = '#FFFFFF';
+                    } else if (isSelected) {
+                      if (tapValidationStatus === 'wrong') {
+                        bg = '#EF4444';
+                        border = '#DC2626';
+                        textClr = '#FFFFFF';
+                      } else {
+                        bg = primaryColor;
+                        border = primaryColor;
+                        textClr = '#FFFFFF';
+                      }
                     }
-                  } else if (isSelected) {
-                    optionBg = primaryColor + '1F';
-                    optionBorder = primaryColor;
-                  }
 
-                  return (
-                    <TouchableOpacity 
-                      key={index} 
-                      style={{ 
-                        flexDirection: 'row',
-                        alignItems: 'center',
-                        justifyContent: 'space-between',
-                        borderWidth: 1.5, 
-                        borderRadius: 14, 
-                        padding: 14, 
-                        marginBottom: 10, 
-                        backgroundColor: optionBg, 
-                        borderColor: optionBorder 
-                      }} 
-                      onPress={() => handleSelectOption(index)}
-                      activeOpacity={0.8}
-                    >
-                      <Text style={{ fontSize: 15, fontWeight: '600', color: textColor, flex: 1 }}>{opt}</Text>
-                      {isAnswerSubmitted && isCorrect && <CheckCircle size={20} color={primaryColor} />}
-                      {isAnswerSubmitted && isSelected && !isCorrect && <XCircle size={20} color="#EF4444" />}
-                    </TouchableOpacity>
-                  );
-                })}
+                    return (
+                      <TouchableOpacity
+                        key={`cell_${rIdx}_${cIdx}`}
+                        activeOpacity={0.7}
+                        onPress={() => handleTapCell(rIdx, cIdx, char)}
+                        style={[
+                          styles.zipGridCell,
+                          { backgroundColor: bg, borderColor: border }
+                        ]}
+                      >
+                        <Text style={[styles.zipGridCellText, { color: textClr }]}>{char}</Text>
+                        {isSelected && !isLocked && (
+                          <View style={styles.tapOrderBadge}>
+                            <Text style={styles.tapOrderBadgeText}>{tappedOrderIndex + 1}</Text>
+                          </View>
+                        )}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              ))}
+            </View>
 
-                {isAnswerSubmitted && (
-                  <View style={{ backgroundColor: isDarkMode ? 'rgba(245, 158, 11, 0.15)' : '#FEF3C7', padding: 12, borderRadius: 12, marginTop: 6, marginBottom: 12 }}>
-                    <Text style={{ color: '#D97706', fontWeight: '800', fontSize: 13, marginBottom: 4 }}>
-                      💡 Correct Answer: {activeQuizQuestion?.options?.[activeQuizQuestion?.correctAnswerIndex]}
-                    </Text>
-                    {activeQuizQuestion?.explanation ? (
-                      <Text style={{ color: colors.textPrimary, fontSize: 12, lineHeight: 18 }}>
-                        {activeQuizQuestion.explanation}
-                      </Text>
-                    ) : null}
+            <View style={{ width: '100%', maxWidth: 350, marginTop: 16 }}>
+              <Text style={{ fontSize: 13, fontWeight: '900', color: colors.textSecondary, marginBottom: 8 }}>
+                DISCOVERED WORDS & MEANINGS ({completedZipWords.length}):
+              </Text>
+              {completedZipWords.length === 0 ? (
+                <Text style={{ fontSize: 12, color: colors.textSecondary, fontStyle: 'italic' }}>
+                  Tap letters on the grid to create valid words and unlock +20 XP!
+                </Text>
+              ) : (
+                completedZipWords.map((item, idx) => (
+                  <View key={idx} style={[styles.discoveredWordCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                    <View style={styles.discoveredBadge}>
+                      <Check size={12} color="#FFFFFF" strokeWidth={3} />
+                      <Text style={styles.discoveredBadgeText}>{item.word}</Text>
+                    </View>
+                    <Text style={[styles.discoveredMeaningText, { color: colors.textPrimary }]}>{item.meaning}</Text>
                   </View>
-                )}
+                ))
+              )}
+            </View>
 
-                {!isAnswerSubmitted ? (
-                  <TouchableOpacity 
-                    style={[{ backgroundColor: primaryColor, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 12, shadowColor: primaryColor }, userSelectedOption === null && { opacity: 0.6 }]} 
-                    onPress={handleConfirmAnswer}
-                    disabled={userSelectedOption === null}
-                  >
-                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>Submit Answer</Text>
-                  </TouchableOpacity>
-                ) : (
-                  <TouchableOpacity style={{ backgroundColor: primaryColor, paddingVertical: 12, borderRadius: 12, alignItems: 'center', marginTop: 12, shadowColor: primaryColor }} onPress={handleNextQuestion}>
-                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>Next Question</Text>
-                  </TouchableOpacity>
-                )}
-              </ScrollView>
-            )}
+            <View style={styles.zipControlsRow}>
+              <TouchableOpacity style={[styles.zipControlBtn, { borderColor: colors.border }]} onPress={handleShowHint}>
+                <Lightbulb size={16} color="#F59E0B" style={{ marginRight: 6 }} />
+                <Text style={[styles.zipControlBtnText, { color: colors.textPrimary }]}>Hint</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.zipControlBtn, { borderColor: primaryColor, backgroundColor: primaryColor + '15' }]} 
+                onPress={() => openWordZipScreen((activeZipIndex + 1) % WORD_ZIP_PUZZLES.length)}
+              >
+                <Shuffle size={16} color={primaryColor} style={{ marginRight: 6 }} />
+                <Text style={[styles.zipControlBtnText, { color: primaryColor }]}>Next Level</Text>
+              </TouchableOpacity>
+            </View>
+          </ScrollView>
+        </SafeAreaView>
+      </Modal>
+
+      {/* Results Modal */}
+      <Modal visible={isResultsModalVisible} animationType="slide" transparent={true} onRequestClose={() => setIsResultsModalVisible(false)}>
+        <View style={{ flex: 1, backgroundColor: 'rgba(0,0,0,0.7)', justifyContent: 'center', padding: 16 }}>
+          <View style={[styles.resultsModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]}>
+            <View style={styles.resultsHeaderRow}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Trophy size={22} color="#F59E0B" />
+                <Text style={{ fontSize: 18, fontWeight: '900', color: colors.textPrimary }}>Puzzle Champions</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsResultsModalVisible(false)}>
+                <X size={22} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            <FlatList
+              data={puzzlePlayedUsers}
+              keyExtractor={item => item.id}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingVertical: 10 }}
+              renderItem={({ item, index }) => (
+                <View style={[styles.playerResultRow, { borderColor: colors.border }]}>
+                  <Text style={{ fontSize: 14, fontWeight: '900', width: 24, color: colors.textSecondary }}>#{index + 1}</Text>
+                  <View style={[styles.avatarGlow, { backgroundColor: getAvatarColor(item.userName), width: 34, height: 34 }]}>
+                    <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 13 }}>{item.userName?.charAt(0).toUpperCase()}</Text>
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={{ fontSize: 14, fontWeight: '800', color: colors.textPrimary }}>{item.userName}</Text>
+                    <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 1 }}>Word: <Text style={{ fontWeight: '800', color: '#10B981' }}>{item.word}</Text></Text>
+                  </View>
+                </View>
+              )}
+            />
           </View>
         </View>
       </Modal>
 
+      {/* 💬 GROUP CHAT MODAL */}
+      <Modal visible={isChatModalVisible} animationType="slide" onRequestClose={closeChatModal}>
+        <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgLight }}>
+          {isSelectionMode ? (
+            <View style={[styles.selectionTopBar, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderBottomColor: colors.border }]}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                <TouchableOpacity onPress={clearSelectionMode} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                  <X size={22} color={colors.textPrimary} />
+                </TouchableOpacity>
+                <Text style={[styles.selectedCountText, { color: colors.textPrimary }]}>
+                  {selectedMessageIds.length} Selected
+                </Text>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 14 }}>
+                {editableMsg && (
+                  <TouchableOpacity 
+                    style={styles.batchEditTopBtn} 
+                    onPress={handleTriggerEditSelectedMessage}
+                    activeOpacity={0.8}
+                  >
+                    <Edit3 size={19} color={primaryColor} />
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity 
+                  style={styles.batchDeleteTopBtn} 
+                  onPress={() => setDeleteModalVisible(true)}
+                  activeOpacity={0.8}
+                >
+                  <Trash2 size={20} color="#EF4444" />
+                </TouchableOpacity>
+              </View>
+            </View>
+          ) : (
+            <View style={{ 
+              flexDirection: 'row', 
+              alignItems: 'center', 
+              paddingHorizontal: 16, 
+              paddingBottom: 14, 
+              backgroundColor: colors.bgCard, 
+              borderBottomWidth: 1, 
+              borderColor: colors.border,
+              paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 12
+            }}>
+              <TouchableOpacity onPress={closeChatModal} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}>
+                <X size={24} color={colors.textPrimary} />
+              </TouchableOpacity>
+              
+              <View style={{ flex: 1, marginLeft: 12 }}>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                  <Text style={{ fontSize: 17, fontWeight: '800', color: colors.textPrimary }}>{selectedGroup?.title}</Text>
+                  {isAdmin && (
+                    <View style={styles.adminTagBadge}>
+                      <Text style={styles.adminTagBadgeText}>ADMIN</Text>
+                    </View>
+                  )}
+                </View>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{totalMembers} Members</Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary }}>•</Text>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
+                    <Text style={{ fontSize: 11, color: onlineMembers > 0 ? '#10B981' : '#64748B', fontWeight: '700' }}>
+                      {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
+                    </Text>
+                  </View>
+                </View>
+              </View>
+
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                {communityMembersList.length > 0 && (
+                  <TouchableOpacity 
+                    style={styles.membersAvatarRow}
+                    onPress={() => setShowMembersListModal(true)}
+                    activeOpacity={0.8}
+                  >
+                    {communityMembersList.slice(0, 2).map((m, mIdx) => (
+                      <View 
+                        key={m.id || mIdx} 
+                        style={[
+                          styles.memberCircleAvatar, 
+                          { 
+                            marginLeft: mIdx > 0 ? -8 : 0, 
+                            backgroundColor: getAvatarColor(m.userName),
+                            zIndex: 10 - mIdx
+                          }
+                        ]}
+                      >
+                        {m.photoURL ? (
+                          <Image source={{ uri: m.photoURL }} style={styles.memberImg} />
+                        ) : (
+                          <Text style={styles.memberInitialsText}>
+                            {(m.userName || 'U').charAt(0).toUpperCase()}
+                          </Text>
+                        )}
+                      </View>
+                    ))}
+                    {totalMembers > 2 && (
+                      <View style={[styles.memberCircleAvatarPlus, { marginLeft: -8, zIndex: 5 }]}>
+                        <Text style={styles.memberPlusText}>+{totalMembers - 2}</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                )}
+
+                <TouchableOpacity 
+                  onPress={() => setShowThreeDotsMenu(!showThreeDotsMenu)} 
+                  hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}
+                  style={{ padding: 4 }}
+                >
+                  <MoreVertical size={20} color={colors.textPrimary} />
+                </TouchableOpacity>
+              </View>
+            </View>
+          )}
+
+          {showThreeDotsMenu && (
+            <TouchableOpacity 
+              style={styles.dropdownOverlayBackdrop} 
+              activeOpacity={1} 
+              onPress={() => setShowThreeDotsMenu(false)}
+            >
+              <View style={[styles.threeDotsDropdown, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+                <TouchableOpacity 
+                  style={styles.dropdownOptionRow} 
+                  onPress={() => {
+                    setShowThreeDotsMenu(false);
+                    setShowMembersListModal(true);
+                  }} 
+                  activeOpacity={0.75}
+                >
+                  <Users size={16} color={primaryColor} />
+                  <Text style={[styles.dropdownOptionText, { color: colors.textPrimary }]}>View Members List</Text>
+                </TouchableOpacity>
+
+                {isMember && (
+                  <TouchableOpacity 
+                    style={styles.dropdownOptionRow} 
+                    onPress={() => {
+                      setShowThreeDotsMenu(false);
+                      setShowLeaveConfirmModal(true);
+                    }} 
+                    activeOpacity={0.75}
+                  >
+                    <LogOut size={16} color="#EF4444" />
+                    <Text style={styles.dropdownLeaveText}>Leave Community Group</Text>
+                  </TouchableOpacity>
+                )}
+              </View>
+            </TouchableOpacity>
+          )}
+
+          {pinnedMessages.length > 0 && !isSelectionMode && (
+            <View style={[styles.pinnedBannerBar, { backgroundColor: isDarkMode ? '#1E293B' : '#EFF6FF', borderColor: colors.border }]}>
+              <Pin size={14} color={primaryColor} style={{ marginRight: 8 }} />
+              <View style={{ flex: 1 }}>
+                <Text style={{ fontSize: 11, fontWeight: '800', color: primaryColor }}>Pinned Message</Text>
+                <Text style={{ fontSize: 12, color: colors.textPrimary }} numberOfLines={1}>
+                  {pinnedMessages[0]?.text}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => handleTogglePinMessage(pinnedMessages[0])}>
+                <PinOff size={14} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+          )}
+
+          <KeyboardAvoidingView 
+            style={{ flex: 1, backgroundColor: colors.bgLight }}
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+          >
+            <TouchableWithoutFeedback onPress={() => { 
+              Keyboard.dismiss(); 
+              setShowEmojiPicker(false); 
+            }}>
+              <View style={{ flex: 1 }}>
+                <FlatList
+                  data={chatMessages}
+                  keyExtractor={(item) => item.id}
+                  inverted
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, flexGrow: 1 }}
+                  renderItem={({ item, index }) => {
+                    const isMe = item.senderId === (currentUser?.uid || 'guest_user');
+                    const isPlaying = playingAudioId === item.id;
+                    const isSelected = selectedMessageIds.includes(item.id);
+                    const hasReaction = Object.keys(item?.reactions || {}).length > 0;
+                    const currentDateHeader = getMessageDateHeader(item.createdAt);
+                    const nextMessage = chatMessages[index + 1];
+                    const nextDateHeader = nextMessage ? getMessageDateHeader(nextMessage.createdAt) : null;
+                    const showDateHeader = currentDateHeader !== nextDateHeader;
+                    const showSenderHeader = !isMe && (!nextMessage || nextMessage.senderId !== item.senderId);
+
+                    return (
+                      <View style={{ width: '100%' }}>
+                        {showDateHeader && (
+                          <View style={{ alignItems: 'center', marginVertical: 12 }}>
+                            <View style={{ backgroundColor: isDarkMode ? '#2A2A2A' : '#E2E8F0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+                              <Text style={{ fontSize: 10, fontWeight: '700', color: colors.textSecondary }}>{currentDateHeader}</Text>
+                            </View>
+                          </View>
+                        )}
+
+                        <View style={[
+                          styles.messageRowWrap,
+                          hasReaction && styles.messageRowWithReaction,
+                          isSelected && { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.22)' : '#EEF2FF', borderRadius: 16 }
+                        ]}>
+                          <View style={[
+                            styles.messageInnerRow, 
+                            isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }
+                          ]}>
+                            
+                            {isMe && !isSelectionMode && (
+                              <TouchableOpacity 
+                                style={styles.messageReactionSideBtn} 
+                                onPress={() => handleOpenReactionTray(item)}
+                                activeOpacity={0.7}
+                              >
+                                <Smile size={16} color={colors.textSecondary} />
+                              </TouchableOpacity>
+                            )}
+
+                            <View style={{ maxWidth: '85%' }}>
+                              {showSenderHeader && (
+                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3, marginLeft: 2 }}>
+                                  <View style={[styles.chatAvatarThumb, { backgroundColor: getAvatarColor(item.senderName) }]}>
+                                    {item.senderPhoto ? (
+                                      <Image source={{ uri: item.senderPhoto }} style={styles.chatAvatarImg} />
+                                    ) : (
+                                      <Text style={styles.chatAvatarThumbText}>{(item.senderName || 'U').charAt(0).toUpperCase()}</Text>
+                                    )}
+                                  </View>
+                                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '700' }}>{item.senderName}</Text>
+                                </View>
+                              )}
+                              
+                              <TouchableOpacity 
+                                activeOpacity={0.92} 
+                                delayLongPress={180}
+                                onPress={() => handleMessagePress(item)}
+                                onLongPress={() => handleMessageLongPress(item)}
+                                style={{ 
+                                  backgroundColor: isSingleEmojiText(item.text) ? 'transparent' : (isMe ? primaryColor : colors.bgCard), 
+                                  padding: isSingleEmojiText(item.text) ? 0 : 14,
+                                  paddingBottom: isSingleEmojiText(item.text) ? 0 : (hasReaction ? 28 : 14),
+                                  borderRadius: isSingleEmojiText(item.text) ? 10 : 18,
+                                  borderWidth: isSingleEmojiText(item.text) ? 0 : (isSelected ? 2 : (isMe ? 0 : 1)), 
+                                  borderColor: isSelected ? '#4F46E5' : colors.border,
+                                  position: 'relative'
+                                }}
+                              >
+                                {item?.isPinned && (
+                                  <View style={styles.messagePinIconAnchor}>
+                                    <Pin size={10} color={isMe ? '#FFF' : primaryColor} />
+                                  </View>
+                                )}
+
+                                {item.type === 'voice' ? (
+                                  <TouchableOpacity onPress={() => handleTogglePlayAudio(item.id, item.duration, item.mediaUrl)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 140 }}>
+                                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isMe ? '#FFF' : primaryColor, justifyContent: 'center', alignItems: 'center' }}>
+                                      {isPlaying ? <Pause size={18} color={isMe ? primaryColor : '#FFF'} /> : <Play size={18} color={isMe ? primaryColor : '#FFF'} style={{ marginLeft: 2 }} />}
+                                    </View>
+                                    <View>
+                                      <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '800', fontSize: 13 }}>Voice Note</Text>
+                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.85)' : colors.textSecondary, fontSize: 11 }}>{item.duration || 2}s</Text>
+                                    </View>
+                                  </TouchableOpacity>
+                                ) : isSingleEmojiText(item.text) ? (
+                                  <Text style={[
+                                    styles.standaloneEmojiMessage,
+                                    { textAlign: isMe ? 'right' : 'left' }
+                                  ]}>{String(item.text).trim()}</Text>
+                                ) : (
+                                  <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontSize: 16, lineHeight: 23 }}>{item.text}</Text>
+                                )}
+
+                                {!isSingleEmojiText(item.text) && (
+                                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 5 }}>
+                                    {item.isEdited && (
+                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary, fontSize: 9, fontStyle: 'italic', marginRight: 4 }}>
+                                        (edited)
+                                      </Text>
+                                    )}
+                                    <Text style={{ color: isMe ? 'rgba(255,255,255,0.75)' : colors.textSecondary, fontSize: 9.5, fontWeight: '500' }}>
+                                      {formatMessageTime(item.createdAt)}
+                                    </Text>
+                                    {isMe && renderMessageTicks(item)}
+                                  </View>
+                                )}
+                                
+                                <AnimatedReactionBadge item={item} onRemove={handleRemoveMyReaction} />
+                              </TouchableOpacity>
+                            </View>
+
+                            {!isMe && !isSelectionMode && (
+                              <TouchableOpacity 
+                                style={styles.messageReactionSideBtn} 
+                                onPress={() => handleOpenReactionTray(item)}
+                                activeOpacity={0.7}
+                              >
+                                <Smile size={16} color={colors.textSecondary} />
+                              </TouchableOpacity>
+                            )}
+
+                          </View>
+                        </View>
+                      </View>
+                    );
+                  }}
+                />
+              </View>
+            </TouchableWithoutFeedback>
+
+            {showUndoToast && (
+              <View style={[styles.undoToastContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#0F172A' }]}>
+                <Text style={styles.undoToastText}>Message deleted</Text>
+                <TouchableOpacity onPress={handleUndoDelete} style={styles.undoBtn} activeOpacity={0.8}>
+                  <RotateCcw size={16} color="#38BDF8" style={{ marginRight: 4 }} />
+                  <Text style={styles.undoBtnText}>UNDO</Text>
+                </TouchableOpacity>
+              </View>
+            )}
+
+            <View style={styles.cleanBottomInputWrapper}>
+              {editingMessage && (
+                <View style={[styles.inlineEditHeader, { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' }]}>
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                    <Edit3 size={13} color={primaryColor} />
+                    <Text style={[styles.inlineEditText, { color: primaryColor }]}>Editing message</Text>
+                  </View>
+                  <TouchableOpacity onPress={handleCancelInlineEdit} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                    <X size={15} color={colors.textSecondary} />
+                  </TouchableOpacity>
+                </View>
+              )}
+
+              <View style={[styles.cleanInputInnerRow, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]}>
+                <TouchableOpacity 
+                  onPress={handleToggleEmojiOrKeyboard} 
+                  style={{ padding: 6 }}
+                  activeOpacity={0.75}
+                >
+                  {showEmojiPicker ? (
+                    <KeyboardIcon size={22} color={primaryColor} />
+                  ) : (
+                    <Smile size={22} color={colors.textSecondary} />
+                  )}
+                </TouchableOpacity>
+                
+                <TouchableOpacity 
+                  onPress={openMediaPicker} 
+                  style={{ padding: 6 }}
+                >
+                  <Paperclip size={20} color={showMediaPicker ? primaryColor : colors.textSecondary} />
+                </TouchableOpacity>
+
+                {isRecording ? (
+                  <View style={{ flex: 1, flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(239, 68, 68, 0.15)', paddingHorizontal: 14, paddingVertical: 8, borderRadius: 24, marginHorizontal: 6 }}>
+                    <View style={{ width: 10, height: 10, borderRadius: 5, backgroundColor: '#EF4444', marginRight: 8 }} />
+                    <Text style={{ color: '#EF4444', fontWeight: '800', fontSize: 13, flex: 1 }}>{recordTime}</Text>
+                    <TouchableOpacity onPress={handleCancelRecording} style={{ padding: 4 }}>
+                      <Trash2 size={20} color="#EF4444" />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TextInput
+                    ref={textInputRef}
+                    style={{ 
+                      flex: 1, 
+                      color: colors.textPrimary, 
+                      backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', 
+                      paddingHorizontal: 16, 
+                      paddingVertical: Platform.OS === 'ios' ? 10 : 8, 
+                      borderRadius: 24, 
+                      fontSize: 14, 
+                      marginHorizontal: 4,
+                      maxHeight: 90,
+                      minHeight: 42,
+                      textAlignVertical: 'center'
+                    }}
+                    placeholder={editingMessage ? "Edit message..." : "Type a message..."}
+                    placeholderTextColor={colors.textSecondary}
+                    value={chatInputText}
+                    onChangeText={setChatInputText}
+                    onSubmitEditing={() => {
+                      if (chatInputText.trim() && !isSendingChat) handleSendGroupMessage();
+                    }}
+                    blurOnSubmit={false}
+                    returnKeyType="send"
+                    onFocus={() => { 
+                      setShowEmojiPicker(false); 
+                      setShowMediaPicker(false); 
+                      setShowThreeDotsMenu(false); 
+                    }}
+                  />
+                )}
+
+                {isRecording ? (
+                  <TouchableOpacity onPress={handleStopAndSendRecording} style={[styles.roundActionBtn, { backgroundColor: primaryColor }]}>
+                    <Send size={16} color="#FFF" />
+                  </TouchableOpacity>
+                ) : chatInputText.trim().length > 0 ? (
+                  <TouchableOpacity onPress={handleSendGroupMessage} disabled={isSendingChat} style={[styles.roundActionBtn, { backgroundColor: primaryColor }]}>
+                    {isSendingChat ? (
+                      <ActivityIndicator size="small" color="#FFF" />
+                    ) : editingMessage ? (
+                      <Check size={18} color="#FFF" strokeWidth={3} />
+                    ) : (
+                      <Send size={18} color="#FFF" />
+                    )}
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity onPress={handleStartRecording} style={[styles.roundActionBtn, { backgroundColor: primaryColor }]}>
+                    <Mic size={18} color="#FFF" />
+                  </TouchableOpacity>
+                )}
+              </View>
+            </View>
+
+            {showEmojiPicker && (
+              <Animated.View
+                style={[
+                  styles.whatsappEmojiKeyboardSwap,
+                  {
+                    height: savedKeyboardHeight,
+                    backgroundColor: colors.bgCard,
+                    opacity: emojiTrayAnim.interpolate({ inputRange: [0, 1], outputRange: [0.65, 1] }),
+                    transform: [{ translateY: emojiTrayAnim.interpolate({ inputRange: [0, 1], outputRange: [8, 0] }) }],
+                  },
+                ]}
+              >
+                <ScrollView 
+                  contentContainerStyle={styles.emojiGridContent}
+                  showsVerticalScrollIndicator={false}
+                  keyboardShouldPersistTaps="always"
+                >
+                  {EMOJI_LIST.map((emoji, idx) => (
+                    <TouchableOpacity 
+                      key={idx} 
+                      style={styles.emojiKeyItem} 
+                      onPress={() => setChatInputText(prev => prev + emoji)}
+                      activeOpacity={0.65}
+                    >
+                      <Text style={{ fontSize: 28 }}>{emoji}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </ScrollView>
+              </Animated.View>
+            )}
+
+          </KeyboardAvoidingView>
+        </SafeAreaView>
+
+        {selectedMessageForAction && (
+          <Modal transparent visible={true} animationType="none" onRequestClose={() => setSelectedMessageForAction(null)}>
+            <TouchableOpacity style={styles.reactionOverlayBg} activeOpacity={1} onPress={() => setSelectedMessageForAction(null)}>
+              <View style={[styles.whatsappActionContainer, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]}>
+                <View style={styles.reactionPickerBar}>
+                  {QUICK_REACTIONS.map((emoji) => (
+                    <TouchableOpacity 
+                      key={emoji} 
+                      style={styles.reactionEmojiItem} 
+                      onPress={() => handleAddReaction(selectedMessageForAction.id, emoji)}
+                      activeOpacity={0.7}
+                    >
+                      <Text style={{ fontSize: 24 }}>{emoji}</Text>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+
+                <View style={[styles.actionOptionsRow, { borderTopColor: colors.border }]}>
+                  <TouchableOpacity 
+                    style={styles.actionOptionBtn}
+                    onPress={() => handleTogglePinMessage(selectedMessageForAction)}
+                  >
+                    {selectedMessageForAction?.isPinned ? (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <PinOff size={16} color="#F59E0B" />
+                        <Text style={[styles.actionOptionText, { color: '#F59E0B' }]}>Unpin</Text>
+                      </View>
+                    ) : (
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Pin size={16} color={primaryColor} />
+                        <Text style={[styles.actionOptionText, { color: primaryColor }]}>Pin Message</Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+
+                  {canOpenDeleteForMessage(selectedMessageForAction) && (
+                    <TouchableOpacity 
+                      style={styles.actionOptionBtn}
+                      onPress={() => {
+                        const targetId = selectedMessageForAction.id;
+                        setSelectedMessageForAction(null);
+                        setSelectedMessageIds([targetId]);
+                        setDeleteModalVisible(true);
+                      }}
+                    >
+                      <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
+                        <Trash2 size={16} color="#EF4444" />
+                        <Text style={[styles.actionOptionText, { color: '#EF4444' }]}>Delete</Text>
+                      </View>
+                    </TouchableOpacity>
+                  )}
+                </View>
+              </View>
+            </TouchableOpacity>
+          </Modal>
+        )}
+
+        {showMediaPicker && (
+          <Modal transparent visible={true} animationType="fade" onRequestClose={closeMediaPicker}>
+            <TouchableOpacity style={styles.mediaOverlayBackdrop} activeOpacity={1} onPress={closeMediaPicker}>
+              <TouchableOpacity activeOpacity={1} style={[styles.premiumMediaSheet, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]} onPress={(e) => e.stopPropagation()}>
+                <View style={styles.mediaSheetHeader}>
+                  <Text style={[styles.mediaSheetTitle, { color: colors.textPrimary }]}>Share Content</Text>
+                  <TouchableOpacity style={styles.mediaCloseCircle} onPress={closeMediaPicker} activeOpacity={0.8}>
+                    <X size={18} color="#FFFFFF" />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.mediaGridContainer}>
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Camera", "Open Camera"); }}>
+                    <View style={[styles.mediaIconCircle, { backgroundColor: '#EC4899' }]}>
+                      <Camera size={22} color="#FFFFFF" />
+                    </View>
+                    <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Camera</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Gallery", "Open Gallery"); }}>
+                    <View style={[styles.mediaIconCircle, { backgroundColor: '#8B5CF6' }]}>
+                      <ImageIcon size={22} color="#FFFFFF" />
+                    </View>
+                    <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Gallery</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Document", "Select Document"); }}>
+                    <View style={[styles.mediaIconCircle, { backgroundColor: '#3B82F6' }]}>
+                      <FileText size={22} color="#FFFFFF" />
+                    </View>
+                    <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Document</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Audio", "Send Audio File"); }}>
+                    <View style={[styles.mediaIconCircle, { backgroundColor: '#F59E0B' }]}>
+                      <Music size={22} color="#FFFFFF" />
+                    </View>
+                    <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Audio</Text>
+                  </TouchableOpacity>
+
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Location", "Share Live Location"); }}>
+                    <View style={[styles.mediaIconCircle, { backgroundColor: '#10B981' }]}>
+                      <MapPin size={22} color="#FFFFFF" />
+                    </View>
+                    <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Location</Text>
+                  </TouchableOpacity>
+                </View>
+              </TouchableOpacity>
+            </TouchableOpacity>
+          </Modal>
+        )}
+      </Modal>
+
+      {/* JOIN CONFIRMATION MODAL */}
+      <Modal
+        visible={showJoinConfirmModal}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setShowJoinConfirmModal(false)}
+      >
+        <TouchableOpacity style={styles.premiumModalOverlay} activeOpacity={1} onPress={() => setShowJoinConfirmModal(false)}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.premiumDialogCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.joinIconAura}>
+              <UserPlus size={30} color="#10B981" />
+            </View>
+            <Text style={[styles.dialogMainTitle, { color: colors.textPrimary }]}>Join Community?</Text>
+            <Text style={[styles.dialogDescriptionText, { color: colors.textSecondary }]}>
+              Join the ECC Community Chat with your own profile. You can leave anytime and join again later.
+            </Text>
+
+            <View style={styles.dialogButtonsRow}>
+              <TouchableOpacity
+                style={[styles.dialogCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#F1F5F9' }]}
+                onPress={() => setShowJoinConfirmModal(false)}
+                disabled={isJoining}
+              >
+                <Text style={[styles.dialogCancelBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity
+                style={styles.dialogConfirmJoinBtn}
+                onPress={handleExecuteJoinCommunity}
+                disabled={isJoining}
+              >
+                {isJoining ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.dialogConfirmJoinBtnText}>Join</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* MEMBERS LIST MODAL */}
+      <Modal visible={showMembersListModal} animationType="fade" transparent={true} onRequestClose={() => setShowMembersListModal(false)}>
+        <TouchableOpacity style={styles.membersModalOverlay} activeOpacity={1} onPress={() => setShowMembersListModal(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.membersModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.membersModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Users size={20} color={primaryColor} />
+                <Text style={[styles.membersModalTitle, { color: colors.textPrimary }]}>Group Members ({totalMembers})</Text>
+              </View>
+              <TouchableOpacity onPress={() => setShowMembersListModal(false)} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+                <X size={20} color={colors.textSecondary} />
+              </TouchableOpacity>
+            </View>
+
+            {communityMembersList.length === 0 ? (
+              <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color={primaryColor} />
+                <Text style={{ color: colors.textSecondary, marginTop: 8, fontSize: 13 }}>Loading members...</Text>
+              </View>
+            ) : (
+              <FlatList
+                data={communityMembersList}
+                keyExtractor={(item) => item.id}
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={{ paddingVertical: 8 }}
+                renderItem={({ item }) => {
+                  const isTargetMe = item.uid === currentUser?.uid;
+                  const memberIsOnline = isPresenceFresh(item, presenceNow);
+                  return (
+                    <View style={[styles.memberItemRow, { borderColor: colors.border }]}>
+                      <View style={[styles.memberAvatarCircle, { backgroundColor: getAvatarColor(item.userName) }]}>
+                        {item.photoURL ? (
+                          <Image source={{ uri: item.photoURL }} style={styles.memberImg} />
+                        ) : (
+                          <Text style={styles.memberAvatarInitial}>{(item.userName || 'U').charAt(0).toUpperCase()}</Text>
+                        )}
+                      </View>
+                      <View style={{ flex: 1, marginLeft: 12 }}>
+                        <Text style={[styles.memberNameText, { color: colors.textPrimary }]}>
+                          {item.userName} {isTargetMe ? '(You)' : ''}
+                        </Text>
+                        <Text style={{ fontSize: 11, color: memberIsOnline ? '#10B981' : colors.textSecondary, marginTop: 1 }}>
+                          {memberIsOnline ? 'Online' : (item.lastActive ? `Last seen ${formatTimeAgo(item.lastActive, presenceNow)}` : 'Last seen unavailable')}
+                        </Text>
+                      </View>
+                      <View style={[styles.memberStatusDot, { backgroundColor: memberIsOnline ? '#10B981' : '#64748B' }]} />
+
+                      {isAdmin && !isTargetMe && (
+                        <TouchableOpacity 
+                          style={styles.adminKickBtn} 
+                          onPress={() => {
+                            setMemberToKick(item);
+                            setShowKickConfirmModal(true);
+                          }} 
+                          activeOpacity={0.7}
+                        >
+                          <UserX size={15} color="#EF4444" />
+                        </TouchableOpacity>
+                      )}
+                    </View>
+                  );
+                }}
+              />
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* LEAVE MODAL */}
+      <Modal visible={showLeaveConfirmModal} animationType="fade" transparent={true} onRequestClose={() => setShowLeaveConfirmModal(false)}>
+        <TouchableOpacity style={styles.premiumModalOverlay} activeOpacity={1} onPress={() => setShowLeaveConfirmModal(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.premiumDialogCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: isDarkMode ? '#334155' : '#E2E8F0' }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.leaveIconAura}>
+              <LogOut size={30} color="#EF4444" />
+            </View>
+            <Text style={[styles.dialogMainTitle, { color: colors.textPrimary }]}>Leave Community Group?</Text>
+            <Text style={[styles.dialogDescriptionText, { color: colors.textSecondary }]}>
+              You will no longer receive live messages and access group discussions until you re-join.
+            </Text>
+
+            <View style={styles.dialogButtonsRow}>
+              <TouchableOpacity 
+                style={[styles.dialogCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#F1F5F9' }]} 
+                onPress={() => setShowLeaveConfirmModal(false)}
+                disabled={isLeaving}
+                activeOpacity={0.8}
+              >
+                <Text style={[styles.dialogCancelBtnText, { color: colors.textPrimary }]}>Stay</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={styles.dialogConfirmLeaveBtn} 
+                onPress={handleExecuteLeaveCommunity}
+                disabled={isLeaving}
+                activeOpacity={0.85}
+              >
+                {isLeaving ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.dialogConfirmLeaveBtnText}>Yes, Leave</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ADMIN REMOVE MEMBER MODAL */}
+      <Modal visible={showKickConfirmModal} animationType="fade" transparent={true} onRequestClose={() => setShowKickConfirmModal(false)}>
+        <TouchableOpacity style={styles.premiumModalOverlay} activeOpacity={1} onPress={() => setShowKickConfirmModal(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.premiumDialogCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.leaveIconAura}>
+              <UserX size={30} color="#EF4444" />
+            </View>
+            <Text style={[styles.dialogMainTitle, { color: colors.textPrimary }]}>Remove Member?</Text>
+            <Text style={[styles.dialogDescriptionText, { color: colors.textSecondary }]}>
+              {memberToKick?.userName || 'This user'} will lose access to the community chat. Their previous messages will remain unless an admin deletes them.
+            </Text>
+            <View style={styles.dialogButtonsRow}>
+              <TouchableOpacity style={[styles.dialogCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#F1F5F9' }]} onPress={() => setShowKickConfirmModal(false)} disabled={isKicking}>
+                <Text style={[styles.dialogCancelBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+              <TouchableOpacity style={styles.dialogConfirmLeaveBtn} onPress={handleExecuteAdminKick} disabled={isKicking}>
+                {isKicking ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.dialogConfirmLeaveBtnText}>Remove</Text>}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* Delete Confirmation Modal */}
+      <Modal visible={deleteModalVisible} animationType="fade" transparent={true} onRequestClose={() => setDeleteModalVisible(false)}>
+        <TouchableOpacity style={styles.deleteModalOverlay} activeOpacity={1} onPress={() => setDeleteModalVisible(false)}>
+          <TouchableOpacity activeOpacity={1} style={[styles.deleteModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]} onPress={(e) => e.stopPropagation()}>
+            <View style={styles.deleteIconBadge}>
+              <AlertTriangle size={28} color="#EF4444" />
+            </View>
+            <Text style={[styles.deleteTitle, { color: colors.textPrimary }]}>
+              {selectedMessageIds.length > 1 ? `Delete ${selectedMessageIds.length} Messages?` : 'Delete Message?'}
+            </Text>
+            {selectedMessageIds.length === 1 && (() => {
+              const selectedMessage = chatMessages.find((m: any) => m.id === selectedMessageIds[0]);
+              if (!selectedMessage) return null;
+              const senderName =
+                selectedMessage.senderName ||
+                selectedMessage.userName ||
+                (selectedMessage.senderId === currentUser?.uid
+                  ? (currentUser?.displayName || currentUser?.email?.split('@')[0])
+                  : 'User') || 'User';
+              const senderPhoto = selectedMessage.senderPhoto || (selectedMessage.senderId === currentUser?.uid ? currentUser?.photoURL : '');
+              return (
+                <View style={styles.deleteSenderRow}>
+                  <View style={[styles.deleteSenderAvatar, { backgroundColor: getAvatarColor(senderName) }]}>
+                    {senderPhoto ? (
+                      <Image source={{ uri: senderPhoto }} style={styles.deleteSenderAvatarImg} />
+                    ) : (
+                      <Text style={styles.deleteSenderAvatarText}>{senderName.charAt(0).toUpperCase()}</Text>
+                    )}
+                  </View>
+                  <View style={{ flex: 1, marginLeft: 10 }}>
+                    <Text style={[styles.deleteSenderName, { color: colors.textPrimary }]} numberOfLines={1}>{senderName}</Text>
+                    <Text style={[styles.deleteSenderHint, { color: colors.textSecondary }]}>Selected message</Text>
+                  </View>
+                </View>
+              );
+            })()}
+
+            <Text style={[styles.deleteSubtitle, { color: colors.textSecondary }]}>
+              {isAdmin
+                ? 'Delete for me hides the selected message(s) only from your chat. Delete for everyone removes them for all members.'
+                : 'Delete for me hides the selected message(s) only from your chat. You can delete your own message for everyone within 1 hour.'}
+            </Text>
+
+            <View style={styles.deleteOptionsContainer}>
+              <TouchableOpacity
+                style={[styles.deleteOptionBtn, styles.deleteForMeBtn]}
+                onPress={deleteSelectedMessagesForMe}
+                activeOpacity={0.82}
+              >
+                <Text style={styles.deleteOptionBtnText}>Delete for me</Text>
+              </TouchableOpacity>
+
+              {(() => {
+                const selected = selectedMessageIds
+                  .map(id => chatMessages.find((m: any) => m.id === id))
+                  .filter(Boolean);
+                const canEveryone = selected.length > 0 &&
+                  selected.length === selectedMessageIds.length &&
+                  selected.every((m: any) => canDeleteForEveryone(m));
+
+                return canEveryone ? (
+                  <TouchableOpacity
+                    style={[styles.deleteOptionBtn, styles.deleteForEveryoneBtn]}
+                    onPress={confirmDeleteSelectedMessages}
+                    activeOpacity={0.82}
+                  >
+                    <Text style={styles.deleteOptionBtnText}>Delete for everyone</Text>
+                  </TouchableOpacity>
+                ) : null;
+              })()}
+
+              <TouchableOpacity
+                style={[styles.deleteOptionBtn, styles.deleteCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]}
+                onPress={() => setDeleteModalVisible(false)}
+                activeOpacity={0.82}
+              >
+                <Text style={[styles.deleteOptionCancelText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* CHALLENGE QUIZ MODAL WITH FULL-SCREEN SMOOTH CONFETTI */}
+      <Modal
+        visible={isStudentQuizModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeQuizModal}
+      >
+        <View style={styles.quizModalOverlay}>
+          {showConfetti && (
+            <View style={StyleSheet.absoluteFill} pointerEvents="none">
+              <ConfettiCannon 
+                count={220} 
+                origin={{ x: SCREEN_WIDTH / 2, y: 0 }} 
+                fadeOut={true} 
+                autoStart={true} 
+                fallSpeed={2800}
+                explosionSpeed={350}
+              />
+            </View>
+          )}
+
+          <View style={[styles.quizModalCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+            <View style={styles.quizModalHeader}>
+              <View style={{ flex: 1, paddingRight: 10 }}>
+                <Text style={[styles.quizModalTitle, { color: colors.textPrimary }]} numberOfLines={2}>
+                  {currentTakingQuiz?.title || 'Challenge'}
+                </Text>
+                <Text style={[styles.quizModalProgress, { color: colors.textSecondary }]}>
+                  {quizCompleted ? 'Challenge complete' : `Question ${Math.min(currentQuestionIndex + 1, activeQuizTotal)} of ${activeQuizTotal}`}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={closeQuizModal} style={styles.quizCloseBtn} activeOpacity={0.8}>
+                <X size={19} color={colors.textPrimary} />
+              </TouchableOpacity>
+            </View>
+
+            {quizCompleted ? (
+              <View style={styles.quizResultBox}>
+                <View style={styles.quizResultIcon}>
+                  <Trophy size={30} color="#F59E0B" />
+                </View>
+                <Text style={[styles.quizResultTitle, { color: colors.textPrimary }]}>Challenge Complete! 🎉</Text>
+                <Text style={[styles.quizResultScore, { color: primaryColor }]}>
+                  {calculatedScore}/{activeQuizTotal}
+                </Text>
+                <Text style={[styles.quizResultSub, { color: colors.textSecondary }]}>+20 XP earned</Text>
+                <TouchableOpacity style={[styles.quizPrimaryBtn, { backgroundColor: primaryColor }]} onPress={closeQuizModal} activeOpacity={0.85}>
+                  <Text style={styles.quizPrimaryBtnText}>Done</Text>
+                </TouchableOpacity>
+              </View>
+            ) : activeQuizQuestion ? (
+              <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={{ paddingBottom: 4 }}>
+                <View style={styles.quizTimerBadgeRow}>
+                  <Timer size={15} color={quizTimerSeconds <= 5 ? '#EF4444' : '#3B82F6'} />
+                  <Text style={[styles.quizTimerText, { color: quizTimerSeconds <= 5 ? '#EF4444' : colors.textPrimary }]}>
+                    {quizTimerSeconds}s
+                  </Text>
+                  <View style={styles.timerProgressBarTrack}>
+                    <View style={[styles.timerProgressBarFill, { backgroundColor: quizTimerSeconds <= 5 ? '#EF4444' : '#3B82F6', width: `${Math.max(0, Math.min(100, (quizTimerSeconds / 15) * 100))}%` }]} />
+                  </View>
+                </View>
+
+                <Text style={[styles.quizQuestionText, { color: colors.textPrimary }]}>
+                  {activeQuizQuestion.questionText}
+                </Text>
+
+                <View style={{ gap: 10 }}>
+                  {(activeQuizQuestion.options || []).map((option: string, optionIndex: number) => {
+                    const isChosen = userSelectedOption === optionIndex;
+                    const isCorrect = optionIndex === activeQuizQuestion.correctAnswerIndex;
+                    const isWrong = isAnswerSubmitted && isChosen && !isCorrect;
+                    const showResult = isAnswerSubmitted;
+                    return (
+                      <TouchableOpacity
+                        key={`${currentQuestionIndex}_${optionIndex}`}
+                        onPress={() => handleSelectOption(optionIndex)}
+                        disabled={isAnswerSubmitted}
+                        activeOpacity={0.82}
+                        style={[
+                          styles.quizOptionBtn,
+                          {
+                            backgroundColor: showResult && isCorrect
+                              ? 'rgba(16, 185, 129, 0.12)'
+                              : (isWrong
+                                ? 'rgba(239, 68, 68, 0.12)'
+                                : (isChosen ? 'rgba(99, 102, 241, 0.12)' : (isDarkMode ? '#0F172A' : '#F8FAFC'))),
+                            borderColor: showResult && isCorrect
+                              ? '#10B981'
+                              : (isWrong ? '#EF4444' : (isChosen ? primaryColor : colors.border)),
+                          }
+                        ]}
+                      >
+                        <Text style={[styles.quizOptionText, { color: colors.textPrimary }]}>{option}</Text>
+                        {showResult && isCorrect && <CheckCircle size={18} color="#10B981" />}
+                        {isWrong && <XCircle size={18} color="#EF4444" />}
+                        {!showResult && isChosen && <CheckCircle size={18} color={primaryColor} />}
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                {isAnswerSubmitted && (
+                  <View style={[styles.quizExplanationBox, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.border }]}>
+                    <Text style={[styles.quizExplanationTitle, { color: primaryColor }]}>Explanation</Text>
+                    <Text style={[styles.quizExplanationText, { color: colors.textSecondary }]}>
+                      {activeQuizQuestion.explanation || 'Good effort! Review the correct option and continue.'}
+                    </Text>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.quizPrimaryBtn, { backgroundColor: isAnswerSubmitted ? primaryColor : (userSelectedOption === null ? '#94A3B8' : primaryColor) }]}
+                  onPress={isAnswerSubmitted ? handleNextQuestion : handleConfirmAnswer}
+                  disabled={!isAnswerSubmitted && userSelectedOption === null}
+                  activeOpacity={0.85}
+                >
+                  <Text style={styles.quizPrimaryBtnText}>{isAnswerSubmitted ? (currentQuestionIndex + 1 < activeQuizTotal ? 'Next Question' : 'Finish Challenge') : 'Submit Answer'}</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            ) : (
+              <View style={styles.quizResultBox}>
+                <ActivityIndicator size="large" color={primaryColor} />
+              </View>
+            )}
+          </View>
+        </View>
+      </Modal>
     </View>
   );
-};
-
-export default CommunityScreen;
+}
 
 const styles = StyleSheet.create({
   container: { flex: 1 },
-  header: { paddingHorizontal: 16, paddingVertical: 12 },
-  title: { fontSize: 26, fontWeight: '800' },
-  subtitleText: { fontSize: 13, marginTop: 2 },
-  verifiedGlowBadge: { flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 12, gap: 4 },
-  verifiedGlowText: { fontSize: 11, fontWeight: '800' },
-  tabsContainer: { flexDirection: 'row', marginHorizontal: 16, borderRadius: 16, padding: 4, marginBottom: 16 },
-  tab: { flex: 1, paddingVertical: 9, alignItems: 'center', borderRadius: 12 },
-  activeTab: { elevation: 3 },
-  tabText: { fontSize: 12, fontWeight: '600' },
-  scrollList: { paddingHorizontal: 16, paddingBottom: 24 },
-  premiumCard: { borderRadius: 22, padding: 18, borderWidth: 1.5, marginBottom: 16 },
-  sectionHeading: { fontSize: 17, fontWeight: '800', marginBottom: 10 },
-  createPostBox: { marginHorizontal: 16, borderRadius: 20, borderWidth: 1.5, padding: 12, marginBottom: 16, flexDirection: 'row', alignItems: 'center' },
-  postInput: { flex: 1, maxHeight: 80, fontSize: 14, paddingRight: 8 },
-  sendBtn: { width: 40, height: 40, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
-  chatIconGlowWrap: { width: 56, height: 56, borderRadius: 20, justifyContent: 'center', alignItems: 'center' },
-  badgePillPrimary: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 },
-  badgePillStatus: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 9, paddingVertical: 4, borderRadius: 10 },
-  openGroupBtn: { paddingVertical: 13, borderRadius: 16, alignItems: 'center', justifyContent: 'center', marginTop: 18, flexDirection: 'row' },
-  voiceRoomCard: { width: 145, borderRadius: 22, borderWidth: 1.5, padding: 14, marginRight: 12, alignItems: 'flex-start' },
-  voiceEmojiWrap: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  onlineBadge: { flexDirection: 'row', alignItems: 'center', gap: 5, paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, alignSelf: 'flex-start' },
-  greenDot: { width: 7, height: 7, borderRadius: 3.5 },
-  avatarGlow: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
-  deleteIconButton: { padding: 8, borderRadius: 12, backgroundColor: 'rgba(239, 68, 68, 0.12)' },
-  avatarText: { color: '#FFF', fontWeight: '800', fontSize: 16 },
-  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
-  userNameText: { fontSize: 15, fontWeight: '800' },
-  actionBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
-  quizIconGlowContainer: { width: 44, height: 44, borderRadius: 14, justifyContent: 'center', alignItems: 'center' },
-  quizTitleText: { fontSize: 16, fontWeight: '800' },
-  cardSubtitle: { fontSize: 12, marginTop: 2 },
-  xpPillBadge: { flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(245, 158, 11, 0.18)', paddingHorizontal: 8, paddingVertical: 3, borderRadius: 8, gap: 4 },
-  xpPillText: { color: '#F59E0B', fontSize: 11, fontWeight: '800' },
-  completedStatusBanner: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 12, borderRadius: 12, marginTop: 12 },
-  startQuizButton: { paddingVertical: 12, borderRadius: 12, alignItems: 'center', justifyContent: 'center', marginTop: 12 },
+  
+  responsiveCenterWrapper: {
+    width: '100%',
+    maxWidth: 640,
+    alignSelf: 'center',
+    paddingTop: 8,
+  },
 
-  /* 🗑️ CUSTOM DELETE MODAL STYLES */
+  topHeroHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-end',
+    paddingHorizontal: 16,
+    paddingBottom: 0,
+    marginBottom: -4,
+    zIndex: 10,
+  },
+  headerLeftBlock: { flex: 1, paddingRight: 6, paddingBottom: 12 },
+  realChatLogoPill: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: '#EFF6FF',
+    borderWidth: 1.2,
+    borderColor: '#DBEAFE',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  mainScreenTitle: { fontSize: 26, fontWeight: '900', letterSpacing: -0.6 },
+  mainScreenSubtitle: { fontSize: 12, fontWeight: '600', marginTop: 3 },
+  headerRightBlock: { 
+    alignItems: 'flex-end', 
+    justifyContent: 'flex-end',
+  },
+  childrenArtworkTouching: {
+    width: 154,
+    height: 96,
+    marginBottom: -6,
+  },
+
+  tabsContainer: { 
+    flexDirection: 'row', 
+    marginHorizontal: 16, 
+    borderRadius: 16, 
+    padding: 4, 
+    marginBottom: 16,
+    zIndex: 11,
+  },
+  tab: { 
+    flex: 1, 
+    flexDirection: 'row', 
+    gap: 4,
+    paddingVertical: 10, 
+    alignItems: 'center', 
+    justifyContent: 'center', 
+    borderRadius: 12 
+  },
+  activeTab: { 
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4
+  },
+  tabText: { fontSize: 11.5, fontWeight: '700' },
+
+  scrollList: { paddingHorizontal: 16, paddingBottom: 100 },
+  sectionTitleRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 12,
+    marginTop: 8,
+  },
+  sectionHeadingTitle: { fontSize: 18, fontWeight: '900', letterSpacing: -0.3 },
+  
+  chatCardOuterWrapper: {
+    width: '100%',
+    borderRadius: 24,
+    overflow: 'hidden',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.12,
+    shadowRadius: 10,
+    backgroundColor: '#3B82F6',
+    position: 'relative',
+    minHeight: 180,
+  },
+  chatBannerImageTight: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    width: '100%',
+    height: '100%',
+  },
+  communityContentLayer: {
+    flex: 1,
+    padding: 16,
+    justifyContent: 'space-between',
+  },
+  communityTopRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  eccAvatarPillWrap: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+  },
+  eccAvatarText: { fontSize: 14, fontWeight: '900', color: '#2563EB' },
+  chatCardTitle: { fontSize: 16, fontWeight: '900', letterSpacing: -0.3, color: '#0F172A' },
+  chatCardSub: { fontSize: 11.5, fontWeight: '800', marginTop: 2, color: '#1E293B' },
+  realBlueTickBadge: {
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#3B82F6',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginLeft: 2,
+  },
+  memberTagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(255, 255, 255, 0.95)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  memberTagBadgeText: { fontSize: 10.5, fontWeight: '900', color: '#0F172A' },
+  activeTagBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(220, 252, 231, 0.95)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  activeTagBadgeText: { fontSize: 10.5, fontWeight: '900' },
+  
+  membersAvatarRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 2,
+  },
+  memberCircleAvatar: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  memberImg: {
+    width: '100%',
+    height: '100%',
+  },
+  memberInitialsText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  memberCircleAvatarPlus: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#1E293B',
+    borderWidth: 1.5,
+    borderColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  memberPlusText: {
+    color: '#FFFFFF',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+
+  neonGlowWrapper: {
+    width: '100%',
+    borderRadius: 16,
+  },
+  premiumShineJoinBtn: {
+    backgroundColor: '#059669',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 13,
+    borderRadius: 16,
+    width: '100%',
+  },
+  premiumShineJoinBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 15,
+  },
+
+  openChatActionBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 14,
+    width: '100%',
+  },
+  openChatActionBtnText: { color: '#FFFFFF', fontWeight: '900', fontSize: 14 },
+
+  dropdownOverlayBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    zIndex: 998,
+  },
+  threeDotsDropdown: {
+    position: 'absolute',
+    top: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 54 : 56,
+    right: 16,
+    borderRadius: 16,
+    borderWidth: 1,
+    elevation: 12,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.2,
+    shadowRadius: 8,
+    zIndex: 999,
+    paddingVertical: 6,
+    minWidth: 180,
+  },
+  dropdownOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
+  dropdownLeaveText: {
+    color: '#EF4444',
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  dropdownOptionText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+
+  selectionTopBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 8 : 10,
+    elevation: 4,
+  },
+  selectedCountText: {
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  batchEditTopBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(99, 102, 241, 0.15)',
+  },
+  batchDeleteTopBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+  },
+
+  messageRowWrap: {
+    width: '100%',
+    paddingHorizontal: 4,
+    marginVertical: 2,
+  },
+  messageInnerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  messageRowWithReaction: {
+    marginBottom: 16,
+  },
+  messageReactionSideBtn: {
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    backgroundColor: 'rgba(148, 163, 184, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  undoToastContainer: {
+    position: 'absolute',
+    bottom: 74,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderRadius: 24,
+    width: '90%',
+    maxWidth: 360,
+    elevation: 10,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    zIndex: 999,
+  },
+  undoToastText: {
+    color: '#F8FAFC',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+  undoBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  undoBtnText: {
+    color: '#38BDF8',
+    fontSize: 13.5,
+    fontWeight: '900',
+  },
+
+  pinnedBannerBar: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+  },
+  messagePinIconAnchor: {
+    position: 'absolute',
+    top: 6,
+    right: 8,
+  },
+
+  chatAvatarThumb: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  chatAvatarImg: {
+    width: '100%',
+    height: '100%',
+  },
+  chatAvatarThumbText: {
+    color: '#FFFFFF',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  standaloneEmojiMessage: {
+    fontSize: 42,
+    lineHeight: 50,
+    paddingVertical: 2,
+  },
+  adminTagBadge: {
+    backgroundColor: 'rgba(139, 92, 246, 0.2)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 6,
+    borderWidth: 1,
+    borderColor: '#8B5CF6',
+  },
+  adminTagBadgeText: {
+    color: '#8B5CF6',
+    fontSize: 9,
+    fontWeight: '900',
+  },
+
+  membersModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.65)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  membersModalCard: {
+    width: '100%',
+    maxWidth: 360,
+    borderRadius: 24,
+    padding: 18,
+    maxHeight: SCREEN_HEIGHT * 0.65,
+    elevation: 12,
+  },
+  membersModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+  },
+  membersModalTitle: {
+    fontSize: 16,
+    fontWeight: '900',
+  },
+  memberItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+  memberAvatarCircle: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    overflow: 'hidden',
+  },
+  memberAvatarInitial: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  memberNameText: {
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  memberStatusDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginLeft: 6,
+  },
+
+  adminKickBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.12)',
+    marginLeft: 10,
+  },
+
+  premiumModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  premiumDialogCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 28,
+    padding: 22,
+    borderWidth: 1.5,
+    alignItems: 'center',
+    elevation: 16,
+  },
+  joinIconAura: {
+    width: 66,
+    height: 66,
+    borderRadius: 33,
+    backgroundColor: 'rgba(16, 185, 129, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(16, 185, 129, 0.3)',
+  },
+  leaveIconAura: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 14,
+    borderWidth: 1.5,
+    borderColor: 'rgba(239, 68, 68, 0.3)',
+  },
+  dialogMainTitle: {
+    fontSize: 19,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: -0.3,
+  },
+  dialogDescriptionText: {
+    fontSize: 12.5,
+    lineHeight: 18,
+    textAlign: 'center',
+    marginTop: 8,
+    marginBottom: 20,
+    paddingHorizontal: 6,
+  },
+  dialogButtonsRow: {
+    flexDirection: 'row',
+    gap: 10,
+    width: '100%',
+  },
+  dialogCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dialogCancelBtnText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  dialogConfirmJoinBtn: {
+    flex: 1.2,
+    backgroundColor: '#10B981',
+    flexDirection: 'row',
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dialogConfirmJoinBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 13.5,
+  },
+  dialogConfirmLeaveBtn: {
+    flex: 1.2,
+    backgroundColor: '#EF4444',
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  dialogConfirmLeaveBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 13.5,
+  },
+
+  quizTimerBadgeRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    borderWidth: 1.5,
+    marginTop: 4,
+  },
+  quizTimerText: {
+    fontSize: 13,
+    fontWeight: '900',
+  },
+  timerProgressBarTrack: {
+    flex: 1,
+    height: 6,
+    borderRadius: 3,
+    backgroundColor: 'rgba(148, 163, 184, 0.25)',
+    overflow: 'hidden',
+    marginLeft: 6,
+  },
+  timerProgressBarFill: {
+    height: '100%',
+    borderRadius: 3,
+  },
+
+  quizModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(15, 23, 42, 0.62)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 18,
+  },
+  quizModalCard: {
+    width: '100%',
+    maxWidth: 390,
+    maxHeight: '88%',
+    borderRadius: 26,
+    borderWidth: 1.2,
+    padding: 20,
+    elevation: 18,
+  },
+  quizModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 14,
+  },
+  quizModalTitle: {
+    fontSize: 19,
+    fontWeight: '900',
+    lineHeight: 24,
+  },
+  quizModalProgress: {
+    fontSize: 11.5,
+    fontWeight: '700',
+    marginTop: 4,
+  },
+  quizCloseBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(148, 163, 184, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  quizQuestionText: {
+    fontSize: 17,
+    lineHeight: 24,
+    fontWeight: '900',
+    marginTop: 18,
+    marginBottom: 14,
+  },
+  quizOptionBtn: {
+    minHeight: 52,
+    borderRadius: 15,
+    borderWidth: 1.4,
+    paddingHorizontal: 14,
+    paddingVertical: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  quizOptionText: {
+    flex: 1,
+    fontSize: 13.5,
+    lineHeight: 19,
+    fontWeight: '700',
+    paddingRight: 8,
+  },
+  quizExplanationBox: {
+    borderWidth: 1,
+    borderRadius: 14,
+    padding: 12,
+    marginTop: 14,
+  },
+  quizExplanationTitle: {
+    fontSize: 12,
+    fontWeight: '900',
+    marginBottom: 4,
+  },
+  quizExplanationText: {
+    fontSize: 12,
+    lineHeight: 18,
+    fontWeight: '600',
+  },
+  quizPrimaryBtn: {
+    width: '100%',
+    paddingVertical: 13,
+    borderRadius: 15,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 16,
+  },
+  quizPrimaryBtnText: {
+    color: '#FFFFFF',
+    fontSize: 14,
+    fontWeight: '900',
+  },
+  quizResultBox: {
+    alignItems: 'center',
+    paddingVertical: 18,
+  },
+  quizResultIcon: {
+    width: 68,
+    height: 68,
+    borderRadius: 34,
+    backgroundColor: 'rgba(245, 158, 11, 0.14)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginBottom: 12,
+  },
+  quizResultTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+  },
+  quizResultScore: {
+    fontSize: 36,
+    fontWeight: '900',
+    marginTop: 8,
+  },
+  quizResultSub: {
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+
+  challengeCardBox: {
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1.5,
+    marginBottom: 16,
+  },
+  challengeCardBoxGreen: {
+    borderRadius: 22,
+    padding: 16,
+    borderWidth: 1.5,
+    marginBottom: 16,
+  },
+  challengeIconBubble3D: {
+    width: 46,
+    height: 46,
+    borderRadius: 15,
+    backgroundColor: 'rgba(139, 92, 246, 0.14)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  challengeCardTitle: { fontSize: 16, fontWeight: '900', letterSpacing: -0.2 },
+  challengeCardSub: { fontSize: 12, fontWeight: '500', marginTop: 2 },
+  timeLeftBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(59, 130, 246, 0.12)',
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  timeLeftBadgeText: { color: '#3B82F6', fontSize: 11, fontWeight: '800' },
+  startChallengeActionBtn: {
+    backgroundColor: '#8B5CF6',
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  startChallengeActionBtnText: { color: '#FFF', fontWeight: '900', fontSize: 14 },
+  completedChallengePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: '#10B981',
+    backgroundColor: 'rgba(168, 85, 247, 0.08)',
+  },
+
+  playLearnSingleContainer: {
+    width: '100%',
+    marginTop: 6,
+  },
+  singleGameCard: {
+    width: '100%',
+    borderRadius: 22,
+    borderWidth: 1.5,
+    padding: 16,
+    marginBottom: 4,
+  },
+  singleGameLeftRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  gameIconBubbleLarge: {
+    width: 54,
+    height: 54,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  xpBonusBadge: {
+    backgroundColor: 'rgba(147, 51, 234, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  xpBonusBadgeText: {
+    color: '#7E22CE',
+    fontSize: 11,
+    fontWeight: '900',
+  },
+  singleGamePlayButton: {
+    marginTop: 14,
+    backgroundColor: '#FFFFFF',
+    paddingVertical: 10,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  singleGamePlayButtonText: {
+    color: '#581C87',
+    fontSize: 14,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
+  gameCardTitle: { fontSize: 15, fontWeight: '900', letterSpacing: -0.2 },
+  gameCardSub: { fontSize: 11.5, fontWeight: '500', color: '#64748B', marginTop: 2 },
+
+  puzzleTopBar: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+  },
+  zipLogoBadge: {
+    backgroundColor: '#6366F1',
+    borderRadius: 6,
+    padding: 4,
+  },
+
+  tapWordActionsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    width: '100%',
+    maxWidth: 340,
+    marginVertical: 12,
+  },
+  wordDisplayStripTap: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 2,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  wordDisplayText: {
+    fontSize: 20,
+    fontWeight: '900',
+    letterSpacing: 2,
+  },
+  clearWordBtn: {
+    width: 44,
+    height: 44,
+    borderRadius: 14,
+    backgroundColor: 'rgba(239, 68, 68, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  checkWordBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    paddingHorizontal: 16,
+    height: 44,
+    borderRadius: 14,
+    justifyContent: 'center',
+  },
+  checkWordBtnText: {
+    color: '#FFFFFF',
+    fontWeight: '900',
+    fontSize: 14,
+  },
+
+  zipBoardFrame: {
+    borderWidth: 2.5,
+    borderRadius: 18,
+    padding: 10,
+    gap: 8,
+  },
+  zipBoardRow: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  zipGridCell: {
+    width: (SCREEN_WIDTH > 400 ? 68 : 60),
+    height: (SCREEN_WIDTH > 400 ? 68 : 60),
+    borderRadius: 14,
+    borderWidth: 2,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  zipGridCellText: { fontSize: 22, fontWeight: '900' },
+  tapOrderBadge: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 16,
+    height: 16,
+    borderRadius: 8,
+    backgroundColor: '#FFFFFF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tapOrderBadgeText: {
+    color: '#4F46E5',
+    fontSize: 10,
+    fontWeight: '900',
+  },
+  discoveredWordCard: {
+    padding: 10,
+    borderRadius: 12,
+    borderWidth: 1,
+    marginBottom: 8,
+  },
+  discoveredBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#10B981',
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 6,
+    gap: 4,
+    marginBottom: 4,
+  },
+  discoveredBadgeText: { color: '#FFF', fontWeight: '900', fontSize: 11.5 },
+  discoveredMeaningText: { fontSize: 12, lineHeight: 17, fontWeight: '600' },
+  zipControlsRow: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
+    maxWidth: 350,
+    marginTop: 18,
+    marginBottom: 20,
+  },
+  zipControlBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    borderRadius: 14,
+    borderWidth: 1.5,
+  },
+  zipControlBtnText: { fontSize: 14, fontWeight: '800' },
+
+  resultsModalCard: {
+    borderRadius: 24,
+    padding: 20,
+    maxHeight: SCREEN_HEIGHT * 0.75,
+  },
+  resultsHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderColor: '#E2E8F0',
+  },
+  playerResultRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+  },
+
+  liveNowPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#EFF6FF',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  liveNowPillText: { color: '#3B82F6', fontSize: 11, fontWeight: '800' },
+  voiceRoomsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: '100%',
+  },
+  voiceRoomGridCard: {
+    width: '31.5%',
+    minHeight: 185,
+    borderRadius: 20,
+    borderWidth: 1.5,
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  roomEmojiBubble: {
+    width: 46,
+    height: 46,
+    borderRadius: 14,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 6,
+  },
+  roomCardTitle: { fontSize: 13, fontWeight: '900', textAlign: 'center', letterSpacing: -0.2 },
+  roomCardSub: { fontSize: 10.5, marginTop: 2, textAlign: 'center', fontWeight: '500' },
+  roomOnlineStatusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    marginVertical: 6,
+  },
+  roomOnlineCount: { fontSize: 10.5, fontWeight: '800' },
+  greenDot: { width: 6, height: 6, borderRadius: 3 },
+  joinRoomBtn: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 4,
+    width: '100%',
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  joinRoomBtnText: { fontSize: 12, fontWeight: '900' },
+
+  fluencyTipBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 14,
+    borderRadius: 18,
+    borderWidth: 1,
+    marginTop: 22,
+  },
+  fluencyTipText: { fontSize: 12.5, flex: 1, lineHeight: 18 },
+
+  createPostBox: { 
+    marginHorizontal: 16, 
+    borderRadius: 18, 
+    borderWidth: 1.5, 
+    padding: 12, 
+    marginBottom: 16, 
+    flexDirection: 'row', 
+    alignItems: 'center' 
+  },
+  postInput: { flex: 1, maxHeight: 80, fontSize: 13.5, paddingRight: 8 },
+  sendBtn: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center' },
+  premiumCard: { borderRadius: 20, padding: 16, borderWidth: 1.5, marginBottom: 14 },
+  avatarGlow: { width: 36, height: 36, borderRadius: 18, justifyContent: 'center', alignItems: 'center' },
+  deleteIconButton: { padding: 8, borderRadius: 12, backgroundColor: 'rgba(239, 68, 68, 0.12)' },
+  avatarText: { color: '#FFF', fontWeight: '800', fontSize: 15 },
+  cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  userNameText: { fontSize: 14.5, fontWeight: '800' },
+
+  whatsappEmojiKeyboardSwap: { 
+    width: '100%',
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderColor: 'rgba(148, 163, 184, 0.25)',
+  },
+  emojiGridContent: {
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    paddingHorizontal: 8,
+    paddingVertical: 10,
+    justifyContent: 'flex-start'
+  },
+  emojiKeyItem: {
+    width: '12.5%', 
+    paddingVertical: 10, 
+    alignItems: 'center', 
+    justifyContent: 'center'
+  },
+
+  reactionOverlayBg: { 
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.35)', 
+    justifyContent: 'center', 
+    alignItems: 'center' 
+  },
+  whatsappActionContainer: {
+    borderRadius: 24,
+    elevation: 8,
+    padding: 10,
+    width: '86%',
+    maxWidth: 330,
+  },
+  reactionPickerBar: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-around', 
+    paddingVertical: 8, 
+  },
+  reactionEmojiItem: { 
+    padding: 6, 
+    borderRadius: 12, 
+  },
+  actionOptionsRow: { 
+    flexDirection: 'row', 
+    justifyContent: 'space-around', 
+    borderTopWidth: 1, 
+    marginTop: 6, 
+    paddingTop: 8, 
+  },
+  actionOptionBtn: { 
+    paddingVertical: 6, 
+    paddingHorizontal: 12, 
+  },
+  actionOptionText: { 
+    fontSize: 13, 
+    fontWeight: '800', 
+  },
+
+  pureTransparentReactionBadge: { 
+    position: 'absolute', 
+    bottom: -11, 
+    left: 8, 
+    backgroundColor: 'transparent', 
+    paddingHorizontal: 2, 
+    paddingVertical: 1, 
+    flexDirection: 'row', 
+    alignItems: 'center', 
+    zIndex: 10 
+  },
+
+  whatsappReactionPillContainer: {
+    position: 'absolute',
+    bottom: -11,
+    left: 8,
+    backgroundColor: 'rgba(255,255,255,0.72)',
+    borderWidth: 1,
+    borderColor: 'rgba(148,163,184,0.24)',
+    borderRadius: 999,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    minHeight: 22,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 15,
+    shadowColor: '#000',
+    shadowOpacity: 0.04,
+    shadowRadius: 2,
+    shadowOffset: { width: 0, height: 1 },
+    elevation: 1,
+  },
+  whatsappReactionInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
+  },
+  whatsappReactionCountText: {
+    color: '#334155',
+    fontSize: 10,
+    lineHeight: 13,
+    fontWeight: '800',
+    marginLeft: 1
+  },
+
+  cleanBottomInputWrapper: {
+    paddingHorizontal: 12,
+    paddingTop: 8,
+    paddingBottom: Platform.OS === 'ios' ? 14 : 12,
+    backgroundColor: 'transparent',
+  },
+  inlineEditHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 6,
+    borderRadius: 12,
+    marginBottom: 6,
+  },
+  inlineEditText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
+  cleanInputInnerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 28,
+  },
+  roundActionBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  mediaOverlayBackdrop: {
+    flex: 1, 
+    backgroundColor: 'rgba(0,0,0,0.45)', 
+    justifyContent: 'flex-end', 
+  },
+  premiumMediaSheet: {
+    borderTopLeftRadius: 28, 
+    borderTopRightRadius: 28, 
+    padding: 20, 
+    elevation: 16, 
+  },
+  mediaSheetHeader: {
+    flexDirection: 'row', 
+    justifyContent: 'space-between', 
+    alignItems: 'center', 
+    marginBottom: 20, 
+  },
+  mediaSheetTitle: {
+    fontSize: 17, 
+    fontWeight: '900', 
+  },
+  mediaCloseCircle: {
+    width: 30, 
+    height: 30, 
+    borderRadius: 15, 
+    backgroundColor: '#64748B', 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+  },
+  mediaGridContainer: {
+    flexDirection: 'row', 
+    flexWrap: 'wrap', 
+    justifyContent: 'space-around', 
+    gap: 16, 
+    paddingBottom: 10, 
+  },
+  mediaActionItem: {
+    alignItems: 'center', 
+    width: '28%', 
+  },
+  mediaIconCircle: {
+    width: 54, 
+    height: 54, 
+    borderRadius: 27, 
+    justifyContent: 'center', 
+    alignItems: 'center', 
+    marginBottom: 6, 
+  },
+  mediaActionLabel: {
+    fontSize: 12, 
+    fontWeight: '700', 
+  },
+
   deleteModalOverlay: { flex: 1, backgroundColor: 'rgba(0,0,0,0.65)', justifyContent: 'center', alignItems: 'center', padding: 20 },
-  deleteModalCard: { width: '100%', maxWidth: 320, borderRadius: 24, padding: 22, borderWidth: 1.5, alignItems: 'center', elevation: 10 },
+  deleteModalCard: { width: '100%', maxWidth: 340, borderRadius: 24, padding: 22, borderWidth: 1.5, alignItems: 'center', elevation: 10 },
   deleteIconBadge: { width: 56, height: 56, borderRadius: 28, backgroundColor: 'rgba(239, 68, 68, 0.15)', justifyContent: 'center', alignItems: 'center', marginBottom: 14 },
   deleteTitle: { fontSize: 19, fontWeight: '800', marginBottom: 6 },
-  deleteSubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 19, marginBottom: 20 },
-  deleteActionContainer: { flexDirection: 'row', gap: 12, width: '100%' },
-  cancelBtn: { flex: 1, paddingVertical: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-  cancelBtnText: { fontWeight: '700', fontSize: 14 },
-  confirmDeleteBtn: { flex: 1, backgroundColor: '#EF4444', paddingVertical: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center', elevation: 3 },
-  confirmDeleteBtnText: { color: '#FFF', fontWeight: '800', fontSize: 14 },
-
-  /* 😃 EMOJI PICKER TRAY STYLES */
-  emojiPickerTray: { height: 180, borderTopWidth: 1 },
-
-  /* 💖 REACTION STYLES */
-  reactionOverlayBg: { flex: 1, backgroundColor: 'rgba(0,0,0,0.4)', justifyContent: 'center', alignItems: 'center' },
-  reactionPickerBar: { flexDirection: 'row', borderRadius: 30, paddingHorizontal: 14, paddingVertical: 8, elevation: 10, borderWidth: 1, borderColor: '#334155' },
-  reactionEmojiItem: { paddingHorizontal: 8, paddingVertical: 4 },
-  reactionsSummaryBadge: { position: 'absolute', bottom: -10, right: 10, backgroundColor: '#1E293B', borderWidth: 1, borderColor: '#334155', borderRadius: 12, paddingHorizontal: 6, paddingVertical: 2, flexDirection: 'row', alignItems: 'center', elevation: 4 },
-  activeMyReactionBadge: { backgroundColor: 'rgba(139, 92, 246, 0.25)' },
-  reactionCountText: { color: '#F8FAFC', fontSize: 9, fontWeight: '800', marginLeft: 3 }
+  deleteSubtitle: { fontSize: 13, textAlign: 'center', lineHeight: 19, marginBottom: 14 },
+  deleteSenderRow: { width: '100%', flexDirection: 'row', alignItems: 'center', paddingHorizontal: 10, paddingVertical: 8, borderRadius: 14, marginBottom: 10, backgroundColor: 'rgba(148, 163, 184, 0.10)' },
+  deleteSenderAvatar: { width: 38, height: 38, borderRadius: 19, justifyContent: 'center', alignItems: 'center', overflow: 'hidden' },
+  deleteSenderAvatarImg: { width: '100%', height: '100%' },
+  deleteSenderAvatarText: { color: '#FFFFFF', fontSize: 15, fontWeight: '900' },
+  deleteSenderName: { fontSize: 14, fontWeight: '900' },
+  deleteSenderHint: { fontSize: 10.5, marginTop: 2 },
+  deleteOptionsContainer: { width: '100%', gap: 10, marginTop: 2 },
+  deleteOptionBtn: { width: '100%', paddingVertical: 12, borderRadius: 14, alignItems: 'center', justifyContent: 'center', elevation: 2 },
+  deleteForMeBtn: { backgroundColor: '#EF4444' },
+  deleteForEveryoneBtn: { backgroundColor: '#DC2626' },
+  deleteCancelBtn: { elevation: 0 },
+  deleteOptionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
+  deleteOptionCancelText: { fontWeight: '800', fontSize: 14 }
 });
-
-export default CommunityScreen;
