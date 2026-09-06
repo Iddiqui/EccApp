@@ -7,10 +7,12 @@ buildscript {
         ndkVersion = "27.1.12297006"
         kotlinVersion = "2.1.20"
     }
+
     repositories {
         google()
         mavenCentral()
     }
+
     dependencies {
         classpath("com.android.tools.build:gradle")
         classpath("com.facebook.react:react-native-gradle-plugin")
@@ -30,14 +32,24 @@ subprojects {
     }
 }
 
-// 🚀 2. BYPASS AAR BUNDLE & METADATA CHECKS
+// 🚀 2. BYPASS AAR METADATA CHECKS
 gradle.projectsEvaluated {
     allprojects { p ->
-        p.tasks.matching { 
-            it.name.contains('AarMetadata') || 
-            (it.name.startsWith('bundle') && it.name.endsWith('Aar'))
+        p.tasks.matching {
+            it.name.contains('AarMetadata')
         }.configureEach {
             enabled = false
         }
     }
+}
+
+// 🚀 3. NOTIFEE LOCAL AAR FIX
+gradle.projectsEvaluated {
+    project(':notifee_react-native').tasks
+        .matching {
+            it.name == 'bundleReleaseAar'
+        }
+        .configureEach {
+            enabled = false
+        }
 }

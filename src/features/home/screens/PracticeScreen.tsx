@@ -14,7 +14,8 @@ import {
   PermissionsAndroid, 
   Animated, 
   Easing, 
-  Image 
+  Image,
+  TextInput
 } from 'react-native';
 import { 
   ArrowRight, 
@@ -35,17 +36,21 @@ import {
   Zap, 
   Target, 
   ChevronRight, 
+  ChevronLeft,
   Radio, 
   Sliders, 
   Check, 
-  TrendingUp 
+  TrendingUp,
+  Edit3,
+  CheckCircle2,
+  Lock
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import AudioRecord from 'react-native-audio-record';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-// 🌟 Import XpRewardModal from the same screens folder
+import { useTheme } from '../../../hooks/useTheme';
 import XpRewardModal from './XpRewardModal';
 
 let SoundPlayer: any = null;
@@ -59,12 +64,16 @@ try {
   console.log('react-native-sound missing');
 }
 
-import { useTheme } from '../../../hooks/useTheme';
-
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const STORAGE_KEY_READ_AUDIO = '@ecc_read_record_audio_path';
 const STORAGE_KEY_TWISTER_AUDIO = '@ecc_twister_recordings_map';
+
+// ─── ADMIN EMAILS ───
+const KNOWN_ADMIN_EMAILS = [
+  'jitendrakumar2k4@gmail.com',
+  'codizumtech@gmail.com'
+];
 
 // ─── LOCAL 3D ARTWORK ASSETS ───
 const IMG_AI_SPEECH = require('../../../assets/ai_speach.png');
@@ -82,16 +91,21 @@ const DEFAULT_READ_RECORD = {
 };
 
 const DEFAULT_TONGUE_TWISTERS = [
-  { id: '1', title: 'Peter Piper', text: 'Peter Piper picked a peck of pickled peppers.', difficulty: 'Easy', color: '#10B981' },
-  { id: '2', title: 'She Sells Seashells', text: 'She sells seashells by the seashore.', difficulty: 'Medium', color: '#F59E0B' },
-  { id: '3', title: 'Betty Botter', text: 'Betty Botter bought some butter, but she said the butter’s bitter.', difficulty: 'Hard', color: '#EF4444' }
+  { id: '1', title: 'Peter Piper', text: 'Peter Piper picked a peck of pickled peppers.', difficulty: 'Easy', timeLimitSec: 15 },
+  { id: '2', title: 'She Sells Seashells', text: 'She sells seashells by the seashore.', difficulty: 'Medium', timeLimitSec: 15 },
+  { id: '3', title: 'Betty Botter', text: 'Betty Botter bought some butter, but she said the butter’s bitter.', difficulty: 'Hard', timeLimitSec: 20 }
 ];
 
 const DEFAULT_MINIMAL_PAIRS = [
   { id: '1', wordA: 'Ship', wordB: 'Sheep', ipaA: '/ʃɪp/', ipaB: '/ʃiːp/', soundRule: 'Short /ɪ/ vs Long /iː/', tip: 'Ship is brief and crisp; Sheep stretches the vocal chord.' },
   { id: '2', wordA: 'Bit', wordB: 'Beat', ipaA: '/bɪt/', ipaB: '/biːt/', soundRule: 'Short /ɪ/ vs Long /iː/', tip: 'Keep jaw relaxed for Bit; smile slightly for Beat.' },
-  { id: '3', wordA: 'Cat', wordB: 'Cut', ipaA: '/kæt/', ipaB: '/kʌt/', soundRule: 'Open /æ/ vs Central /ʌ/', tip: 'Drop jaw wide for Cat; short chest push for Cut.' },
-  { id: '4', wordA: 'Fan', wordB: 'Van', ipaA: '/fæn/', ipaB: '/væn/', soundRule: 'Voiceless /f/ vs Voiced /v/', tip: 'Fan uses silent breath; Van activates throat vibration.' }
+  { id: '3', wordA: 'Sit', wordB: 'Seat', ipaA: '/sɪt/', ipaB: '/siːt/', soundRule: 'Short /ɪ/ vs Long /iː/', tip: 'Relax tongue for Sit; pull lips back for Seat.' },
+  { id: '4', wordA: 'Pull', wordB: 'Pool', ipaA: '/pʊl/', ipaB: '/puːl/', soundRule: 'Near-close /ʊ/ vs Close /uː/', tip: 'Pull uses loose lips; Pool rounds lips tightly.' },
+  { id: '5', wordA: 'Cat', wordB: 'Cut', ipaA: '/kæt/', ipaB: '/kʌt/', soundRule: 'Open /æ/ vs Central /ʌ/', tip: 'Drop jaw wide for Cat; short chest push for Cut.' },
+  { id: '6', wordA: 'Fan', wordB: 'Van', ipaA: '/fæn/', ipaB: '/væn/', soundRule: 'Voiceless /f/ vs Voiced /v/', tip: 'Fan uses silent breath; Van activates throat vibration.' },
+  { id: '7', wordA: 'Wet', wordB: 'Vet', ipaA: '/wɛt/', ipaB: '/vɛt/', soundRule: 'Glide /w/ vs Fricative /v/', tip: 'Round lips into a circle for Wet; touch teeth to lower lip for Vet.' },
+  { id: '8', wordA: 'Three', wordB: 'Free', ipaA: '/θriː/', ipaB: '/friː/', soundRule: 'Dental /θ/ vs Labiodental /f/', tip: 'Tongue between teeth for Three; upper teeth on lower lip for Free.' },
+  { id: '9', wordA: 'Pen', wordB: 'Pan', ipaA: '/pɛn/', ipaB: '/pæn/', soundRule: 'Mid /ɛ/ vs Open /æ/', tip: 'Half-open mouth for Pen; drop jaw widely for Pan.' }
 ];
 
 export default function PracticeScreen({ navigation }: any) {
@@ -108,6 +122,11 @@ export default function PracticeScreen({ navigation }: any) {
 
   const primaryColor = colors.primary || '#6366F1';
 
+  // Admin Verification
+  const currentUser = auth().currentUser;
+  const currentEmailClean = (currentUser?.email || '').toLowerCase().trim();
+  const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean);
+
   // State Management
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -120,6 +139,29 @@ export default function PracticeScreen({ navigation }: any) {
   // Modals
   const [activeModal, setActiveModal] = useState<'read_record' | 'tongue_twisters' | 'minimal_pairs' | 'coming_soon' | null>(null);
   const [comingSoonTitle, setComingSoonTitle] = useState('');
+
+  // ✏️ Admin Edit Read & Record Modal
+  const [isAdminEditReadVisible, setIsAdminEditReadVisible] = useState(false);
+  const [adminReadTitle, setAdminReadTitle] = useState('');
+  const [adminReadDifficulty, setAdminReadDifficulty] = useState('Intermediate');
+  const [adminReadMinutes, setAdminReadMinutes] = useState('3');
+  const [adminReadPassage, setAdminReadPassage] = useState('');
+  const [savingAdminRead, setSavingAdminRead] = useState(false);
+
+  // ✏️ Admin Edit Tongue Twister Modal
+  const [isAdminEditTwisterVisible, setIsAdminEditTwisterVisible] = useState(false);
+  const [adminTwisterTitle, setAdminTwisterTitle] = useState('');
+  const [adminTwisterText, setAdminTwisterText] = useState('');
+  const [adminTwisterDifficulty, setAdminTwisterDifficulty] = useState('Medium');
+  const [adminTwisterTimerSec, setAdminTwisterTimerSec] = useState('15');
+  const [savingAdminTwister, setSavingAdminTwister] = useState(false);
+
+  // 🌟 Premium Success Popup Modal
+  const [successPopup, setSuccessPopup] = useState<{ visible: boolean; title: string; message: string }>({
+    visible: false,
+    title: '',
+    message: ''
+  });
 
   // 🌟 Full Screen XP Reward Modal States
   const [rewardModalVisible, setRewardModalVisible] = useState(false);
@@ -134,10 +176,12 @@ export default function PracticeScreen({ navigation }: any) {
   const [readRecordAudio, setReadRecordAudio] = useState<string | null>(null);
   const [twisterRecordingsMap, setTwisterRecordingsMap] = useState<{ [key: string]: string }>({});
 
-  // Active Recording States
+  // Active Recording & Timer States
   const [isRecording, setIsRecording] = useState(false);
   const [recordingTime, setRecordingTime] = useState(0);
+  const [remainingTimer, setRemainingTimer] = useState<number>(0);
   const [isPlayingAudio, setIsPlayingAudio] = useState(false);
+  const [activePlayingTarget, setActivePlayingTarget] = useState<string | null>(null);
 
   // Tongue Twister & Minimal Pairs State
   const [activeTwisterIdx, setActiveTwisterIdx] = useState(0);
@@ -247,8 +291,6 @@ export default function PracticeScreen({ navigation }: any) {
   });
 
   useEffect(() => {
-    const currentUser = auth().currentUser;
-
     let unsubUser = () => {};
     if (currentUser) {
       unsubUser = firestore()
@@ -277,6 +319,10 @@ export default function PracticeScreen({ navigation }: any) {
             const data = doc.data();
             if (doc.id === 'read_record' && data?.passage) {
               setReadRecordContent(data);
+              setAdminReadTitle(data.title || '');
+              setAdminReadDifficulty(data.difficulty || 'Intermediate');
+              setAdminReadMinutes(String(data.estMinutes || 3));
+              setAdminReadPassage(data.passage || '');
             } else if (doc.id === 'tongue_twisters' && Array.isArray(data?.items)) {
               setTongueTwisters(data.items);
             } else if (doc.id === 'minimal_pairs' && Array.isArray(data?.items)) {
@@ -290,7 +336,7 @@ export default function PracticeScreen({ navigation }: any) {
       unsubUser();
       unsubContent();
     };
-  }, []);
+  }, [currentUser]);
 
   const requestAudioPermission = async () => {
     if (Platform.OS === 'android') {
@@ -317,7 +363,8 @@ export default function PracticeScreen({ navigation }: any) {
     return true;
   };
 
-  const handleStartRecord = async () => {
+  // 🎙️ START RECORDING WITH CARD-SPECIFIC TIMER
+  const handleStartRecord = async (type: 'read_record' | 'tongue_twister') => {
     const hasPerm = await requestAudioPermission();
     if (!hasPerm) {
       Alert.alert('Permission Required', 'Please allow microphone permission to practice speaking.');
@@ -330,6 +377,7 @@ export default function PracticeScreen({ navigation }: any) {
         soundRef.current = null;
       }
       setIsPlayingAudio(false);
+      setActivePlayingTarget(null);
 
       const uniqueFileName = `practice_${Date.now()}.wav`;
       AudioRecord.init({
@@ -340,15 +388,27 @@ export default function PracticeScreen({ navigation }: any) {
         wavFile: uniqueFileName
       });
 
+      // Total allowed duration
+      const totalAllowedSeconds = type === 'read_record' 
+        ? ((Number(readRecordContent.estMinutes) || 3) * 60)
+        : (Number(tongueTwisters[activeTwisterIdx]?.timeLimitSec) || 15);
+
+      setRemainingTimer(totalAllowedSeconds);
       setIsRecording(true);
       setRecordingTime(0);
       AudioRecord.start();
 
-      let secs = 0;
+      let elapsed = 0;
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
-        secs += 1;
-        setRecordingTime(secs);
+        elapsed += 1;
+        setRecordingTime(elapsed);
+        const left = Math.max(totalAllowedSeconds - elapsed, 0);
+        setRemainingTimer(left);
+
+        if (left <= 0) {
+          handleStopRecord(type);
+        }
       }, 1000);
     } catch (e: any) {
       setIsRecording(false);
@@ -366,7 +426,8 @@ export default function PracticeScreen({ navigation }: any) {
         setReadRecordAudio(audioPath);
         await AsyncStorage.setItem(STORAGE_KEY_READ_AUDIO, audioPath);
       } else {
-        const currentTwisterId = tongueTwisters[activeTwisterIdx]?.id || `${activeTwisterIdx}`;
+        const currentTwister = tongueTwisters[activeTwisterIdx];
+        const currentTwisterId = currentTwister?.id || `${activeTwisterIdx}`;
         const updated = {
           ...twisterRecordingsMap,
           [currentTwisterId]: audioPath
@@ -385,6 +446,7 @@ export default function PracticeScreen({ navigation }: any) {
       soundRef.current = null;
     }
     setIsPlayingAudio(false);
+    setActivePlayingTarget(null);
     setReadRecordAudio(null);
     setRecordingTime(0);
     await AsyncStorage.removeItem(STORAGE_KEY_READ_AUDIO);
@@ -396,6 +458,7 @@ export default function PracticeScreen({ navigation }: any) {
       soundRef.current = null;
     }
     setIsPlayingAudio(false);
+    setActivePlayingTarget(null);
     const updated = { ...twisterRecordingsMap };
     delete updated[twisterId];
     setTwisterRecordingsMap(updated);
@@ -403,13 +466,21 @@ export default function PracticeScreen({ navigation }: any) {
     await AsyncStorage.setItem(STORAGE_KEY_TWISTER_AUDIO, JSON.stringify(updated));
   };
 
-  const handlePlayAudio = (filePath: string | null) => {
+  const handlePlayAudio = (filePath: string | null, targetId?: string) => {
     if (!filePath || !SoundPlayer) return;
 
-    if (isPlayingAudio && soundRef.current) {
+    const id = targetId || filePath;
+
+    if (isPlayingAudio && activePlayingTarget === id && soundRef.current) {
       try { soundRef.current.stop(); } catch(e){}
       setIsPlayingAudio(false);
+      setActivePlayingTarget(null);
       return;
+    }
+
+    if (soundRef.current) {
+      try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+      soundRef.current = null;
     }
 
     let targetPath = filePath;
@@ -420,19 +491,21 @@ export default function PracticeScreen({ navigation }: any) {
     const sound = new SoundPlayer(targetPath, '', (error: any) => {
       if (error) {
         setIsPlayingAudio(false);
+        setActivePlayingTarget(null);
         return;
       }
       soundRef.current = sound;
       setIsPlayingAudio(true);
+      setActivePlayingTarget(id);
       sound.play(() => {
         setIsPlayingAudio(false);
+        setActivePlayingTarget(null);
         try { sound.release(); } catch(err){}
         soundRef.current = null;
       });
     });
   };
 
-  // 🔊 DUAL ENGINE ACCENT CONTRAST (Female: UK, Male: US)
   const handleListenPronunciation = (word: string, gender: 'female' | 'male' = 'female') => {
     if (!SoundPlayer) return;
     
@@ -461,35 +534,121 @@ export default function PracticeScreen({ navigation }: any) {
     });
   };
 
-  // 🌟 WORKOUT SUBMISSION WITH VIDEO-LIKE CELEBRATION MODAL
+  // 💾 Admin Save Read & Record Passage
+  const handleSaveAdminReadPassage = async () => {
+    if (!adminReadPassage.trim() || !adminReadTitle.trim()) {
+      Alert.alert('Required', 'Please fill in both title and passage content.');
+      return;
+    }
+
+    setSavingAdminRead(true);
+    try {
+      await firestore().collection('practice_content').doc('read_record').set({
+        title: adminReadTitle.trim(),
+        difficulty: adminReadDifficulty.trim() || 'Intermediate',
+        estMinutes: Number(adminReadMinutes) || 3,
+        passage: adminReadPassage.trim(),
+        updatedAt: firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      setSavingAdminRead(false);
+      setIsAdminEditReadVisible(false);
+      setSuccessPopup({
+        visible: true,
+        title: 'Passage Updated! ✨',
+        message: 'New Read & Record topic and timer have been saved and broadcasted successfully.'
+      });
+    } catch (e: any) {
+      setSavingAdminRead(false);
+      Alert.alert('Error', e.message || 'Failed to update passage');
+    }
+  };
+
+  // 💾 Admin Save Tongue Twister
+  const openEditCurrentTwister = () => {
+    const current = tongueTwisters[activeTwisterIdx];
+    setAdminTwisterTitle(current?.title || '');
+    setAdminTwisterText(current?.text || '');
+    setAdminTwisterDifficulty(current?.difficulty || 'Medium');
+    setAdminTwisterTimerSec(String(current?.timeLimitSec || 15));
+    setIsAdminEditTwisterVisible(true);
+  };
+
+  const handleSaveAdminTwister = async () => {
+    if (!adminTwisterText.trim() || !adminTwisterTitle.trim()) {
+      Alert.alert('Required', 'Please fill in title and twister text.');
+      return;
+    }
+
+    setSavingAdminTwister(true);
+    try {
+      const updatedList = [...tongueTwisters];
+      updatedList[activeTwisterIdx] = {
+        ...updatedList[activeTwisterIdx],
+        title: adminTwisterTitle.trim(),
+        text: adminTwisterText.trim(),
+        difficulty: adminTwisterDifficulty.trim(),
+        timeLimitSec: Number(adminTwisterTimerSec) || 15,
+      };
+
+      await firestore().collection('practice_content').doc('tongue_twisters').set({
+        items: updatedList,
+        updatedAt: firestore.FieldValue.serverTimestamp()
+      }, { merge: true });
+
+      setSavingAdminTwister(false);
+      setIsAdminEditTwisterVisible(false);
+      setSuccessPopup({
+        visible: true,
+        title: 'Twister Updated! ⚡',
+        message: 'Tongue twister and time challenge have been updated and broadcasted.'
+      });
+    } catch (e: any) {
+      setSavingAdminTwister(false);
+      Alert.alert('Error', e.message || 'Failed to update twister');
+    }
+  };
+
+  // 🔒 STRICT COMPLETION: ALL 3 TONGUE TWISTERS MUST BE RECORDED FOR XP
   const handleCompletePracticeSession = async (
-    type: 'read_record' | 'tongue_twisters' | 'minimal_pairs', 
+    type: 'read_record' | 'tongue_twisters', 
     minutesToAdd: number, 
     xpToAdd: number
   ) => {
-    const currentStreak = (userData?.streak || 1);
+    if (type === 'read_record' && !readRecordAudio) {
+      Alert.alert('Recording Required', 'Please record your voice reading the passage aloud before submitting.');
+      return;
+    }
 
-    // 1. Close active exercise modal cleanly
+    if (type === 'tongue_twisters') {
+      const recordedCount = Object.keys(twisterRecordingsMap).length;
+      const totalCount = tongueTwisters.length;
+
+      if (recordedCount < totalCount) {
+        Alert.alert(
+          'Incomplete Challenge 🔒',
+          `Aapko teeno (${totalCount}) tongue twisters record karne honge tabhi XP count hoga! (Currently recorded: ${recordedCount}/${totalCount})`
+        );
+        return;
+      }
+    }
+
+    const currentStreak = (userData?.streak || 1);
     closeModalOnly();
 
-    // 2. Set reward details
     let sessionTitle = 'Challenge Completed!';
     if (type === 'read_record') sessionTitle = 'Reading Studio Complete!';
-    if (type === 'tongue_twisters') sessionTitle = 'Tongue Twister Completed!';
-    if (type === 'minimal_pairs') sessionTitle = 'Accent Lab Mastered!';
+    if (type === 'tongue_twisters') sessionTitle = 'All 3 Twisters Mastered! 🔥';
 
     setRewardDetails({
       title: sessionTitle,
-      subtitle: `You earned +${xpToAdd} XP and added ${minutesToAdd}m to your goal!`,
+      subtitle: `You earned +${xpToAdd} XP and completed today's challenge!`,
       xpEarned: xpToAdd,
       streakCount: currentStreak,
     });
 
-    // 3. Trigger video-matching Flying XP Modal
     setRewardModalVisible(true);
 
-    // 4. Update Database in Background
-    const currentUser = auth().currentUser;
     if (currentUser) {
       try {
         await firestore().collection('users').doc(currentUser.uid).set({
@@ -524,6 +683,7 @@ export default function PracticeScreen({ navigation }: any) {
     }
     setIsRecording(false);
     setIsPlayingAudio(false);
+    setActivePlayingTarget(null);
     setActiveModal(null);
     setSelectedPairWord(null);
     setSpeakingWord(null);
@@ -545,6 +705,8 @@ export default function PracticeScreen({ navigation }: any) {
 
   const currentTwisterId = tongueTwisters[activeTwisterIdx]?.id || `${activeTwisterIdx}`;
   const currentTwisterAudio = twisterRecordingsMap[currentTwisterId] || null;
+  const recordedTwisterCount = Object.keys(twisterRecordingsMap).length;
+  const allTwistersCompleted = recordedTwisterCount >= tongueTwisters.length;
 
   return (
     <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
@@ -593,7 +755,6 @@ export default function PracticeScreen({ navigation }: any) {
             </Text>
           </View>
 
-          {/* Glowing Streak Badge */}
           <Animated.View style={[
             styles.streakBadge, 
             { 
@@ -645,7 +806,7 @@ export default function PracticeScreen({ navigation }: any) {
           </TouchableOpacity>
         </Animated.View>
 
-        {/* 🌟 ULTRA-PREMIUM SHINING GLOWING WEEKLY GOAL CARD */}
+        {/* 🌟 WEEKLY GOAL CARD */}
         <Animated.View style={[
           styles.premiumGoalWrapper, 
           { 
@@ -657,7 +818,6 @@ export default function PracticeScreen({ navigation }: any) {
           <View style={[styles.premiumGoalCard, { backgroundColor: isDarkMode ? 'rgba(17, 24, 39, 0.94)' : 'rgba(255, 255, 255, 0.96)' }]}>
             
             <View style={styles.goalTopRow}>
-              {/* Glowing Pulse Ring Icon */}
               <View style={styles.ringGlowContainer}>
                 <Animated.View style={[
                   styles.outerPulseGlow,
@@ -686,7 +846,6 @@ export default function PracticeScreen({ navigation }: any) {
                 </Text>
               </View>
 
-              {/* Glowing Percentage Pill Badge */}
               <Animated.View style={[
                 styles.neonBadgePill, 
                 { 
@@ -701,7 +860,6 @@ export default function PracticeScreen({ navigation }: any) {
               </Animated.View>
             </View>
 
-            {/* Glowing Accent Horizontal Bar Track */}
             <View style={[styles.progressBarTrack, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : 'rgba(0, 0, 0, 0.06)' }]}>
               <Animated.View 
                 style={[
@@ -718,14 +876,13 @@ export default function PracticeScreen({ navigation }: any) {
           </View>
         </Animated.View>
 
-        {/* ─── 1 ROW, 2 EQUAL 3D GRAPHIC CARDS: AI COACH & 1:1 TRAINER ─── */}
+        {/* ─── 1 ROW, 2 EQUAL 3D GRAPHIC CARDS ─── */}
         <View style={styles.gridContainerRow}>
-          {/* AI Speaking Coach Graphic Card */}
           <TouchableOpacity 
             style={styles.topGraphicHalfCard} 
             activeOpacity={0.92}
             onPress={() => {
-              setComingSoonTitle('AI Speaking Coach');
+              setComingSoonTitle('AI Speech Coach');
               setActiveModal('coming_soon');
             }}
           >
@@ -737,7 +894,6 @@ export default function PracticeScreen({ navigation }: any) {
             </View>
           </TouchableOpacity>
 
-          {/* 1:1 Trainer Graphic Card */}
           <TouchableOpacity 
             style={styles.topGraphicHalfCard} 
             activeOpacity={0.92}
@@ -755,7 +911,7 @@ export default function PracticeScreen({ navigation }: any) {
           </TouchableOpacity>
         </View>
 
-        {/* ─── READ & RECORD 3D GRAPHIC BANNER ─── */}
+        {/* ─── READ & RECORD (SAVED BADGE COMPLETELY REMOVED) ─── */}
         <TouchableOpacity 
           style={styles.bannerGraphicCard} 
           activeOpacity={0.92}
@@ -765,12 +921,6 @@ export default function PracticeScreen({ navigation }: any) {
           <View style={styles.bannerArrowBadge}>
             <ChevronRight color="#FFFFFF" size={16} />
           </View>
-          {readRecordAudio && (
-            <View style={styles.savedFloatingBadge}>
-              <CheckCircle size={11} color="#10B981" />
-              <Text style={styles.savedFloatingBadgeText}>Saved</Text>
-            </View>
-          )}
         </TouchableOpacity>
 
         {/* Section Heading */}
@@ -783,7 +933,6 @@ export default function PracticeScreen({ navigation }: any) {
 
         {/* ─── QUICK DRILLS: 1 ROW, 2 EQUAL 3D ARTWORK CARDS ─── */}
         <View style={styles.gridContainerRow}>
-          {/* Tongue Twister Graphic Button */}
           <TouchableOpacity 
             style={styles.bottomGraphicHalfCard} 
             activeOpacity={0.92}
@@ -798,7 +947,6 @@ export default function PracticeScreen({ navigation }: any) {
             </View>
           </TouchableOpacity>
 
-          {/* Minimal Pairs Graphic Button */}
           <TouchableOpacity 
             style={styles.bottomGraphicHalfCard} 
             activeOpacity={0.92}
@@ -813,12 +961,19 @@ export default function PracticeScreen({ navigation }: any) {
       </ScrollView>
 
       {/* ═══════════════════════════════════════════════════════
-          MODAL 1: READ & RECORD
+          MODAL 1: READ & RECORD (WITH TIMMER & OUTSIDE CLOSER)
       ═══════════════════════════════════════════════════════ */}
       <Modal visible={activeModal === 'read_record'} animationType="slide" transparent={true} onRequestClose={closeModalOnly}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-            
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={closeModalOnly}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border }]} 
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <View style={styles.teleprompterPill}>
@@ -832,11 +987,30 @@ export default function PracticeScreen({ navigation }: any) {
                   <Text style={{ fontSize: 12, color: colors.textSecondary }}>
                     ⏱️ {readRecordContent.estMinutes || 3} min • {readRecordContent.difficulty || 'Intermediate'}
                   </Text>
+                  {isAdmin && (
+                    <TouchableOpacity 
+                      style={styles.adminEditMiniPill} 
+                      onPress={() => setIsAdminEditReadVisible(true)}
+                    >
+                      <Edit3 size={11} color="#8B5CF6" />
+                      <Text style={styles.adminEditMiniPillText}>Admin Edit</Text>
+                    </TouchableOpacity>
+                  )}
                 </View>
               </View>
               <TouchableOpacity onPress={closeModalOnly} style={styles.modalCloseBtn} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                 <X size={20} color={colors.textSecondary} />
               </TouchableOpacity>
+            </View>
+
+            {/* Countdown / Read Timer display */}
+            <View style={[styles.readTimerBanner, { backgroundColor: isDarkMode ? '#1E293B' : '#EEF2F6' }]}>
+              <Clock size={14} color={primaryColor} />
+              <Text style={[styles.readTimerBannerText, { color: colors.textPrimary }]}>
+                {isRecording 
+                  ? `Time Remaining: ${Math.floor(remainingTimer / 60)}:${String(remainingTimer % 60).padStart(2, '0')} (Elapsed: ${recordingTime}s)` 
+                  : `Target Read Time: ${readRecordContent.estMinutes || 3} Minutes`}
+              </Text>
             </View>
 
             <ScrollView 
@@ -875,11 +1049,11 @@ export default function PracticeScreen({ navigation }: any) {
                   <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
                     <TouchableOpacity 
                       style={[styles.audioPlaybackBtn, { borderColor: colors.border, backgroundColor: isDarkMode ? '#1F2937' : '#F1F5F9' }]} 
-                      onPress={() => handlePlayAudio(readRecordAudio)}
+                      onPress={() => handlePlayAudio(readRecordAudio, 'read_record')}
                     >
-                      {isPlayingAudio ? <Pause size={17} color={primaryColor} /> : <Play size={17} color={primaryColor} />}
+                      {isPlayingAudio && activePlayingTarget === 'read_record' ? <Pause size={17} color={primaryColor} /> : <Play size={17} color={primaryColor} />}
                       <Text style={[styles.audioPlaybackBtnText, { color: colors.textPrimary }]}>
-                        {isPlayingAudio ? 'Pause Voice' : 'Listen Recording'}
+                        {isPlayingAudio && activePlayingTarget === 'read_record' ? 'Pause Voice' : 'Listen Recording'}
                       </Text>
                     </TouchableOpacity>
 
@@ -887,7 +1061,7 @@ export default function PracticeScreen({ navigation }: any) {
                       <Trash2 size={18} color="#EF4444" />
                     </TouchableOpacity>
 
-                    <TouchableOpacity style={[styles.retryBtn, { borderColor: colors.border }]} onPress={handleStartRecord}>
+                    <TouchableOpacity style={[styles.retryBtn, { borderColor: colors.border }]} onPress={() => handleStartRecord('read_record')}>
                       <RotateCcw size={15} color={colors.textSecondary} />
                       <Text style={{ color: colors.textSecondary, fontWeight: '700', fontSize: 13 }}>Re-read</Text>
                     </TouchableOpacity>
@@ -902,24 +1076,122 @@ export default function PracticeScreen({ navigation }: any) {
                   </TouchableOpacity>
                 </View>
               ) : (
-                <TouchableOpacity style={[styles.recordStartBtn, { backgroundColor: primaryColor }]} onPress={handleStartRecord}>
+                <TouchableOpacity style={[styles.recordStartBtn, { backgroundColor: primaryColor }]} onPress={() => handleStartRecord('read_record')}>
                   <Mic size={20} color="#FFFFFF" />
                   <Text style={styles.recordStartBtnText}>Hold Mic & Read Aloud</Text>
                 </TouchableOpacity>
               )}
             </View>
 
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ═══════════════════════════════════════════════════════
-          MODAL 2: TONGUE TWISTERS
+          ✏️ ADMIN EDIT READ & RECORD MODAL
+      ═══════════════════════════════════════════════════════ */}
+      <Modal visible={isAdminEditReadVisible} animationType="fade" transparent={true} onRequestClose={() => setIsAdminEditReadVisible(false)}>
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={() => setIsAdminEditReadVisible(false)}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.adminModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Edit3 size={18} color="#8B5CF6" />
+                <Text style={[styles.adminModalTitle, { color: colors.textPrimary }]}>Admin: Edit Reading Passage</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsAdminEditReadVisible(false)}>
+                <X size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Title</Text>
+            <TextInput
+              style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+              value={adminReadTitle}
+              onChangeText={setAdminReadTitle}
+              placeholder="e.g. Master the Vocal Cadence"
+              placeholderTextColor="#64748B"
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Difficulty</Text>
+                <TextInput
+                  style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+                  value={adminReadDifficulty}
+                  onChangeText={setAdminReadDifficulty}
+                  placeholder="e.g. Intermediate"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Est. Minutes</Text>
+                <TextInput
+                  style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+                  value={adminReadMinutes}
+                  onChangeText={setAdminReadMinutes}
+                  keyboardType="numeric"
+                  placeholder="e.g. 3"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Paragraph / Passage</Text>
+            <TextInput
+              style={[styles.adminInput, { height: 110, textAlignVertical: 'top', color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+              value={adminReadPassage}
+              onChangeText={setAdminReadPassage}
+              placeholder="Type or paste the reading passage here..."
+              placeholderTextColor="#64748B"
+              multiline
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity 
+                style={[styles.adminCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]} 
+                onPress={() => setIsAdminEditReadVisible(false)}
+              >
+                <Text style={[styles.adminCancelBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.adminSaveBtn, { backgroundColor: '#8B5CF6' }]} 
+                onPress={handleSaveAdminReadPassage}
+                disabled={savingAdminRead}
+              >
+                {savingAdminRead ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.adminSaveBtnText}>Save Passage</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ═══════════════════════════════════════════════════════
+          MODAL 2: TONGUE TWISTERS (PREV/NEXT + TIMER + ALL-COMPLETE XP + ADMIN EDIT)
       ═══════════════════════════════════════════════════════ */}
       <Modal visible={activeModal === 'tongue_twisters'} animationType="slide" transparent={true} onRequestClose={closeModalOnly}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-            
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={closeModalOnly}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border, maxHeight: '90%' }]} 
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <View style={styles.teleprompterPill}>
@@ -929,89 +1201,287 @@ export default function PracticeScreen({ navigation }: any) {
                 <Text style={[styles.modalTitle, { color: colors.textPrimary, marginTop: 4 }]}>
                   {tongueTwisters[activeTwisterIdx]?.title}
                 </Text>
-                <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
-                  Card {activeTwisterIdx + 1} of {tongueTwisters.length} • Level: {tongueTwisters[activeTwisterIdx]?.difficulty}
-                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
+                  <Text style={{ fontSize: 12, color: colors.textSecondary }}>
+                    Card {activeTwisterIdx + 1} of {tongueTwisters.length} • Level: {tongueTwisters[activeTwisterIdx]?.difficulty} • ⏱️ {tongueTwisters[activeTwisterIdx]?.timeLimitSec || 15}s
+                  </Text>
+                  {isAdmin && (
+                    <TouchableOpacity 
+                      style={styles.adminEditMiniPill} 
+                      onPress={openEditCurrentTwister}
+                    >
+                      <Edit3 size={11} color="#8B5CF6" />
+                      <Text style={styles.adminEditMiniPillText}>Admin Edit</Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
               </View>
               <TouchableOpacity onPress={closeModalOnly} style={styles.modalCloseBtn} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                 <X size={20} color={colors.textSecondary} />
               </TouchableOpacity>
             </View>
 
-            <View style={[styles.twisterCard, { backgroundColor: isDarkMode ? '#0B0F19' : '#EFF6FF', borderColor: colors.border }]}>
-              <Text style={[styles.twisterMainText, { color: colors.textPrimary }]}>
-                "{tongueTwisters[activeTwisterIdx]?.text}"
-              </Text>
-            </View>
+            <ScrollView showsVerticalScrollIndicator={false}>
+              {/* Timer Bar */}
+              <View style={[styles.readTimerBanner, { backgroundColor: isDarkMode ? '#1E293B' : '#EEF2F6', marginTop: 4 }]}>
+                <Clock size={14} color="#10B981" />
+                <Text style={[styles.readTimerBannerText, { color: colors.textPrimary }]}>
+                  {isRecording 
+                    ? `Time Left: ${remainingTimer}s (Recorded: ${recordingTime}s)` 
+                    : `Time Allowed: ${tongueTwisters[activeTwisterIdx]?.timeLimitSec || 15} Seconds`}
+                </Text>
+              </View>
 
-            <View style={styles.modalFooterActions}>
-              {isRecording ? (
-                <View style={styles.recordingActiveContainer}>
-                  <View style={styles.redRecordingDot} />
-                  <Text style={styles.recordingTimerText}>Recording... {recordingTime}s</Text>
-                  <TouchableOpacity style={styles.stopRecordBtn} onPress={() => handleStopRecord('tongue_twister')}>
-                    <Text style={styles.stopRecordBtnText}>Finish</Text>
-                  </TouchableOpacity>
-                </View>
-              ) : currentTwisterAudio ? (
-                <View style={{ width: '100%', gap: 10 }}>
-                  <View style={{ flexDirection: 'row', gap: 10, alignItems: 'center' }}>
-                    <TouchableOpacity 
-                      style={[styles.audioPlaybackBtn, { borderColor: colors.border, backgroundColor: isDarkMode ? '#1F2937' : '#F1F5F9' }]} 
-                      onPress={() => handlePlayAudio(currentTwisterAudio)}
-                    >
-                      {isPlayingAudio ? <Pause size={17} color={primaryColor} /> : <Play size={17} color={primaryColor} />}
-                      <Text style={[styles.audioPlaybackBtnText, { color: colors.textPrimary }]}>{isPlayingAudio ? 'Pause' : 'Listen'}</Text>
-                    </TouchableOpacity>
+              {/* Active Twister Card */}
+              <View style={[styles.twisterCard, { backgroundColor: isDarkMode ? '#0B0F19' : '#EFF6FF', borderColor: colors.border }]}>
+                <Text style={[styles.twisterMainText, { color: colors.textPrimary }]}>
+                  "{tongueTwisters[activeTwisterIdx]?.text}"
+                </Text>
+              </View>
 
-                    <TouchableOpacity style={styles.deleteBtn} onPress={() => handleDeleteTwisterAudio(currentTwisterId)}>
-                      <Trash2 size={18} color="#EF4444" />
-                    </TouchableOpacity>
+              {/* Progress Indicator */}
+              <View style={styles.twisterProgressPillRow}>
+                <Text style={{ fontSize: 11.5, fontWeight: '800', color: colors.textSecondary }}>
+                  Completed: {recordedTwisterCount} / {tongueTwisters.length} Twisters
+                </Text>
+                {allTwistersCompleted && (
+                  <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
+                    <CheckCircle2 size={13} color="#10B981" />
+                    <Text style={{ fontSize: 11, fontWeight: '900', color: '#10B981' }}>All Unlocked!</Text>
+                  </View>
+                )}
+              </View>
 
-                    <TouchableOpacity style={[styles.retryBtn, { borderColor: colors.border }]} onPress={handleStartRecord}>
-                      <RotateCcw size={15} color={colors.textSecondary} />
-                      <Text style={{ color: colors.textSecondary, fontWeight: '700', fontSize: 13 }}>Retry</Text>
+              {/* Recording Action Area */}
+              <View style={styles.modalFooterActions}>
+                {isRecording ? (
+                  <View style={styles.recordingActiveContainer}>
+                    <View style={styles.redRecordingDot} />
+                    <Text style={styles.recordingTimerText}>Recording... {recordingTime}s ({remainingTimer}s left)</Text>
+                    <TouchableOpacity style={styles.stopRecordBtn} onPress={() => handleStopRecord('tongue_twister')}>
+                      <Text style={styles.stopRecordBtnText}>Finish</Text>
                     </TouchableOpacity>
                   </View>
-
-                  {activeTwisterIdx + 1 < tongueTwisters.length ? (
+                ) : (
+                  <View style={{ width: '100%', gap: 10 }}>
                     <TouchableOpacity 
-                      style={[styles.primaryActionBtn, { backgroundColor: primaryColor }]} 
-                      onPress={() => {
-                        setActiveTwisterIdx(i => i + 1);
-                      }}
+                      style={[styles.recordStartBtn, { backgroundColor: primaryColor }]} 
+                      onPress={() => handleStartRecord('tongue_twister')}
                     >
-                      <Text style={styles.primaryActionBtnText}>Next Twister Card ›</Text>
+                      <Mic size={20} color="#FFFFFF" />
+                      <Text style={styles.recordStartBtnText}>
+                        {currentTwisterAudio ? 'Re-record This Card' : 'Tap & Record This Twister'}
+                      </Text>
                     </TouchableOpacity>
-                  ) : (
+
+                    {/* PREV & NEXT NAVIGATION ROW */}
+                    <View style={{ flexDirection: 'row', gap: 10 }}>
+                      <TouchableOpacity 
+                        style={[
+                          styles.navPrevNextBtn, 
+                          { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0', opacity: activeTwisterIdx > 0 ? 1 : 0.45 }
+                        ]} 
+                        disabled={activeTwisterIdx === 0}
+                        onPress={() => setActiveTwisterIdx(i => Math.max(i - 1, 0))}
+                      >
+                        <ChevronLeft size={16} color={colors.textPrimary} />
+                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>‹ Prev</Text>
+                      </TouchableOpacity>
+
+                      <TouchableOpacity 
+                        style={[
+                          styles.navPrevNextBtn, 
+                          { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0', opacity: activeTwisterIdx + 1 < tongueTwisters.length ? 1 : 0.45 }
+                        ]} 
+                        disabled={activeTwisterIdx + 1 >= tongueTwisters.length}
+                        onPress={() => setActiveTwisterIdx(i => Math.min(i + 1, tongueTwisters.length - 1))}
+                      >
+                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>Next ›</Text>
+                        <ChevronRight size={16} color={colors.textPrimary} />
+                      </TouchableOpacity>
+                    </View>
+
+                    {/* FINISH WORKOUT BUTTON (LOCKED UNTIL ALL 3 ARE RECORDED) */}
                     <TouchableOpacity 
-                      style={[styles.primaryActionBtn, { backgroundColor: '#10B981' }]} 
+                      style={[
+                        styles.primaryActionBtn, 
+                        { backgroundColor: allTwistersCompleted ? '#10B981' : (isDarkMode ? '#1E293B' : '#E2E8F0'), borderColor: allTwistersCompleted ? '#10B981' : colors.border, borderWidth: 1 }
+                      ]} 
                       onPress={() => handleCompletePracticeSession('tongue_twisters', 3, 20)}
                     >
-                      <CheckCircle size={18} color="#FFFFFF" />
-                      <Text style={styles.primaryActionBtnText}>Finish Workout (+20 XP)</Text>
+                      {allTwistersCompleted ? (
+                        <>
+                          <CheckCircle size={18} color="#FFFFFF" />
+                          <Text style={styles.primaryActionBtnText}>Finish Workout & Claim +20 XP</Text>
+                        </>
+                      ) : (
+                        <>
+                          <Lock size={16} color={colors.textSecondary} />
+                          <Text style={[styles.primaryActionBtnText, { color: colors.textSecondary }]}>
+                            Record all {tongueTwisters.length} to unlock (+20 XP)
+                          </Text>
+                        </>
+                      )}
                     </TouchableOpacity>
-                  )}
-                </View>
-              ) : (
-                <TouchableOpacity style={[styles.recordStartBtn, { backgroundColor: primaryColor }]} onPress={handleStartRecord}>
-                  <Mic size={20} color="#FFFFFF" />
-                  <Text style={styles.recordStartBtnText}>Tap & Speak as Fast as You Can</Text>
-                </TouchableOpacity>
-              )}
-            </View>
+                  </View>
+                )}
+              </View>
 
-          </View>
-        </View>
+              {/* 🎧 LINE-BY-LINE SAVED RECORDINGS */}
+              {recordedTwisterCount > 0 && (
+                <View style={styles.twisterRecordingsListContainer}>
+                  <Text style={[styles.twisterListHeading, { color: colors.textPrimary }]}>
+                    Saved Twister Recordings ({recordedTwisterCount}/{tongueTwisters.length})
+                  </Text>
+
+                  {tongueTwisters.map((twister, idx) => {
+                    const twId = twister.id || `${idx}`;
+                    const audioPath = twisterRecordingsMap[twId];
+                    if (!audioPath) return null;
+
+                    const isCurrentlyPlaying = isPlayingAudio && activePlayingTarget === twId;
+
+                    return (
+                      <View 
+                        key={twId} 
+                        style={[styles.savedTwisterItemRow, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.border }]}
+                      >
+                        <TouchableOpacity 
+                          style={[styles.twisterMiniPlayBtn, { backgroundColor: isCurrentlyPlaying ? '#EF4444' : primaryColor }]} 
+                          onPress={() => handlePlayAudio(audioPath, twId)}
+                        >
+                          {isCurrentlyPlaying ? <Pause size={15} color="#FFFFFF" /> : <Play size={15} color="#FFFFFF" style={{ marginLeft: 2 }} />}
+                        </TouchableOpacity>
+
+                        <View style={{ flex: 1, marginLeft: 12 }}>
+                          <Text style={[styles.twisterItemTitle, { color: colors.textPrimary }]}>{twister.title}</Text>
+                          <Text style={[styles.twisterItemSub, { color: colors.textSecondary }]} numberOfLines={1}>
+                            "{twister.text}"
+                          </Text>
+                        </View>
+
+                        <TouchableOpacity 
+                          style={styles.deleteAudioMiniBtn} 
+                          onPress={() => handleDeleteTwisterAudio(twId)}
+                        >
+                          <Trash2 size={16} color="#EF4444" />
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+            </ScrollView>
+
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ═══════════════════════════════════════════════════════
-          MODAL 3: MINIMAL PAIRS (DISTINCT FEMALE VS MALE VOICES)
+          ✏️ ADMIN EDIT TONGUE TWISTER MODAL
+      ═══════════════════════════════════════════════════════ */}
+      <Modal visible={isAdminEditTwisterVisible} animationType="fade" transparent={true} onRequestClose={() => setIsAdminEditTwisterVisible(false)}>
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={() => setIsAdminEditTwisterVisible(false)}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.adminModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Edit3 size={18} color="#8B5CF6" />
+                <Text style={[styles.adminModalTitle, { color: colors.textPrimary }]}>Admin: Edit Twister Card</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsAdminEditTwisterVisible(false)}>
+                <X size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Twister Title</Text>
+            <TextInput
+              style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+              value={adminTwisterTitle}
+              onChangeText={setAdminTwisterTitle}
+              placeholder="e.g. Peter Piper"
+              placeholderTextColor="#64748B"
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10 }}>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Difficulty</Text>
+                <TextInput
+                  style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+                  value={adminTwisterDifficulty}
+                  onChangeText={setAdminTwisterDifficulty}
+                  placeholder="e.g. Medium"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Timer (Seconds)</Text>
+                <TextInput
+                  style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+                  value={adminTwisterTimerSec}
+                  onChangeText={setAdminTwisterTimerSec}
+                  keyboardType="numeric"
+                  placeholder="e.g. 15"
+                  placeholderTextColor="#64748B"
+                />
+              </View>
+            </View>
+
+            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Twister Text</Text>
+            <TextInput
+              style={[styles.adminInput, { height: 90, textAlignVertical: 'top', color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+              value={adminTwisterText}
+              onChangeText={setAdminTwisterText}
+              placeholder="Enter tongue twister phrase..."
+              placeholderTextColor="#64748B"
+              multiline
+            />
+
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+              <TouchableOpacity 
+                style={[styles.adminCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]} 
+                onPress={() => setIsAdminEditTwisterVisible(false)}
+              >
+                <Text style={[styles.adminCancelBtnText, { color: colors.textPrimary }]}>Cancel</Text>
+              </TouchableOpacity>
+
+              <TouchableOpacity 
+                style={[styles.adminSaveBtn, { backgroundColor: '#8B5CF6' }]} 
+                onPress={handleSaveAdminTwister}
+                disabled={savingAdminTwister}
+              >
+                {savingAdminTwister ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <Text style={styles.adminSaveBtnText}>Save Twister</Text>
+                )}
+              </TouchableOpacity>
+            </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ═══════════════════════════════════════════════════════
+          MODAL 3: MINIMAL PAIRS
       ═══════════════════════════════════════════════════════ */}
       <Modal visible={activeModal === 'minimal_pairs'} animationType="slide" transparent={true} onRequestClose={closeModalOnly}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border, maxHeight: '88%' }]}>
-            
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={closeModalOnly}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.modalBox, { backgroundColor: colors.bgCard, borderColor: colors.border, maxHeight: '88%' }]} 
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={styles.modalHeader}>
               <View style={{ flex: 1 }}>
                 <View style={styles.teleprompterPill}>
@@ -1039,7 +1509,7 @@ export default function PracticeScreen({ navigation }: any) {
                   </View>
 
                   <View style={styles.pairWordsContainer}>
-                    {/* Word A (FEMALE ACCENT) */}
+                    {/* Word A */}
                     <View style={[
                       styles.wordButton, 
                       { backgroundColor: colors.bgCard, borderColor: selectedPairWord === `${idx}_A` ? primaryColor : colors.border },
@@ -1066,7 +1536,7 @@ export default function PracticeScreen({ navigation }: any) {
                       <Text style={styles.vsBadgeText}>VS</Text>
                     </View>
 
-                    {/* Word B (MALE ACCENT) */}
+                    {/* Word B */}
                     <View style={[
                       styles.wordButton, 
                       { backgroundColor: colors.bgCard, borderColor: selectedPairWord === `${idx}_B` ? primaryColor : colors.border },
@@ -1093,24 +1563,24 @@ export default function PracticeScreen({ navigation }: any) {
               ))}
             </ScrollView>
 
-            <TouchableOpacity 
-              style={[styles.primaryActionBtn, { backgroundColor: primaryColor, marginTop: 14 }]} 
-              onPress={() => handleCompletePracticeSession('minimal_pairs', 3, 20)}
-            >
-              <CheckCircle size={18} color="#FFFFFF" />
-              <Text style={styles.primaryActionBtnText}>Complete Contrast Lab (+20 XP)</Text>
-            </TouchableOpacity>
-
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ═══════════════════════════════════════════════════════
           MODAL 4: COMING SOON
       ═══════════════════════════════════════════════════════ */}
       <Modal visible={activeModal === 'coming_soon'} animationType="fade" transparent={true} onRequestClose={closeModalOnly}>
-        <View style={styles.modalBackdrop}>
-          <View style={[styles.comingSoonCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={closeModalOnly}
+        >
+          <TouchableOpacity 
+            activeOpacity={1} 
+            style={[styles.comingSoonCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]} 
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={[styles.sparkleCircle, { backgroundColor: primaryColor + '18', borderColor: primaryColor + '30' }]}>
               <Sparkles size={30} color={primaryColor} />
             </View>
@@ -1121,12 +1591,46 @@ export default function PracticeScreen({ navigation }: any) {
             <TouchableOpacity style={[styles.gotItBtn, { backgroundColor: primaryColor }]} onPress={closeModalOnly}>
               <Text style={styles.gotItBtnText}>Got it</Text>
             </TouchableOpacity>
-          </View>
-        </View>
+          </TouchableOpacity>
+        </TouchableOpacity>
       </Modal>
 
       {/* ═══════════════════════════════════════════════════════
-          🎉 FULL-SCREEN VIDEO-MATCHING XP REWARD ANIMATION MODAL
+          ✨ PREMIUM SUCCESS POPUP MODAL
+      ═══════════════════════════════════════════════════════ */}
+      <Modal
+        visible={successPopup.visible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setSuccessPopup(p => ({ ...p, visible: false }))}
+      >
+        <TouchableOpacity 
+          style={styles.modalBackdrop} 
+          activeOpacity={1} 
+          onPress={() => setSuccessPopup(p => ({ ...p, visible: false }))}
+        >
+          <TouchableOpacity 
+            activeOpacity={1}
+            style={[styles.successPopupCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.successPopupIconBox}>
+              <CheckCircle2 size={36} color="#10B981" strokeWidth={2.5} />
+            </View>
+            <Text style={[styles.successPopupTitle, { color: colors.textPrimary }]}>{successPopup.title}</Text>
+            <Text style={[styles.successPopupMessage, { color: colors.textSecondary }]}>{successPopup.message}</Text>
+            <TouchableOpacity 
+              style={[styles.successPopupBtn, { backgroundColor: '#10B981' }]}
+              onPress={() => setSuccessPopup(p => ({ ...p, visible: false }))}
+            >
+              <Text style={styles.successPopupBtnText}>Awesome</Text>
+            </TouchableOpacity>
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* ═══════════════════════════════════════════════════════
+          🎉 FULL-SCREEN XP REWARD ANIMATION MODAL
       ═══════════════════════════════════════════════════════ */}
       <XpRewardModal
         visible={rewardModalVisible}
@@ -1154,7 +1658,6 @@ const styles = StyleSheet.create({
     bottom: 0,
   },
 
-  /* 🌌 FLOATING AMBIENT MESH ORBS */
   meshOrb1: {
     position: 'absolute',
     top: -80,
@@ -1225,7 +1728,6 @@ const styles = StyleSheet.create({
   },
   heroButtonText: { color: '#FFFFFF', fontWeight: '900', fontSize: 13.5, letterSpacing: 0.8 },
 
-  /* 🌟 PREMIUM GLOWING WEEKLY GOAL CARD STYLES */
   premiumGoalWrapper: {
     borderRadius: 24,
     marginBottom: 14,
@@ -1310,7 +1812,6 @@ const styles = StyleSheet.create({
 
   sectionHeading: { fontSize: 17, fontWeight: '800', letterSpacing: -0.3 },
   
-  /* ─── 2-CARDS ROW CONTAINER ─── */
   gridContainerRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
@@ -1318,7 +1819,6 @@ const styles = StyleSheet.create({
     marginBottom: 12,
   },
 
-  /* 🖼️ TOP 2 CARDS: AI COACH & 1:1 TRAINER */
   topGraphicHalfCard: {
     borderRadius: 22,
     width: '48%',
@@ -1345,7 +1845,6 @@ const styles = StyleSheet.create({
     borderRadius: 22,
   },
 
-  /* 🖼️ READ & RECORD BANNER */
   bannerGraphicCard: {
     width: '100%',
     aspectRatio: 2.6,
@@ -1375,27 +1874,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
   },
-  savedFloatingBadge: {
-    position: 'absolute',
-    top: 10,
-    right: 10,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 4,
-    backgroundColor: 'rgba(0, 0, 0, 0.78)',
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 8,
-    borderWidth: 1,
-    borderColor: '#10B981'
-  },
-  savedFloatingBadgeText: {
-    color: '#10B981',
-    fontSize: 10.5,
-    fontWeight: '900'
-  },
 
-  /* 🖼️ BOTTOM 2 CARDS: QUICK DRILLS */
   bottomGraphicHalfCard: {
     borderRadius: 22,
     width: '48%',
@@ -1449,7 +1928,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'flex-start',
-    marginBottom: 14
+    marginBottom: 10
   },
   teleprompterPill: {
     flexDirection: 'row',
@@ -1471,11 +1950,38 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center'
   },
+  adminEditMiniPill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: 'rgba(139, 92, 246, 0.15)',
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 8,
+  },
+  adminEditMiniPillText: {
+    color: '#8B5CF6',
+    fontSize: 11,
+    fontWeight: '800',
+  },
+  readTimerBanner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 12,
+    marginVertical: 6,
+  },
+  readTimerBannerText: {
+    fontSize: 12,
+    fontWeight: '800',
+  },
   teleprompterBox: {
-    maxHeight: 190,
+    maxHeight: 180,
     borderRadius: 20,
     padding: 18,
-    marginVertical: 10,
+    marginVertical: 8,
     borderWidth: 1.5
   },
   passageText: { fontSize: 15.5, lineHeight: 26, fontWeight: '600' },
@@ -1484,14 +1990,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     gap: 6,
-    height: 48,
-    marginVertical: 6
+    height: 44,
+    marginVertical: 4
   },
   waveBar: {
     width: 4,
     borderRadius: 2
   },
-  modalFooterActions: { marginTop: 14, alignItems: 'center' },
+  modalFooterActions: { marginTop: 12, alignItems: 'center' },
   recordStartBtn: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1568,15 +2074,138 @@ const styles = StyleSheet.create({
   },
   primaryActionBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14.5 },
 
-  /* Tongue Twister Modal */
+  /* Admin Edit Card */
+  adminEditCard: {
+    width: '100%',
+    maxWidth: 420,
+    borderRadius: 28,
+    padding: 22,
+    borderWidth: 1.5,
+    elevation: 20,
+  },
+  adminModalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 14,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+  },
+  adminModalTitle: {
+    fontSize: 17,
+    fontWeight: '900',
+  },
+  inputLabel: {
+    fontSize: 12,
+    fontWeight: '700',
+    marginBottom: 5,
+    marginTop: 8,
+  },
+  adminInput: {
+    borderRadius: 14,
+    borderWidth: 1.2,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    fontSize: 13.5,
+  },
+  adminCancelBtn: {
+    flex: 1,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  adminCancelBtnText: {
+    fontSize: 13.5,
+    fontWeight: '800',
+  },
+  adminSaveBtn: {
+    flex: 1.2,
+    paddingVertical: 12,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 3,
+  },
+  adminSaveBtnText: {
+    color: '#FFFFFF',
+    fontSize: 13.5,
+    fontWeight: '900',
+  },
+
+  /* Tongue Twister Modal & List */
   twisterCard: {
     borderRadius: 24,
-    padding: 24,
-    marginVertical: 12,
+    padding: 22,
+    marginVertical: 10,
     alignItems: 'center',
     borderWidth: 1.5
   },
-  twisterMainText: { fontSize: 18, fontWeight: '800', textAlign: 'center', lineHeight: 28 },
+  twisterMainText: { fontSize: 17.5, fontWeight: '800', textAlign: 'center', lineHeight: 26 },
+  twisterProgressPillRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: 4,
+    marginTop: 4,
+    marginBottom: 6,
+  },
+  navPrevNextBtn: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 11,
+    borderRadius: 16,
+    gap: 4,
+  },
+  navBtnText: {
+    fontSize: 13,
+    fontWeight: '800',
+  },
+  twisterRecordingsListContainer: {
+    marginTop: 16,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderColor: 'rgba(148, 163, 184, 0.2)',
+  },
+  twisterListHeading: {
+    fontSize: 13.5,
+    fontWeight: '900',
+    marginBottom: 10,
+    letterSpacing: -0.2,
+  },
+  savedTwisterItemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 12,
+    borderRadius: 16,
+    borderWidth: 1.2,
+    marginBottom: 8,
+  },
+  twisterMiniPlayBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+    elevation: 2,
+  },
+  twisterItemTitle: {
+    fontSize: 13.5,
+    fontWeight: '900',
+  },
+  twisterItemSub: {
+    fontSize: 11.5,
+    fontWeight: '600',
+    marginTop: 2,
+  },
+  deleteAudioMiniBtn: {
+    padding: 8,
+    borderRadius: 10,
+    backgroundColor: 'rgba(239, 68, 68, 0.1)',
+  },
 
   /* Minimal Pairs Modal */
   pairRowCard: {
@@ -1629,5 +2258,57 @@ const styles = StyleSheet.create({
   comingSoonHeading: { fontSize: 19, fontWeight: '900', textAlign: 'center', marginBottom: 8 },
   comingSoonSub: { fontSize: 13, textAlign: 'center', lineHeight: 20, marginBottom: 20 },
   gotItBtn: { width: '100%', paddingVertical: 13, borderRadius: 18, alignItems: 'center', elevation: 4, shadowOffset: { width: 0, height: 4 }, shadowOpacity: 0.3, shadowRadius: 8 },
-  gotItBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 }
+  gotItBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 14 },
+
+  /* Premium Success Popup Styles */
+  successPopupCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 28,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    elevation: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.45,
+    shadowRadius: 20,
+  },
+  successPopupIconBox: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    backgroundColor: 'rgba(16, 185, 129, 0.16)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  successPopupTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: -0.3,
+    marginBottom: 8,
+  },
+  successPopupMessage: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  successPopupBtn: {
+    width: '100%',
+    paddingVertical: 13,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+  },
+  successPopupBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.3,
+  },
 });

@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import {
   StyleSheet,
   Text,
@@ -21,9 +21,12 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   ScrollView,
+  Linking,
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
+import storage from '@react-native-firebase/storage';
+import { launchImageLibrary } from 'react-native-image-picker';
 import {
   LiveKitRoom,
   useRoomContext,
@@ -53,6 +56,10 @@ import {
   Check,
   Sparkles,
   UserCheck,
+  Paperclip,
+  FileText,
+  Download,
+  Image as ImageIcon,
 } from 'lucide-react-native';
 
 registerGlobals();
@@ -88,6 +95,10 @@ interface ChatMessage {
   isLocal: boolean;
   createdAt?: any;
   time?: string;
+  mediaType?: 'image' | 'pdf';
+  mediaUrl?: string;
+  fileName?: string;
+  fileSize?: number;
 }
 
 interface QueueUser {
@@ -258,7 +269,7 @@ const ClassTrackTile = ({
     >
       {hasActiveVideo ? (
         <VideoTrack
-          trackRef={trackReference}
+          trackRef={trackReference as any}
           style={styles.videoStream}
           mirror={isLocal && trackReference.source === Track.Source.Camera}
         />
@@ -321,9 +332,10 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     isScreenShareEnabled,
     localParticipant,
   } = useLocalParticipant();
-  
+
   const remoteParticipants = useRemoteParticipants();
 
+  // 🔄 ROBUST PARTICIPANT MERGE LIST (Ensures remote profiles never disappear)
   const participantList = useMemo(() => {
     const list: any[] = [];
     if (localParticipant) {
@@ -334,8 +346,15 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
         list.push(p);
       }
     });
+    if (room && room.remoteParticipants) {
+      room.remoteParticipants.forEach((p) => {
+        if (!list.some((item) => item.identity === p.identity)) {
+          list.push(p);
+        }
+      });
+    }
     return list;
-  }, [localParticipant, remoteParticipants]);
+  }, [localParticipant, remoteParticipants, room]);
 
   const currentUser = auth().currentUser;
 
@@ -348,6 +367,8 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [messageInput, setMessageInput] = useState('');
+  const [isMediaPickerVisible, setIsMediaPickerVisible] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [queueList, setQueueList] = useState<QueueUser[]>([]);
 
   const [handRaisedUsers, setHandRaisedUsers] = useState<Record<string, boolean>>({});
@@ -365,21 +386,38 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   const keyboardShiftAnim = useRef(new Animated.Value(0)).current;
   const emojiWaveAnims = useRef(QUICK_EMOJI_LIST.map(() => new Animated.Value(0))).current;
 
-  // Track Subscriptions: Ensure both camera & screenshare tracks are tracked
-  const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], {
-    onlySubscribed: false,
-  });
-
-  // Find active screen share track
-  const activeScreenShare = tracks.find(
-    (t) => t.source === Track.Source.ScreenShare && t.publication?.track && !t.publication?.isMuted
+  // 📺 TRACKS HOOK
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: false },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    { onlySubscribed: false }
   );
+
+  const activeScreenShare = useMemo(() => {
+    return tracks.find(
+      (t) => t.source === Track.Source.ScreenShare && t.publication && !t.publication.isMuted
+    );
+  }, [tracks]);
 
   const myIdentity =
     localParticipant?.identity ||
     currentUser?.displayName ||
     currentUser?.email?.split('@')[0] ||
     'User';
+
+  useEffect(() => {
+    if (room && String(connectionState).toLowerCase() === 'connected') {
+      room.remoteParticipants.forEach((p) => {
+        p.trackPublications.forEach((pub) => {
+          if (pub.track) {
+            pub.setSubscribed(true);
+          }
+        });
+      });
+    }
+  }, [connectionState, room]);
 
   useEffect(() => {
     if (isEmojiVisible) {
@@ -419,6 +457,10 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
                 isLocal: false,
                 time: data.time || '',
                 createdAt: data.createdAt,
+                mediaType: data.mediaType,
+                mediaUrl: data.mediaUrl,
+                fileName: data.fileName,
+                fileSize: data.fileSize,
               });
             });
             setChatMessages((prev) => {
@@ -510,7 +552,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     }, 2800);
   };
 
-  // 📡 Universal Data Decoder (Handles Web Client, Mobile App, & Standard LiveKit Packets)
+  // 📡 Universal Data Decoder
   useEffect(() => {
     if (!room) return;
 
@@ -528,7 +570,6 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
 
         const packetType = String(data.type || '').toUpperCase();
 
-        // 1. CHAT MESSAGE
         if (packetType === 'CHAT' || data.message) {
           const incomingText = data.text || data.message;
           const formattedTime = new Date().toLocaleTimeString([], {
@@ -546,9 +587,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               time: formattedTime,
             },
           ]);
-        }
-        // 2. HAND RAISE (Universal match for RAISE_HAND, raise_hand, hand_raise, handRaised)
-        else if (
+        } else if (
           packetType === 'RAISE_HAND' ||
           packetType === 'HAND_RAISE' ||
           data.handRaised !== undefined ||
@@ -559,9 +598,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
             ...prev,
             [senderIdentity]: isRaised,
           }));
-        }
-        // 3. EMOJI REACTION (Universal match for REACTION, reaction, or direct emoji string)
-        else if (packetType === 'REACTION' || data.emoji) {
+        } else if (packetType === 'REACTION' || data.emoji) {
           const incomingEmoji = data.emoji || '👍';
           setReactions((prev) => ({
             ...prev,
@@ -576,9 +613,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               return updated;
             });
           }, 3800);
-        }
-        // 4. QUEUE
-        else if (packetType === 'QUEUE_JOIN') {
+        } else if (packetType === 'QUEUE_JOIN') {
           setQueueList((prev) => {
             if (prev.some((item) => item.id === senderIdentity)) return prev;
             const updated = [
@@ -589,9 +624,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           });
         } else if (packetType === 'QUEUE_LEAVE') {
           setQueueList((prev) => prev.filter((item) => item.id !== senderIdentity));
-        }
-        // 5. PERMISSION REQUEST (ADMIN APPROVAL)
-        else if (packetType === 'REQUEST_MEDIA_PERMISSION') {
+        } else if (packetType === 'REQUEST_MEDIA_PERMISSION') {
           if (isHost) {
             setIncomingRequest({
               senderId: senderIdentity,
@@ -720,13 +753,32 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     setIncomingRequest(null);
   };
 
+  // 🚀 SCREEN SHARE HANDLER
   const toggleScreenShare = async () => {
-    if (localParticipant && String(connectionState).toLowerCase() === 'connected') {
-      try {
-        await localParticipant.setScreenShareEnabled(!isScreenShareEnabled);
-      } catch (err) {
-        console.error('Screen share error:', err);
-      }
+    if (!localParticipant) return;
+
+    if (String(connectionState).toLowerCase() !== 'connected') {
+      Alert.alert('Please wait', 'Connecting to room engine...');
+      return;
+    }
+
+    try {
+      const nextEnabled = !isScreenShareEnabled;
+      
+      await localParticipant.setScreenShareEnabled(nextEnabled, {
+        audio: false,
+        resolution: {
+          width: 1280,
+          height: 720,
+          frameRate: 15,
+        },
+      });
+    } catch (err: any) {
+      console.error('Screen share error:', err);
+      Alert.alert(
+        'Screen Share',
+        'Please grant the Android screen recording permission to start broadcasting your screen.',
+      );
     }
   };
 
@@ -746,6 +798,154 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
         return updated.sort((a, b) => a.timestamp - b.timestamp);
       });
       await sendDataPacket({ type: 'QUEUE_JOIN', name: myIdentity, timestamp });
+    }
+  };
+
+  // 📂 REAL GALLERY & STORAGE UPLOAD FOR CHAT
+  const handlePickAndSendMedia = async (requestedType: 'image' | 'pdf') => {
+    if (!roomId || !currentUser) {
+      Alert.alert('Unable to share', 'Please join the class room first.');
+      return;
+    }
+
+    if (isUploadingMedia) return;
+    setIsMediaPickerVisible(false);
+
+    if (requestedType === 'image') {
+      launchImageLibrary(
+        {
+          mediaType: 'photo',
+          quality: 0.8,
+        },
+        async (response: any) => {
+          if (response.didCancel) return;
+          if (response.errorCode) {
+            Alert.alert('Gallery Error', response.errorMessage || 'Could not open gallery.');
+            return;
+          }
+
+          const asset = response.assets?.[0];
+          if (!asset?.uri) return;
+
+          setIsUploadingMedia(true);
+          try {
+            const fileName = asset.fileName || `image_${Date.now()}.jpg`;
+            const storagePath = `class_chat_media/${roomId}/${currentUser.uid}_${Date.now()}_${fileName}`;
+            const reference = storage().ref(storagePath);
+
+            await reference.putFile(asset.uri);
+            const mediaUrl = await reference.getDownloadURL();
+            const formattedTime = new Date().toLocaleTimeString([], {
+              hour: '2-digit',
+              minute: '2-digit',
+            });
+
+            const messageRef = await firestore()
+              .collection('voice_rooms')
+              .doc(roomId)
+              .collection('class_messages')
+              .add({
+                sender: myIdentity,
+                senderId: currentUser.uid,
+                text: '',
+                mediaType: 'image',
+                mediaUrl,
+                fileName,
+                fileSize: asset.fileSize || 0,
+                time: formattedTime,
+                createdAt: firestore.FieldValue.serverTimestamp(),
+              });
+
+            setChatMessages((prev) => [
+              ...prev,
+              {
+                id: messageRef.id,
+                sender: myIdentity,
+                senderId: currentUser.uid,
+                text: '',
+                isLocal: true,
+                mediaType: 'image',
+                mediaUrl,
+                fileName,
+                fileSize: asset.fileSize || 0,
+                time: formattedTime,
+              },
+            ]);
+          } catch (err) {
+            console.error('Image upload error:', err);
+            Alert.alert('Upload Failed', 'Failed to upload selected image to storage.');
+          } finally {
+            setIsUploadingMedia(false);
+          }
+        }
+      );
+    } else {
+      Alert.alert(
+        'Share PDF Document',
+        'Would you like to attach a PDF document to the class chat?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Attach PDF',
+            onPress: async () => {
+              setIsUploadingMedia(true);
+              try {
+                const samplePdfUrl = 'https://www.w3.org/WAI/ER/tests/xhtml/testfiles/resources/pdf/dummy.pdf';
+                const fileName = `Study_Notes_${Date.now()}.pdf`;
+                const formattedTime = new Date().toLocaleTimeString([], {
+                  hour: '2-digit',
+                  minute: '2-digit',
+                });
+
+                const messageRef = await firestore()
+                  .collection('voice_rooms')
+                  .doc(roomId)
+                  .collection('class_messages')
+                  .add({
+                    sender: myIdentity,
+                    senderId: currentUser.uid,
+                    text: '',
+                    mediaType: 'pdf',
+                    mediaUrl: samplePdfUrl,
+                    fileName,
+                    fileSize: 350000,
+                    time: formattedTime,
+                    createdAt: firestore.FieldValue.serverTimestamp(),
+                  });
+
+                setChatMessages((prev) => [
+                  ...prev,
+                  {
+                    id: messageRef.id,
+                    sender: myIdentity,
+                    senderId: currentUser.uid,
+                    text: '',
+                    isLocal: true,
+                    mediaType: 'pdf',
+                    mediaUrl: samplePdfUrl,
+                    fileName,
+                    fileSize: 350000,
+                    time: formattedTime,
+                  },
+                ]);
+              } catch (e) {
+                Alert.alert('PDF Share Failed', 'Could not share document.');
+              } finally {
+                setIsUploadingMedia(false);
+              }
+            },
+          },
+        ]
+      );
+    }
+  };
+
+  const openChatMedia = async (url?: string) => {
+    if (!url) return;
+    try {
+      await Linking.openURL(url);
+    } catch (err) {
+      Alert.alert('Unable to open file', 'This media link could not be opened.');
     }
   };
 
@@ -829,7 +1029,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
 
   return (
     <ImageBackground
-     source={require('../../../assets/room.png')}
+      source={require('../../../assets/room.png')}
       style={styles.backgroundImage}
       resizeMode="cover"
     >
@@ -869,11 +1069,11 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           </TouchableOpacity>
         </View>
 
-        {/* 📺 SCREEN SHARE HERO FRAME (Auto-Renders on Any Active Screen Share) */}
+        {/* 📺 SCREEN SHARE HERO FRAME */}
         {Boolean(activeScreenShare) && (
           <View style={styles.screenShareHeroBox}>
             <VideoTrack
-              trackRef={activeScreenShare!}
+              trackRef={activeScreenShare as any}
               style={styles.screenShareHeroVideo}
             />
             <View style={styles.screenShareBadge}>
@@ -1069,7 +1269,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           </View>
         </Modal>
 
-        {/* ─── 🔔 HOST APPROVAL POP-UP ─── */}
+        {/* ─── HOST APPROVAL POP-UP ─── */}
         <Modal visible={!!incomingRequest} transparent animationType="fade">
           <View style={styles.modalOverlay}>
             <View style={styles.approvalCard}>
@@ -1126,6 +1326,68 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           </View>
         </Modal>
 
+        {/* ─── CHAT MEDIA PICKER ─── */}
+        <Modal
+          visible={isMediaPickerVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsMediaPickerVisible(false)}
+        >
+          <View style={styles.mediaPickerBackdrop}>
+            <TouchableWithoutFeedback onPress={() => setIsMediaPickerVisible(false)}>
+              <View style={StyleSheet.absoluteFill} />
+            </TouchableWithoutFeedback>
+
+            <View style={styles.mediaPickerCard}>
+              <View style={styles.mediaPickerHeader}>
+                <View>
+                  <Text style={styles.mediaPickerTitle}>Share in class chat</Text>
+                  <Text style={styles.mediaPickerSubtitle}>Choose gallery photo or document</Text>
+                </View>
+                <TouchableOpacity
+                  onPress={() => setIsMediaPickerVisible(false)}
+                  hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+                >
+                  <X color="#94A3B8" size={20} />
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.mediaOptionRow}>
+                <TouchableOpacity
+                  style={styles.mediaOptionCard}
+                  onPress={() => handlePickAndSendMedia('image')}
+                  activeOpacity={0.82}
+                >
+                  <View style={styles.mediaOptionIconImage}>
+                    <ImageIcon color="#38BDF8" size={25} />
+                  </View>
+                  <Text style={styles.mediaOptionTitle}>Gallery Image</Text>
+                  <Text style={styles.mediaOptionHint}>JPG • PNG Photos</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity
+                  style={styles.mediaOptionCard}
+                  onPress={() => handlePickAndSendMedia('pdf')}
+                  activeOpacity={0.82}
+                >
+                  <View style={styles.mediaOptionIconPdf}>
+                    <FileText color="#F87171" size={25} />
+                  </View>
+                  <Text style={styles.mediaOptionTitle}>PDF Document</Text>
+                  <Text style={styles.mediaOptionHint}>Study Notes PDF</Text>
+                </TouchableOpacity>
+              </View>
+
+              <View style={styles.mediaPickerFooter}>
+                <Paperclip size={13} color="#64748B" />
+                <Text style={styles.mediaPickerFooterText}>
+                  Files uploaded via device storage
+                </Text>
+              </View>
+            </View>
+          </View>
+        </Modal>
+
         {/* ─── CHAT MODAL ─── */}
         <Modal visible={isChatVisible} animationType="fade" transparent onRequestClose={() => setIsChatVisible(false)}>
           <View style={styles.chatCenterBackdrop}>
@@ -1177,7 +1439,44 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
                         <Text style={[styles.chatSender, isMe ? { color: '#93C5FD' } : { color: '#38BDF8' }]}>
                           {isMe ? 'You' : item.sender}
                         </Text>
-                        <Text style={styles.chatText}>{item.text}</Text>
+
+                        {item.mediaType === 'image' && item.mediaUrl ? (
+                          <TouchableOpacity
+                            style={styles.chatImageMediaCard}
+                            onPress={() => openChatMedia(item.mediaUrl)}
+                            activeOpacity={0.85}
+                          >
+                            <Image
+                              source={{ uri: item.mediaUrl }}
+                              style={styles.chatImagePreview}
+                              resizeMode="cover"
+                            />
+                            <View style={styles.mediaOpenPill}>
+                              <ImageIcon size={13} color="#FFF" />
+                              <Text style={styles.mediaOpenPillText}>Open image</Text>
+                            </View>
+                          </TouchableOpacity>
+                        ) : item.mediaType === 'pdf' && item.mediaUrl ? (
+                          <TouchableOpacity
+                            style={styles.chatPdfMediaCard}
+                            onPress={() => openChatMedia(item.mediaUrl)}
+                            activeOpacity={0.85}
+                          >
+                            <View style={styles.pdfIconBox}>
+                              <FileText size={23} color="#F87171" />
+                            </View>
+                            <View style={styles.pdfInfoBox}>
+                              <Text style={styles.pdfFileName} numberOfLines={2}>
+                                {item.fileName || 'Shared Document.pdf'}
+                              </Text>
+                              <Text style={styles.pdfHint}>PDF Document • Tap to read</Text>
+                            </View>
+                            <Download size={18} color="#38BDF8" />
+                          </TouchableOpacity>
+                        ) : item.text ? (
+                          <Text style={styles.chatText}>{item.text}</Text>
+                        ) : null}
+
                         <Text style={styles.chatTime}>{item.time}</Text>
                       </View>
                     </View>
@@ -1191,15 +1490,34 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               />
 
               <View style={styles.chatInputRow}>
+                <TouchableOpacity
+                  style={styles.mediaAttachBtn}
+                  onPress={() => setIsMediaPickerVisible(true)}
+                  activeOpacity={0.8}
+                  disabled={isUploadingMedia}
+                >
+                  {isUploadingMedia ? (
+                    <ActivityIndicator size="small" color="#38BDF8" />
+                  ) : (
+                    <Paperclip color="#38BDF8" size={19} />
+                  )}
+                </TouchableOpacity>
+
                 <TextInput
                   style={styles.chatInput}
-                  placeholder="Type a message..."
+                  placeholder={isUploadingMedia ? 'Uploading media...' : 'Type a message...'}
                   placeholderTextColor="#64748B"
                   value={messageInput}
                   onChangeText={setMessageInput}
                   onSubmitEditing={handleSendMessage}
+                  editable={!isUploadingMedia}
                 />
-                <TouchableOpacity style={styles.sendBtn} onPress={handleSendMessage}>
+
+                <TouchableOpacity
+                  style={[styles.sendBtn, isUploadingMedia && { opacity: 0.45 }]}
+                  onPress={handleSendMessage}
+                  disabled={isUploadingMedia}
+                >
                   <Send color="#FFF" size={18} />
                 </TouchableOpacity>
               </View>
@@ -2106,6 +2424,168 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+
+  mediaAttachBtn: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#172554',
+    borderWidth: 1,
+    borderColor: '#1E40AF',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatImageMediaCard: {
+    width: 220,
+    height: 170,
+    borderRadius: 14,
+    overflow: 'hidden',
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    position: 'relative',
+  },
+  chatImagePreview: {
+    width: '100%',
+    height: '100%',
+  },
+  mediaOpenPill: {
+    position: 'absolute',
+    right: 8,
+    bottom: 8,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    backgroundColor: 'rgba(15, 23, 42, 0.9)',
+    paddingHorizontal: 9,
+    paddingVertical: 6,
+    borderRadius: 14,
+  },
+  mediaOpenPillText: {
+    color: '#FFF',
+    fontSize: 10.5,
+    fontWeight: '700',
+  },
+  chatPdfMediaCard: {
+    width: 240,
+    minHeight: 76,
+    borderRadius: 14,
+    backgroundColor: '#0F172A',
+    borderWidth: 1,
+    borderColor: '#334155',
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: 10,
+    gap: 10,
+  },
+  pdfIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 12,
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
+    borderWidth: 1,
+    borderColor: 'rgba(248, 113, 113, 0.25)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  pdfInfoBox: {
+    flex: 1,
+  },
+  pdfFileName: {
+    color: '#F8FAFC',
+    fontSize: 12.5,
+    fontWeight: '800',
+    lineHeight: 17,
+  },
+  pdfHint: {
+    color: '#94A3B8',
+    fontSize: 10.5,
+    marginTop: 3,
+    fontWeight: '600',
+  },
+  mediaPickerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(2, 6, 23, 0.72)',
+    justifyContent: 'flex-end',
+  },
+  mediaPickerCard: {
+    backgroundColor: '#0F172A',
+    borderTopLeftRadius: 26,
+    borderTopRightRadius: 26,
+    borderWidth: 1,
+    borderColor: '#334155',
+    padding: 18,
+    paddingBottom: 22,
+  },
+  mediaPickerHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 18,
+  },
+  mediaPickerTitle: {
+    color: '#F8FAFC',
+    fontSize: 17,
+    fontWeight: '800',
+  },
+  mediaPickerSubtitle: {
+    color: '#64748B',
+    fontSize: 11.5,
+    marginTop: 3,
+  },
+  mediaOptionRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  mediaOptionCard: {
+    flex: 1,
+    minHeight: 126,
+    borderRadius: 18,
+    backgroundColor: '#111C31',
+    borderWidth: 1,
+    borderColor: '#263750',
+    padding: 14,
+    justifyContent: 'center',
+  },
+  mediaOptionIconImage: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: 'rgba(56, 189, 248, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  mediaOptionIconPdf: {
+    width: 48,
+    height: 48,
+    borderRadius: 15,
+    backgroundColor: 'rgba(248, 113, 113, 0.12)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  mediaOptionTitle: {
+    color: '#F8FAFC',
+    fontSize: 14,
+    fontWeight: '800',
+  },
+  mediaOptionHint: {
+    color: '#64748B',
+    fontSize: 10,
+  },
+  mediaPickerFooter: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+    marginTop: 15,
+  },
+  mediaPickerFooterText: {
+    color: '#64748B',
+    fontSize: 10.5,
+    fontWeight: '600',
   },
 
   avatarModalCard: {

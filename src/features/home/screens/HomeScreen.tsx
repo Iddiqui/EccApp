@@ -41,7 +41,9 @@ import {
   Pause,
   Trash2,
   RotateCcw,
-  Headphones
+  Headphones,
+  CheckCircle2,
+  BarChart3
 } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
 
@@ -266,11 +268,23 @@ export default function HomeScreen() {
   const [adminNewTopicSubtitle, setAdminNewTopicSubtitle] = useState('');
   const [adminSelectedDuration, setAdminSelectedDuration] = useState(60);
 
+  // 🌟 Custom Premium Popup State
+  const [customPopup, setCustomPopup] = useState<{ visible: boolean; title: string; message: string; type: 'success' | 'info' }>({
+    visible: false,
+    title: '',
+    message: '',
+    type: 'success'
+  });
+
+  const showCustomPopup = (title: string, message: string, type: 'success' | 'info' = 'success') => {
+    setCustomPopup({ visible: true, title, message, type });
+  };
+
   useEffect(() => {
     Animated.loop(
       Animated.timing(borderShineAnim, {
         toValue: 1,
-        duration: 2500,
+        duration: 2505,
         easing: Easing.linear,
         useNativeDriver: false,
       })
@@ -384,7 +398,7 @@ export default function HomeScreen() {
     return () => unsubTopic();
   }, [localRecordedAudioUri, isRecordingAudio]);
 
-  // 🔒 PERSISTENT AUDIO LISTENER (Client-side sorted: zero index issues)
+  // 🔒 PERSISTENT AUDIO LISTENER
   useEffect(() => {
     if (!currentUser) return;
 
@@ -428,7 +442,6 @@ export default function HomeScreen() {
     }
   }, [currentUser, isAdmin]);
 
-  // Audio recording initialization
   useEffect(() => {
     try {
       const options = {
@@ -458,7 +471,6 @@ export default function HomeScreen() {
     }
   };
 
-  // ⏱️ TIMER FUNCTION (CONTINUOUS BACKGROUND RUN ON PAUSE)
   const startRecordingTimer = () => {
     stopRecordingTimer();
     timerRef.current = setInterval(() => {
@@ -496,12 +508,11 @@ export default function HomeScreen() {
     return true;
   };
 
-  // 🎙️ START RECORDING
   const handleStartRecording = async () => {
     stopAudioPlayback();
     const hasPermission = await requestAudioPermissions();
     if (!hasPermission) {
-      Alert.alert('Permission Required', 'Microphone access is required to record your voice.');
+      showCustomPopup('Permission Required', 'Microphone access is required to record your voice.', 'info');
       return;
     }
 
@@ -521,23 +532,20 @@ export default function HomeScreen() {
       setIsPausedAudio(false);
       startRecordingTimer();
     } catch (e: any) {
-      Alert.alert('Recording Error', e.message || 'Unable to start audio recording.');
+      showCustomPopup('Recording Error', e.message || 'Unable to start audio recording.', 'info');
     }
   };
 
-  // ⏸️ PAUSE RECORDING (Timer runs continuously in background)
   const handlePauseRecording = () => {
     if (!isRecordingAudio || isPausedAudio) return;
     setIsPausedAudio(true);
   };
 
-  // ▶️ RESUME RECORDING
   const handleResumeRecording = () => {
     if (!isRecordingAudio || !isPausedAudio) return;
     setIsPausedAudio(false);
   };
 
-  // ⏹️ STOP RECORDING (Anytime at student's choice)
   const handleStopRecording = async () => {
     stopRecordingTimer();
     setIsRecordingAudio(false);
@@ -555,7 +563,6 @@ export default function HomeScreen() {
     }
   };
 
-  // 🗑️ DISCARD LOCAL DRAFT
   const handleDiscardLocalDraft = async () => {
     stopRecordingTimer();
     stopAudioPlayback();
@@ -573,10 +580,9 @@ export default function HomeScreen() {
     } catch (e) {}
   };
 
-  // 📤 SEND RESPONSE (FIXED [storage/object-not-found] ON BOTH PLATFORMS)
   const handleSaveRecordingPermanently = async () => {
     if (!localRecordedAudioUri) {
-      Alert.alert('Recording Missing', 'Please record your response before sending.');
+      showCustomPopup('Recording Missing', 'Please record your response before sending.', 'info');
       return;
     }
     if (!currentUser) return;
@@ -585,14 +591,12 @@ export default function HomeScreen() {
     stopAudioPlayback();
 
     try {
-      // Small sync tick to guarantee local audio file is fully written to disk
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       const fileName = `challenge_${currentUser.uid}_${Date.now()}.wav`;
       const storagePath = `challenges_recordings/${currentUser.uid}/${fileName}`;
       const reference = storage().ref(storagePath);
 
-      // Safe normalization for Android / iOS local file paths
       let uploadUri = localRecordedAudioUri;
       if (Platform.OS === 'android') {
         if (!uploadUri.startsWith('file://')) {
@@ -605,7 +609,6 @@ export default function HomeScreen() {
       await reference.putFile(uploadUri);
       const downloadUrl = await reference.getDownloadURL();
 
-      // Saved in challenge_recordings for User view & Admin dashboard
       await firestore().collection('challenge_recordings').add({
         challengeTitle: dailyTopicData.title,
         uid: currentUser.uid,
@@ -617,22 +620,20 @@ export default function HomeScreen() {
         createdAt: firestore.FieldValue.serverTimestamp()
       });
 
-      // Increment User XP (+10 XP)
       await firestore().collection('users').doc(currentUser.uid).set({
         xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
       }, { merge: true });
 
       setIsSavingAudio(false);
       setLocalRecordedAudioUri(null);
-      Alert.alert('🎉 Sent Successfully!', 'Your speaking challenge response has been saved.');
+      showCustomPopup('🎉 Sent Successfully!', 'Your speaking challenge response has been saved.');
     } catch (e: any) {
       setIsSavingAudio(false);
       console.log('Firebase storage upload error:', e);
-      Alert.alert('Send Failed', e.message || 'Unable to upload recording. Please try again.');
+      showCustomPopup('Send Failed', e.message || 'Unable to upload recording. Please try again.', 'info');
     }
   };
 
-  // 🗑️ DELETE RECORDING FROM FIRESTORE (USER / ADMIN ACCESS)
   const handleDeleteFirestoreRecording = (docId: string, audioUrl?: string) => {
     Alert.alert(
       'Delete Recording',
@@ -653,7 +654,7 @@ export default function HomeScreen() {
                 } catch (e) {}
               }
             } catch (err: any) {
-              Alert.alert('Error', err.message || 'Could not delete recording.');
+              showCustomPopup('Error', err.message || 'Could not delete recording.', 'info');
             }
           }
         }
@@ -661,7 +662,6 @@ export default function HomeScreen() {
     );
   };
 
-  // 🔊 AUDIO PLAYBACK (FOR LOCAL DRAFT AND CLOUD AUDIOS)
   const handleTogglePlayAudio = (audioTarget: string) => {
     if (!audioTarget) return;
 
@@ -674,7 +674,7 @@ export default function HomeScreen() {
     }
 
     if (!SoundPlayer) {
-      Alert.alert('Playback Ready', 'Audio playback is supported on this device.');
+      showCustomPopup('Playback Ready', 'Audio playback is supported on this device.', 'info');
       return;
     }
 
@@ -709,10 +709,9 @@ export default function HomeScreen() {
     setActivePlayingUrl(null);
   };
 
-  // ✏️ ADMIN TOPIC & TIME UPDATE
   const handleAdminSaveTopic = async () => {
     if (!adminNewTopicTitle.trim()) {
-      Alert.alert('Validation', 'Please enter challenge topic prompt.');
+      showCustomPopup('Validation', 'Please enter challenge topic prompt.', 'info');
       return;
     }
     try {
@@ -725,9 +724,9 @@ export default function HomeScreen() {
         updatedAt: firestore.FieldValue.serverTimestamp()
       }, { merge: true });
       setIsAdminEditTopicModal(false);
-      Alert.alert('Success', `Daily topic updated with ${duration}s limit!`);
+      showCustomPopup('✨ Success!', `Daily challenge updated and broadcasted successfully with a ${duration}s limit!`);
     } catch (e: any) {
-      Alert.alert('Error', e.message);
+      showCustomPopup('Error', e.message, 'info');
     }
   };
 
@@ -772,7 +771,6 @@ export default function HomeScreen() {
   const realToday = new Date();
   const todayIndex = realToday.getDay();
 
-  // Dynamic Calendar Month Logic
   const calYear = calendarDate.getFullYear();
   const calMonth = calendarDate.getMonth();
   const firstDayOfMonth = new Date(calYear, calMonth, 1).getDay();
@@ -889,7 +887,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 2. STATS ROW (CLICK TO OPEN CALENDAR - FIXED OVAL PILL & BOLD LETTERS) */}
+        {/* 2. STATS ROW */}
         <View style={styles.statsRow}>
           <TouchableOpacity 
             style={styles.streakCardContainer}
@@ -923,7 +921,6 @@ export default function HomeScreen() {
               <Text style={styles.streakNumberText}>{userStreak}</Text>
               <Text style={styles.streakDaysSubText}>{t?.home?.daysInRow || 'Days in a row'}</Text>
 
-              {/* 🌟 7 DAYS ROW WITH ORIGINAL OVAL PILL & BOLD LETTERS */}
               <View style={styles.streakDaysRow}>
                 {SEVEN_DAYS.map((letter, idx) => {
                   const isToday = idx === todayIndex;
@@ -946,7 +943,7 @@ export default function HomeScreen() {
                         styles.dayDot, 
                         isToday 
                           ? { backgroundColor: '#FFFFFF', width: 5, height: 5 } 
-                          : (isDayStudied ? { backgroundColor: '#F59E0B' } : { backgroundColor: 'rgba(255,255,255,0.45)' })
+                          : (isDayStudied ? { backgroundColor: '#10B981' } : { backgroundColor: 'rgba(255,255,255,0.45)' })
                       ]} />
                     </View>
                   );
@@ -1035,7 +1032,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* 4. TODAY'S CHALLENGE CARD (HYPER-PREMIUM NEON GLOW & VIBRANT TOPIC) */}
+        {/* 4. TODAY'S CHALLENGE CARD */}
         <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
           {t?.home?.todayChallenge || "Today's Challenge"}
         </Text>
@@ -1152,7 +1149,7 @@ export default function HomeScreen() {
           </View>
         </ScrollView>
 
-        {/* 🌟 6. UNIQUE ULTRA-PREMIUM 'FROM THE COMMUNITY' CARD */}
+        {/* 6. FROM THE COMMUNITY */}
         <View style={styles.sectionHeaderContainer}>
           <Text style={[styles.sectionHeadingMarginless, { color: colors.textPrimary }]}>
             {t?.home?.fromCommunity || 'From the Community'}
@@ -1221,7 +1218,7 @@ export default function HomeScreen() {
 
       </ScrollView>
 
-      {/* ─── 🎙️ CHALLENGE CARD MODAL (SEND RESPONSE & PRIVACY LAYER) ─── */}
+      {/* ─── 🎙️ UPGRADED PREMIUM TODAY'S CHALLENGE MODAL ─── */}
       <Modal
         visible={isChallengeModalVisible}
         animationType="fade"
@@ -1235,13 +1232,15 @@ export default function HomeScreen() {
         >
           <TouchableOpacity 
             activeOpacity={1}
-            style={[styles.challengeModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
+            style={[styles.challengeModalCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
             onPress={(e) => e.stopPropagation()}
           >
             
             <View style={styles.challengeModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Award size={22} color="#F59E0B" />
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={styles.modalHeaderIconBadge}>
+                  <Award size={20} color="#F59E0B" />
+                </View>
                 <Text style={[styles.challengeModalMainTitle, { color: colors.textPrimary }]}>Daily Speaking Challenge</Text>
               </View>
               <TouchableOpacity onPress={closeChallengeModal} style={styles.closeRoundBtn}>
@@ -1250,13 +1249,12 @@ export default function HomeScreen() {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              {/* Daily Topic Box with Vibrant Bold Accent */}
-              <View style={[styles.challengeTopicBox, { backgroundColor: colors.primary + '14', borderColor: colors.primary + '33' }]}>
-                <Text style={[styles.challengeTopicTextBold, { color: colors.primary }]}>
+              <View style={[styles.challengeTopicBox, { backgroundColor: colors.primary + '12', borderColor: colors.primary + '35' }]}>
+                <Text style={[styles.challengeTopicTextBold, { color: colors.textPrimary }]}>
                   "{dailyTopicData?.title}"
                 </Text>
                 <Text style={[styles.challengeTopicSub, { color: colors.textSecondary }]}>
-                  {dailyTopicData?.subtitle} • Record your answer. Only you & admin have access to this audio.
+                  {dailyTopicData?.subtitle} • Record your voice response. Secure & private.
                 </Text>
 
                 {isAdmin && (
@@ -1270,7 +1268,6 @@ export default function HomeScreen() {
                 )}
               </View>
 
-              {/* ⏱️ REAL-TIME RECORDING BANNER */}
               {isRecordingAudio && (
                 <View style={styles.liveListeningBanner}>
                   <View style={[styles.liveAudioWaveDot, isPausedAudio && { backgroundColor: '#F59E0B' }]} />
@@ -1281,7 +1278,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* 🎧 SECTION 1: FRESH LOCAL RECORDING DRAFT (BEFORE SENDING) */}
               {localRecordedAudioUri && (
                 <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: '#10B981' }]}>
                   <View style={styles.previewAudioRow}>
@@ -1302,7 +1298,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* 🎧 SECTION 2: SAVED USER AUDIO (PERSISTENT & PRIVATE TO THIS STUDENT) */}
               {!isAdmin && savedUserRecording && (
                 <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.primary + '55', marginTop: 6 }]}>
                   <View style={styles.previewAudioRow}>
@@ -1323,7 +1318,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* 👑 SECTION 3: ADMIN ACCESS TO ALL USER RECORDINGS */}
               {isAdmin && (
                 <View style={styles.adminSubmissionsContainer}>
                   <Text style={[styles.adminSubmissionsHeading, { color: colors.textPrimary }]}>
@@ -1353,7 +1347,6 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* 🎙️ RECORDING CONTROL ACTIONS */}
               <View style={styles.micActionContainer}>
                 {!localRecordedAudioUri && (
                   <Animated.View style={{ transform: [{ scale: micPulseAnim }] }}>
@@ -1374,7 +1367,6 @@ export default function HomeScreen() {
                   </Animated.View>
                 )}
 
-                {/* PAUSE / RESUME / COMPLETE / RESET CONTROLS */}
                 {isRecordingAudio && (
                   <View style={styles.speechControlRow}>
                     {!isPausedAudio ? (
@@ -1410,7 +1402,6 @@ export default function HomeScreen() {
                 </Text>
               </View>
 
-              {/* 📤 SEND RESPONSE BUTTON */}
               <TouchableOpacity 
                 style={[
                   styles.sendResponseBtn, 
@@ -1437,7 +1428,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ─── ✏️ ADMIN EDIT TOPIC & DURATION MODAL (OUTSIDE TAP TO CLOSE) ─── */}
+      {/* ─── ✏️ UPGRADED PREMIUM ADMIN EDIT TOPIC MODAL ─── */}
       <Modal
         visible={isAdminEditTopicModal}
         animationType="fade"
@@ -1451,10 +1442,20 @@ export default function HomeScreen() {
         >
           <TouchableOpacity 
             activeOpacity={1}
-            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
             onPress={(e) => e.stopPropagation()}
           >
-            <Text style={[styles.adminEditTitle, { color: colors.textPrimary }]}>Admin: Update Daily Challenge</Text>
+            <View style={styles.challengeModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
+                <View style={styles.modalHeaderIconBadge}>
+                  <Edit3 size={18} color="#8B5CF6" />
+                </View>
+                <Text style={[styles.adminEditTitle, { color: colors.textPrimary }]}>Admin: Update Daily Challenge</Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsAdminEditTopicModal(false)} style={styles.closeRoundBtn}>
+                <X size={18} color="#94A3B8" strokeWidth={2.5} />
+              </TouchableOpacity>
+            </View>
             
             <Text style={[styles.inputFieldLabel, { color: colors.textSecondary }]}>Challenge Topic / Prompt</Text>
             <TextInput 
@@ -1584,7 +1585,7 @@ export default function HomeScreen() {
                 const isCurrentDayHeader = index === todayIndex;
                 return (
                   <View 
-                    key={index}
+                    key={index} 
                     style={[
                       styles.dayHeaderCell,
                       isCurrentDayHeader && styles.todayHeaderCellCircle
@@ -1643,7 +1644,6 @@ export default function HomeScreen() {
                   <Text style={styles.statLabel}>Longest streak</Text>
                   <Text style={styles.statValue}>{longestStreak} days</Text>
                 </View>
-                <ChevronRight size={18} color="#94A3B8" strokeWidth={2.5} />
               </View>
 
               <View style={styles.statDivider} />
@@ -1654,13 +1654,56 @@ export default function HomeScreen() {
                   <Text style={styles.statLabel}>Best streak</Text>
                   <Text style={styles.statValue}>{bestStreak} days</Text>
                 </View>
-                <TouchableOpacity style={styles.viewStatsAction}>
+                <TouchableOpacity 
+                  style={styles.viewStatsAction} 
+                  activeOpacity={0.7}
+                  onPress={() => showCustomPopup('Coming Soon! 🚀', 'Detailed streak statistics and analytics will be available soon.', 'info')}
+                >
                   <Text style={styles.viewStatsActionText}>📊 View stats</Text>
                   <ChevronRight size={16} color="#C084FC" strokeWidth={2.5} />
                 </TouchableOpacity>
               </View>
             </View>
 
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
+      {/* 🌟 CUSTOM PREMIUM POPUP MODAL (REPLACES NATIVE ALERT) */}
+      <Modal
+        visible={customPopup.visible}
+        animationType="fade"
+        transparent={true}
+        onRequestClose={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
+      >
+        <TouchableOpacity 
+          style={styles.customPopupOverlay} 
+          activeOpacity={1}
+          onPress={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
+        >
+          <TouchableOpacity 
+            activeOpacity={1}
+            style={[styles.customPopupCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={[styles.customPopupIconBox, { backgroundColor: customPopup.type === 'success' ? 'rgba(16, 185, 129, 0.18)' : 'rgba(139, 92, 246, 0.18)' }]}>
+              {customPopup.type === 'success' ? (
+                <CheckCircle2 size={32} color="#10B981" strokeWidth={2.5} />
+              ) : (
+                <BarChart3 size={30} color="#8B5CF6" strokeWidth={2.5} />
+              )}
+            </View>
+
+            <Text style={[styles.customPopupTitle, { color: colors.textPrimary }]}>{customPopup.title}</Text>
+            <Text style={[styles.customPopupMessage, { color: colors.textSecondary }]}>{customPopup.message}</Text>
+
+            <TouchableOpacity 
+              style={[styles.customPopupBtn, { backgroundColor: customPopup.type === 'success' ? '#10B981' : colors.primary }]}
+              onPress={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
+              activeOpacity={0.85}
+            >
+              <Text style={styles.customPopupBtnText}>Okay</Text>
+            </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -1716,7 +1759,7 @@ const styles = StyleSheet.create({
   
   streakCardContainer: { 
     width: (SCREEN_WIDTH - 55) * 0.52, 
-    height: 156,
+    height: 156, 
     borderRadius: 24, 
     overflow: 'hidden',
     position: 'relative',
@@ -1783,7 +1826,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 6
   },
-  /* 🌟 FIXED: OVAL PILL SHAPE */
   dayColumn: {
     alignItems: 'center',
     paddingHorizontal: 6,
@@ -1878,7 +1920,6 @@ const styles = StyleSheet.create({
   heroJoinButton: { backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   heroJoinBtnText: { fontWeight: '900', fontSize: 12 },
 
-  /* 🌟 UNIQUE CHALLENGE GLOW CARD STYLES */
   uniqueChallengeOuter: {
     marginHorizontal: 20,
     marginTop: 10,
@@ -2361,26 +2402,40 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
-  /* ─── 🎙️ TODAY'S CHALLENGE MODAL STYLES ─── */
+  /* ─── 🎙️ UPGRADED PREMIUM TODAY'S CHALLENGE MODAL STYLES ─── */
   challengeModalCard: {
-    width: Math.min(SCREEN_WIDTH * 0.92, 390),
-    borderRadius: 28,
-    padding: 22,
+    width: Math.min(SCREEN_WIDTH * 0.94, 400),
+    borderRadius: 32,
+    padding: 24,
     borderWidth: 1.5,
-    maxHeight: '85%',
+    maxHeight: '88%',
+    elevation: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 22,
   },
   challengeModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
-    paddingBottom: 10,
+    paddingBottom: 12,
     borderBottomWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.2)',
+    borderColor: 'rgba(148, 163, 184, 0.18)',
+  },
+  modalHeaderIconBadge: {
+    width: 38,
+    height: 38,
+    borderRadius: 12,
+    backgroundColor: 'rgba(245, 158, 11, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   challengeModalMainTitle: {
     fontSize: 18,
     fontWeight: '900',
+    letterSpacing: -0.2,
   },
   closeRoundBtn: {
     width: 32,
@@ -2391,28 +2446,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   challengeTopicBox: {
-    padding: 14,
-    borderRadius: 18,
+    padding: 16,
+    borderRadius: 20,
     borderWidth: 1.5,
-    marginBottom: 14,
+    marginBottom: 16,
   },
   challengeTopicTextBold: {
-    fontSize: 16.5,
+    fontSize: 17,
     fontWeight: '900',
-    lineHeight: 23,
+    lineHeight: 24,
     letterSpacing: -0.2,
   },
   challengeTopicSub: {
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 6,
-    lineHeight: 17,
+    marginTop: 8,
+    lineHeight: 18,
   },
   adminEditTopicTrigger: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 10,
+    marginTop: 12,
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(139, 92, 246, 0.2)',
     paddingHorizontal: 10,
@@ -2430,10 +2485,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingVertical: 8,
+    paddingVertical: 9,
     paddingHorizontal: 12,
-    borderRadius: 14,
-    marginBottom: 10,
+    borderRadius: 16,
+    marginBottom: 12,
   },
   liveAudioWaveDot: {
     width: 8,
@@ -2448,7 +2503,7 @@ const styles = StyleSheet.create({
   },
   audioStatusCard: {
     minHeight: 85,
-    borderRadius: 18,
+    borderRadius: 20,
     borderWidth: 1.5,
     padding: 14,
     marginBottom: 12,
@@ -2499,7 +2554,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: 10,
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1,
     marginBottom: 8,
   },
@@ -2521,12 +2576,12 @@ const styles = StyleSheet.create({
   },
   micActionContainer: {
     alignItems: 'center',
-    marginVertical: 10,
+    marginVertical: 12,
   },
   micBigButton: {
-    width: 68,
-    height: 68,
-    borderRadius: 34,
+    width: 72,
+    height: 72,
+    borderRadius: 36,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 8,
@@ -2538,7 +2593,7 @@ const styles = StyleSheet.create({
   micStatusLabel: {
     fontSize: 12,
     fontWeight: '700',
-    marginTop: 8,
+    marginTop: 10,
     textAlign: 'center',
   },
   speechControlRow: {
@@ -2546,7 +2601,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
-    marginTop: 10,
+    marginTop: 12,
   },
   pauseSpeechBtn: {
     flexDirection: 'row',
@@ -2556,7 +2611,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(245, 158, 11, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 14,
   },
   pauseSpeechBtnText: {
     color: '#F59E0B',
@@ -2571,7 +2626,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(16, 185, 129, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 14,
   },
   resumeSpeechBtnText: {
     color: '#10B981',
@@ -2586,7 +2641,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(239, 68, 68, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 14,
   },
   stopSpeechBtnText: {
     color: '#EF4444',
@@ -2601,7 +2656,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(148, 163, 184, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 12,
+    borderRadius: 14,
   },
   resetSpeechBtnText: {
     color: '#64748B',
@@ -2612,87 +2667,156 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 13,
-    borderRadius: 16,
-    marginTop: 10,
+    paddingVertical: 14,
+    borderRadius: 18,
+    marginTop: 12,
     marginBottom: 6,
+    elevation: 4,
   },
   sendResponseBtnText: {
     color: '#FFFFFF',
-    fontSize: 14.5,
+    fontSize: 15,
     fontWeight: '900',
   },
 
-  /* ─── ✏️ ADMIN EDIT TOPIC MODAL STYLES ─── */
+  /* ─── ✏️ UPGRADED PREMIUM ADMIN EDIT TOPIC MODAL STYLES ─── */
   adminEditCard: {
-    width: Math.min(SCREEN_WIDTH * 0.9, 360),
-    borderRadius: 24,
-    padding: 20,
+    width: Math.min(SCREEN_WIDTH * 0.94, 390),
+    borderRadius: 32,
+    padding: 24,
     borderWidth: 1.5,
+    elevation: 25,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 12 },
+    shadowOpacity: 0.5,
+    shadowRadius: 22,
   },
   adminEditTitle: {
-    fontSize: 17,
+    fontSize: 18,
     fontWeight: '900',
-    marginBottom: 14,
+    letterSpacing: -0.2,
   },
   inputFieldLabel: {
     fontSize: 12,
     fontWeight: '700',
-    marginBottom: 4,
-    marginTop: 6,
+    marginBottom: 6,
+    marginTop: 8,
   },
   adminInput: {
-    borderRadius: 14,
+    borderRadius: 16,
     borderWidth: 1.5,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    fontSize: 13.5,
-    marginBottom: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    fontSize: 14,
+    marginBottom: 10,
   },
   durationSelectorRow: {
     flexDirection: 'row',
     gap: 8,
-    marginVertical: 6,
+    marginVertical: 8,
   },
   durationChip: {
     flex: 1,
-    paddingVertical: 8,
-    borderRadius: 10,
+    paddingVertical: 10,
+    borderRadius: 12,
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },
   durationChipText: {
-    fontSize: 12,
-    fontWeight: '700',
+    fontSize: 12.5,
+    fontWeight: '800',
   },
   adminActionRow: {
     flexDirection: 'row',
-    gap: 10,
-    marginTop: 14,
+    gap: 12,
+    marginTop: 18,
   },
   adminCancelBtn: {
     flex: 1,
-    paddingVertical: 11,
-    borderRadius: 12,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
   },
   adminCancelBtnText: {
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: '800',
   },
   adminSaveBtn: {
     flex: 1.2,
     backgroundColor: '#8B5CF6',
-    paddingVertical: 11,
-    borderRadius: 12,
+    paddingVertical: 13,
+    borderRadius: 16,
     alignItems: 'center',
     justifyContent: 'center',
+    elevation: 4,
   },
   adminSaveBtnText: {
     color: '#FFFFFF',
-    fontSize: 13,
+    fontSize: 13.5,
     fontWeight: '900',
+  },
+
+  /* 🌟 CUSTOM PREMIUM POPUP STYLES */
+  customPopupOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(5, 5, 15, 0.85)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
+  customPopupCard: {
+    width: '100%',
+    maxWidth: 340,
+    borderRadius: 28,
+    padding: 24,
+    alignItems: 'center',
+    borderWidth: 1.5,
+    elevation: 30,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.45,
+    shadowRadius: 20,
+  },
+  customPopupIconBox: {
+    width: 60,
+    height: 60,
+    borderRadius: 30,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  customPopupTitle: {
+    fontSize: 20,
+    fontWeight: '900',
+    textAlign: 'center',
+    letterSpacing: -0.3,
+    marginBottom: 8,
+  },
+  customPopupMessage: {
+    fontSize: 13.5,
+    fontWeight: '600',
+    textAlign: 'center',
+    lineHeight: 20,
+    marginBottom: 20,
+  },
+  customPopupBtn: {
+    width: '100%',
+    paddingVertical: 13,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    elevation: 4,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.2,
+    shadowRadius: 4,
+  },
+  customPopupBtnText: {
+    color: '#FFFFFF',
+    fontSize: 15,
+    fontWeight: '900',
+    letterSpacing: 0.3,
   },
 });

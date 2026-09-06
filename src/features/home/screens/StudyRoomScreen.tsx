@@ -196,11 +196,21 @@ const StudyRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   const [chatInputText, setChatInputText] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
   const [isHandRaised, setIsHandRaised] = useState(false);
+  const [remoteHandStates, setRemoteHandStates] = useState<Record<string, boolean>>({});
+
+  // Chat/room event refs prevent duplicate sends and false unread notifications.
+  const chatSendInProgressRef = useRef(false);
+  const showChatModalRef = useRef(false);
+  const initialChatSnapshotRef = useRef(true);
 
   // 🚀 Native Smooth Keyboard Animation Driver (Zero Lag)
   const keyboardShiftAnim = useRef(new Animated.Value(0)).current;
 
   const flatListRef = useRef<FlatList>(null);
+
+  useEffect(() => {
+    showChatModalRef.current = showChatModal;
+  }, [showChatModal]);
   const currentUser = auth().currentUser;
   const currentUserName = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
 
@@ -233,65 +243,169 @@ const StudyRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     };
   }, []);
 
-  // Sync LiveKit Metadata when Connected
+  // Sync LiveKit metadata when connected.
+  // Metadata carries the avatar + hand state so every participant gets the
+  // same persistent state, including people who join after the hand is raised.
   useEffect(() => {
     let isCancelled = false;
+
     const syncMetadata = async () => {
       try {
-        if (!isCancelled && String(connectionState).toLowerCase() === 'connected' && localParticipant && userAvatarUrl) {
-          await localParticipant.setMetadata(JSON.stringify({ 
-            avatarUrl: userAvatarUrl,
-            isHandRaised: isHandRaised,
+        if (
+          !isCancelled &&
+          String(connectionState).toLowerCase() === 'connected' &&
+          localParticipant
+        ) {
+          await localParticipant.setMetadata(JSON.stringify({
+            avatarUrl: userAvatarUrl || DEFAULT_FALLBACK_AVATAR,
+            isHandRaised,
           }));
         }
       } catch (e) {}
     };
 
     syncMetadata();
+
     return () => {
       isCancelled = true;
     };
   }, [connectionState, localParticipant, userAvatarUrl, isHandRaised]);
 
+  // LiveKit metadata changes are emitted to every participant in the room.
+  // Keep a small local map so a remote raised hand immediately re-renders,
+  // instead of relying only on useParticipants() to notice metadata changes.
+  useEffect(() => {
+    if (!room) return;
+
+    const handleParticipantMetadataChanged = (...args: any[]) => {
+      const participant = args[1] || args[0];
+      if (!participant?.identity) return;
+
+      let raised = false;
+      try {
+        const meta = participant.metadata ? JSON.parse(participant.metadata) : null;
+        raised = meta?.isHandRaised === true;
+      } catch (e) {
+        raised = false;
+      }
+
+      setRemoteHandStates((prev) => ({
+        ...prev,
+        [participant.identity]: raised,
+      }));
+    };
+
+    const roomAny = room as any;
+    roomAny.on?.('participantMetadataChanged', handleParticipantMetadataChanged);
+
+    // Seed the current state for participants already in the room.
+    participants.forEach((participant: any) => {
+      if (!participant?.identity) return;
+
+      let raised = false;
+      try {
+        const meta = participant.metadata ? JSON.parse(participant.metadata) : null;
+        raised = meta?.isHandRaised === true;
+      } catch (e) {}
+
+      if (!participant.isLocal) {
+        setRemoteHandStates((prev) => ({
+          ...prev,
+          [participant.identity]: raised,
+        }));
+      }
+    });
+
+    return () => {
+      roomAny.off?.('participantMetadataChanged', handleParticipantMetadataChanged);
+    };
+  }, [room, participants]);
+
   // Firestore Realtime Chat
   useEffect(() => {
     if (!roomId) return;
+
+    initialChatSnapshotRef.current = true;
+
     const unsub = firestore()
       .collection('voice_rooms')
       .doc(roomId)
       .collection('messages')
       .orderBy('createdAt', 'asc')
       .onSnapshot((snap) => {
-        if (snap) {
-          const list: any[] = [];
-          snap.forEach((doc) => {
-            list.push({ id: doc.id, ...doc.data() });
-          });
-          setMessages(list);
-          if (!showChatModal && list.length > 0) {
-            setUnreadCount((c) => c + 1);
+        if (!snap) return;
+
+        // Always rebuild from Firestore and de-duplicate by document ID.
+        // This prevents the same message from ever being rendered twice.
+        const seenIds = new Set<string>();
+        const list: any[] = [];
+
+        snap.forEach((doc) => {
+          if (seenIds.has(doc.id)) return;
+          seenIds.add(doc.id);
+          list.push({ id: doc.id, ...doc.data() });
+        });
+
+        setMessages(list);
+
+        // The first snapshot is existing history, not a new notification.
+        // After that, ONLY a newly added message from another user increments
+        // the badge. Your own message never creates an unread count.
+        if (initialChatSnapshotRef.current) {
+          initialChatSnapshotRef.current = false;
+          return;
+        }
+
+        let incomingNewMessage = false;
+
+        snap.docChanges().forEach((change) => {
+          if (change.type !== 'added') return;
+
+          const data: any = change.doc.data();
+          const senderId = data?.senderId;
+
+          if (
+            senderId &&
+            senderId !== (currentUser?.uid || 'guest') &&
+            !showChatModalRef.current
+          ) {
+            incomingNewMessage = true;
           }
+        });
+
+        if (incomingNewMessage) {
+          setUnreadCount((c) => c + 1);
         }
       });
 
     return () => unsub();
-  }, [roomId, showChatModal]);
+  }, [roomId, currentUser?.uid]);
 
   const handleSendMessage = async (textToSend?: string) => {
     const text = (textToSend || chatInputText).trim();
-    if (!text || !roomId) return;
+    if (!text || !roomId || chatSendInProgressRef.current) return;
+
+    // Prevent double firing from Android keyboard submit + send button /
+    // very fast repeated taps. Firestore remains the single source of truth.
+    chatSendInProgressRef.current = true;
     setChatInputText('');
 
     try {
-      await firestore().collection('voice_rooms').doc(roomId).collection('messages').add({
-        text,
-        senderId: currentUser?.uid || 'guest',
-        senderName: currentUserName,
-        avatarUrl: userAvatarUrl || DEFAULT_FALLBACK_AVATAR,
-        createdAt: firestore.FieldValue.serverTimestamp(),
-      });
+      await firestore()
+        .collection('voice_rooms')
+        .doc(roomId)
+        .collection('messages')
+        .add({
+          text,
+          senderId: currentUser?.uid || 'guest',
+          senderName: currentUserName,
+          avatarUrl: userAvatarUrl || DEFAULT_FALLBACK_AVATAR,
+          createdAt: firestore.FieldValue.serverTimestamp(),
+        });
     } catch (e) {
       console.log('Error sending room message:', e);
+    } finally {
+      chatSendInProgressRef.current = false;
     }
   };
 
@@ -368,7 +482,11 @@ const StudyRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               <StudyParticipantTile 
                 participant={item} 
                 fallbackAvatarUrl={item.isLocal ? userAvatarUrl : DEFAULT_FALLBACK_AVATAR}
-                isHandRaised={item.isLocal ? isHandRaised : false}
+                isHandRaised={
+                  item.isLocal
+                    ? isHandRaised
+                    : Boolean(remoteHandStates[item.identity])
+                }
                 totalCount={participants.length}
               />
             )}
