@@ -1,71 +1,40 @@
 import React, { useState, useEffect } from 'react';
-import { 
-  StyleSheet, 
-  Text, 
-  View, 
-  ScrollView, 
-  TouchableOpacity, 
-  Platform, 
-  StatusBar, 
+import {
+  StyleSheet,
+  Text,
+  View,
+  FlatList,
+  TouchableOpacity,
+  Platform,
+  StatusBar,
   SafeAreaView,
   ActivityIndicator,
-  RefreshControl
+  RefreshControl,
 } from 'react-native';
 import { ChevronLeft, Flame, Mic, Trophy, Heart, BellOff } from 'lucide-react-native';
 
-// FIREBASE & NOTIFEE IMPORTS
-import messaging from '@react-native-firebase/messaging';
-import notifee from '@notifee/react-native';
-
 import { useTheme } from '../../../hooks/useTheme';
+import {
+  AppNotification,
+  getCachedNotifications,
+  subscribeToNotifications,
+  markNotificationRead,
+  markAllNotificationsRead,
+  formatTimeAgo,
+  navigateFromData,
+} from '../../../services/notificationService'; // src/services/notificationService.ts
 
-export interface AppNotification {
-  id: string;
-  type: 'streak' | 'room' | 'badge' | 'like';
-  title: string;
-  desc: string;
-  time: string;
-  unread: boolean;
-  targetRoomId?: string;
-  targetBadgeId?: string;
-}
-
-// 🌐 TRANSLITERATION HELPER FOR NOTIFICATIONS (HINDI MODE)
-const toHindiNotificationText = (text: string = '', lang: string = 'en') => {
-  if (lang !== 'hi' || !text) return text;
-
-  const textMap: Record<string, string> = {
-    'Streak alert': 'स्ट्रिक अलर्ट',
-    "You're on a 12-day streak! Speak today to keep it alive.": 'आप 12 दिनों की स्ट्रिक पर हैं! इसे जारी रखने के लिए आज ही बोलें।',
-    'Room starting soon': 'रूम जल्द ही शुरू हो रहा है',
-    "'IELTS Speaking Part 2' with Priya starts in 15 minutes.": 'प्रिया के साथ "आईईएलटीएस स्पीकिंग पार्ट 2" 15 मिनट में शुरू हो रहा है।',
-    '2h ago': '2 घंटे पहले',
-    '3h ago': '3 घंटे पहले',
-    'Just now': 'अभी-अभी',
-    'New Update': 'नया अपडेट',
-  };
-
-  if (textMap[text.trim()]) {
-    return textMap[text.trim()];
-  }
-
-  let res = text;
-  res = res.replace(/(\d+)h ago/gi, '$1 घंटे पहले');
-  res = res.replace(/(\d+)m ago/gi, '$1 मिनट पहले');
-  res = res.replace(/(\d+)d ago/gi, '$1 दिन पहले');
-  res = res.replace(/Just now/gi, 'अभी-अभी');
-  return res;
-};
+export type { AppNotification };
 
 export default function NotificationScreen({ navigation }: any) {
   const [notifications, setNotifications] = useState<AppNotification[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
   const [refreshing, setRefreshing] = useState<boolean>(false);
+  const [error, setError] = useState<boolean>(false);
+  const [reloadKey, setReloadKey] = useState<number>(0);
 
   const themeHook = useTheme() as any;
   const isDarkMode = themeHook?.isDarkMode || false;
-  const t = themeHook?.t;
-  const currentLang = themeHook?.currentLang || 'en';
 
   const colors = themeHook?.theme?.colors || {
     bgLight: '#F8FAFC',
@@ -76,90 +45,77 @@ export default function NotificationScreen({ navigation }: any) {
     border: '#E2E8F0',
   };
 
-  // Fetch Notifications from Backend API
-  const fetchNotifications = async () => {
-    try {
-      setTimeout(() => {
-        const fetchedData: AppNotification[] = [
-          {
-            id: '1',
-            type: 'streak',
-            title: 'Streak alert',
-            desc: "You're on a 12-day streak! Speak today to keep it alive.",
-            time: '2h ago',
-            unread: true,
-          },
-          {
-            id: '2',
-            type: 'room',
-            title: 'Room starting soon',
-            desc: "'IELTS Speaking Part 2' with Priya starts in 15 minutes.",
-            time: '3h ago',
-            unread: true,
-            targetRoomId: 'room_123'
-          },
-        ];
-        setNotifications(fetchedData);
-        setLoading(false);
-        setRefreshing(false);
-      }, 600);
-    } catch (error) {
-      console.error("Fetch error:", error);
-      setLoading(false);
-      setRefreshing(false);
-    }
-  };
-
+  // ───────── REAL-TIME LISTENER (current user only) ─────────
   useEffect(() => {
-    fetchNotifications();
+    let active = true;
+    let gotLiveData = false;
 
-    // FOREGROUND PUSH LISTENER
-    const unsubscribe = messaging().onMessage(async remoteMessage => {
-      const newNotif: AppNotification = {
-        id: remoteMessage.messageId || String(Date.now()),
-        type: (remoteMessage.data?.type as any) || 'room',
-        title: remoteMessage.notification?.title || 'New Update',
-        desc: remoteMessage.notification?.body || '',
-        time: 'Just now',
-        unread: true,
-        targetRoomId: remoteMessage.data?.targetRoomId as string,
-      };
-
-      setNotifications(prev => [newNotif, ...prev]);
-
-      await notifee.displayNotification({
-        title: remoteMessage.notification?.title,
-        body: remoteMessage.notification?.body,
-        android: {
-          channelId: 'default',
-        },
-      });
+    // Show cached data first for an instant UI, until live data arrives
+    getCachedNotifications().then(cached => {
+      if (active && !gotLiveData && cached.length > 0) {
+        setNotifications(cached);
+        setLoading(false);
+      }
     });
 
-    return unsubscribe;
-  }, []);
+    const unsubscribe = subscribeToNotifications(
+      items => {
+        if (!active) return;
+        gotLiveData = true;
+        setNotifications(items);
+        setError(false);
+        setLoading(false);
+        setRefreshing(false);
+      },
+      e => {
+        console.error('Failed to listen for notifications:', e);
+        if (!active) return;
+        setError(true);
+        setLoading(false);
+        setRefreshing(false);
+      },
+    );
+
+    return () => {
+      active = false;
+      unsubscribe();
+    };
+  }, [reloadKey]);
 
   const onRefresh = () => {
     setRefreshing(true);
-    fetchNotifications();
+    setReloadKey(k => k + 1);
   };
 
-  const handleMarkAllRead = () => {
+  // ───────── ACTIONS ─────────
+  const hasUnread = notifications.some(n => n.unread);
+
+  const handleMarkAllRead = async () => {
+    if (!hasUnread) return;
+    const snapshot = notifications;
     setNotifications(prev => prev.map(item => ({ ...item, unread: false })));
-  };
-
-  const handleNotificationPress = (item: AppNotification) => {
-    setNotifications(prev =>
-      prev.map(n => (n.id === item.id ? { ...n, unread: false } : n))
-    );
-
-    if (item.type === 'room' && item.targetRoomId) {
-      navigation.navigate('VoiceRoomScreen', { roomId: item.targetRoomId });
-    } else if (item.type === 'badge') {
-      navigation.navigate('ProfileScreen', { badgeId: item.targetBadgeId });
+    try {
+      await markAllNotificationsRead();
+    } catch (e) {
+      console.error('Failed to mark all as read:', e);
+      setNotifications(snapshot); // roll back
     }
   };
 
+  const handleNotificationPress = async (item: AppNotification) => {
+    if (item.unread) {
+      setNotifications(prev => prev.map(n => (n.id === item.id ? { ...n, unread: false } : n)));
+      markNotificationRead(item.id).catch(e => console.error('Failed to mark as read:', e));
+    }
+    navigateFromData(navigation, {
+      type: item.type,
+      targetRoomId: item.targetRoomId,
+      targetBadgeId: item.targetBadgeId,
+      targetScreen: item.targetScreen,
+    });
+  };
+
+  // ───────── UI HELPERS ─────────
   const renderIcon = (type: AppNotification['type']) => {
     switch (type) {
       case 'streak':
@@ -175,32 +131,95 @@ export default function NotificationScreen({ navigation }: any) {
     }
   };
 
+  const renderItem = ({ item }: { item: AppNotification }) => {
+    const { icon, bg } = renderIcon(item.type);
+    const timeText = formatTimeAgo(item.createdAt);
+
+    return (
+      <TouchableOpacity
+        style={[
+          styles.notificationCard,
+          {
+            backgroundColor: colors.bgCard,
+            borderColor: item.unread ? colors.primary : colors.border,
+            borderWidth: item.unread ? 1.5 : 1,
+          },
+        ]}
+        onPress={() => handleNotificationPress(item)}
+        activeOpacity={0.8}
+      >
+        <View style={[styles.iconCircle, { backgroundColor: bg }]}>{icon}</View>
+
+        <View style={styles.textDetailsBlock}>
+          <View style={styles.titleMetaRow}>
+            <View style={styles.titleBadgeContainer}>
+              <Text style={[styles.notifTitle, { color: colors.textPrimary }]}>{item.title}</Text>
+              {item.unread && (
+                <View style={[styles.unreadDotBlue, { backgroundColor: colors.primary }]} />
+              )}
+            </View>
+            <Text style={[styles.timeText, { color: colors.textSecondary }]}>{timeText}</Text>
+          </View>
+          <Text style={[styles.descriptionText, { color: colors.textSecondary }]}>{item.desc}</Text>
+        </View>
+      </TouchableOpacity>
+    );
+  };
+
+  const renderEmptyOrError = () => (
+    <View style={styles.centerContainer}>
+      <BellOff size={48} color={colors.textSecondary} />
+      <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
+        {error ? "Couldn't load notifications" : 'No notifications yet'}
+      </Text>
+      <Text style={[styles.emptySubText, { color: colors.textSecondary }]}>
+        {error
+          ? 'Check your internet connection and try again.'
+          : "We'll notify you when rooms start, badges unlock, or updates happen."}
+      </Text>
+      {error && (
+        <TouchableOpacity
+          style={[styles.retryBtn, { backgroundColor: colors.primary }]}
+          onPress={() => {
+            setLoading(true);
+            setError(false);
+            setReloadKey(k => k + 1);
+          }}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.retryText}>Retry</Text>
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+
   return (
     <SafeAreaView style={[styles.safeArea, { backgroundColor: colors.bgLight }]}>
-      <StatusBar 
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'} 
-        backgroundColor={colors.bgLight} 
+      <StatusBar
+        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
+        backgroundColor={colors.bgLight}
       />
-      
+
       <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
         <View style={[styles.headerContainer, { backgroundColor: colors.bgLight }]}>
-          <TouchableOpacity 
-            style={[styles.backButton, { backgroundColor: colors.bgCard, borderColor: colors.border }]} 
+          <TouchableOpacity
+            style={[styles.backButton, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
             onPress={() => navigation.goBack()}
             activeOpacity={0.7}
           >
             <ChevronLeft size={24} color={colors.textPrimary} />
           </TouchableOpacity>
-          
-          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>
-            {currentLang === 'hi' ? 'नोटिफिकेशन' : 'Notifications'}
-          </Text>
-          
-          <TouchableOpacity style={styles.markReadBtn} onPress={handleMarkAllRead} activeOpacity={0.7}>
+
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Notifications</Text>
+
+          <TouchableOpacity
+            style={[styles.markReadBtn, { opacity: hasUnread ? 1 : 0.4 }]}
+            onPress={handleMarkAllRead}
+            disabled={!hasUnread}
+            activeOpacity={0.7}
+          >
             <Text style={[styles.checkIcon, { color: colors.primary }]}>✓ </Text>
-            <Text style={[styles.markReadText, { color: colors.primary }]}>
-              {currentLang === 'hi' ? 'सभी को पढ़ा हुआ मानें' : 'Mark all read'}
-            </Text>
+            <Text style={[styles.markReadText, { color: colors.primary }]}>Mark all read</Text>
           </TouchableOpacity>
         </View>
 
@@ -208,64 +227,21 @@ export default function NotificationScreen({ navigation }: any) {
           <View style={styles.centerContainer}>
             <ActivityIndicator size="large" color={colors.primary} />
           </View>
-        ) : notifications.length === 0 ? (
-          <View style={styles.centerContainer}>
-            <BellOff size={48} color={colors.textSecondary} />
-            <Text style={[styles.emptyText, { color: colors.textPrimary }]}>
-              {currentLang === 'hi' ? 'अभी कोई नोटिफिकेशन नहीं है' : 'No notifications yet'}
-            </Text>
-            <Text style={[styles.emptySubText, { color: colors.textSecondary }]}>
-              {currentLang === 'hi' 
-                ? 'जब रूम शुरू होंगे, बैज अनलॉक होंगे या कोई अपडेट आएगा, तब हम आपको सूचित करेंगे।'
-                : "We'll notify you when rooms start, badges unlock, or updates happen."}
-            </Text>
-          </View>
         ) : (
-          <ScrollView 
-            showsVerticalScrollIndicator={false} 
-            contentContainerStyle={styles.scrollContainer}
+          <FlatList
+            data={notifications}
+            keyExtractor={item => item.id}
+            renderItem={renderItem}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={[
+              styles.scrollContainer,
+              notifications.length === 0 && { flexGrow: 1 },
+            ]}
+            ListEmptyComponent={renderEmptyOrError}
             refreshControl={
               <RefreshControl refreshing={refreshing} onRefresh={onRefresh} colors={[colors.primary]} />
             }
-          >
-            {notifications.map((item) => {
-              const { icon, bg } = renderIcon(item.type);
-              const titleText = toHindiNotificationText(item.title, currentLang);
-              const descText = toHindiNotificationText(item.desc, currentLang);
-              const timeText = toHindiNotificationText(item.time, currentLang);
-
-              return (
-                <TouchableOpacity 
-                  key={item.id} 
-                  style={[
-                    styles.notificationCard, 
-                    { 
-                      backgroundColor: colors.bgCard, 
-                      borderColor: item.unread ? colors.primary : colors.border,
-                      borderWidth: item.unread ? 1.5 : 1
-                    }
-                  ]}
-                  onPress={() => handleNotificationPress(item)}
-                  activeOpacity={0.8}
-                >
-                  <View style={[styles.iconCircle, { backgroundColor: bg }]}>
-                    {icon}
-                  </View>
-                  
-                  <View style={styles.textDetailsBlock}>
-                    <View style={styles.titleMetaRow}>
-                      <View style={styles.titleBadgeContainer}>
-                        <Text style={[styles.notifTitle, { color: colors.textPrimary }]}>{titleText}</Text>
-                        {item.unread && <View style={[styles.unreadDotBlue, { backgroundColor: colors.primary }]} />}
-                      </View>
-                      <Text style={[styles.timeText, { color: colors.textSecondary }]}>{timeText}</Text>
-                    </View>
-                    <Text style={[styles.descriptionText, { color: colors.textSecondary }]}>{descText}</Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            })}
-          </ScrollView>
+          />
         )}
       </View>
     </SafeAreaView>
@@ -280,7 +256,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'space-between',
     paddingHorizontal: 20,
-    paddingTop: Platform.OS === 'ios' ? 12 : (StatusBar.currentHeight ? StatusBar.currentHeight + 10 : 20),
+    paddingTop: Platform.OS === 'ios' ? 12 : StatusBar.currentHeight ? StatusBar.currentHeight + 10 : 20,
     paddingBottom: 16,
   },
   backButton: {
@@ -303,8 +279,10 @@ const styles = StyleSheet.create({
   markReadText: { fontSize: 13, fontWeight: '700' },
   scrollContainer: { paddingHorizontal: 20, paddingTop: 14, paddingBottom: 40 },
   centerContainer: { flex: 1, justifyContent: 'center', alignItems: 'center', paddingHorizontal: 40 },
-  emptyText: { fontSize: 18, fontWeight: '700', marginTop: 16 },
+  emptyText: { fontSize: 18, fontWeight: '700', marginTop: 16, textAlign: 'center' },
   emptySubText: { fontSize: 14, textAlign: 'center', marginTop: 8, lineHeight: 20 },
+  retryBtn: { marginTop: 20, paddingHorizontal: 24, paddingVertical: 10, borderRadius: 20 },
+  retryText: { color: '#FFFFFF', fontWeight: '700', fontSize: 14 },
   notificationCard: {
     flexDirection: 'row',
     borderRadius: 20,
@@ -317,12 +295,24 @@ const styles = StyleSheet.create({
     shadowRadius: 10,
     shadowOffset: { width: 0, height: 3 },
   },
-  iconCircle: { width: 44, height: 44, borderRadius: 22, justifyContent: 'center', alignItems: 'center', marginRight: 14 },
+  iconCircle: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 14,
+  },
   textDetailsBlock: { flex: 1, paddingTop: 2 },
-  titleMetaRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 4 },
+  titleMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 4,
+  },
   titleBadgeContainer: { flexDirection: 'row', alignItems: 'center', flex: 1, paddingRight: 8 },
   notifTitle: { fontSize: 15, fontWeight: '700' },
   unreadDotBlue: { width: 8, height: 8, borderRadius: 4, marginLeft: 6 },
   timeText: { fontSize: 12, fontWeight: '600' },
   descriptionText: { fontSize: 13, lineHeight: 18, fontWeight: '500' },
-});``
+});

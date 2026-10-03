@@ -553,6 +553,12 @@ export default function StudyRoomScreen({ route, navigation }: any) {
 
   useEffect(() => {
     let isMounted = true;
+    // 🔑 Reset connection state as soon as we get new params. Without this,
+    // if this screen instance gets reused for a different room (e.g. Study
+    // Room -> Class Room) before it fully unmounts, the old room's UI stays
+    // visible for a frame because `canConnect` was still `true` from before.
+    setCanConnect(false);
+
     const prepare = async () => {
       try {
         if (!token) {
@@ -563,6 +569,10 @@ export default function StudyRoomScreen({ route, navigation }: any) {
         if (Platform.OS === 'android') {
           await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.RECORD_AUDIO);
         }
+        // Make sure any previous session (from a room we just left) is fully
+        // torn down before starting a new one, otherwise LiveKit can end up
+        // holding on to the old room's native audio/connection state.
+        await AudioSession.stopAudioSession().catch(() => {});
         await AudioSession.startAudioSession();
         if (isMounted) setCanConnect(true);
       } catch (err) {
@@ -574,7 +584,7 @@ export default function StudyRoomScreen({ route, navigation }: any) {
       isMounted = false;
       AudioSession.stopAudioSession().catch(() => {});
     };
-  }, [token]);
+  }, [token, roomId]);
 
   if (!canConnect || !token) {
     return (
@@ -588,6 +598,16 @@ export default function StudyRoomScreen({ route, navigation }: any) {
   return (
     <View style={styles.flexOne}>
       <LiveKitRoom
+        // 🔑 THE ACTUAL FIX: key this on roomId+token so React fully
+        // unmounts the previous LiveKitRoom (and StudyRoomView) and mounts
+        // a brand new one whenever the room changes. Without a key, React
+        // reuses the same LiveKitRoom instance across prop updates, and
+        // @livekit/react-native does NOT automatically reconnect/reset its
+        // internal room + participants state just because `token`/
+        // `serverUrl` props changed. That stale state is exactly what was
+        // showing Study Room's call inside Class Room until you navigated
+        // away and back (which forced a fresh mount).
+        key={`${roomId || 'room'}-${token}`}
         serverUrl={serverUrl}
         token={token}
         connect={canConnect}

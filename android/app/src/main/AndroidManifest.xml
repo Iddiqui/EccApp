@@ -21,6 +21,25 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
 
+    <!--
+      🖥️ SCREEN SHARE FIX — YE MISSING THA!
+      Android 14 (API 34) se screen share ke liye ye permission MANDATORY hai.
+      LiveKit React Native SDK (v2.4.0+) foreground service ko internally
+      handle karta hai, lekin permission app ke manifest me khud declare
+      karni padti hai. Iske bina, screen capture locally start ho jaata hai
+      (isliye aapko apna "sharing" UI dikh raha tha) lekin actual video track
+      publish/encode nahi ho pata — isiliye doosre users ko kuch nahi dikhta.
+    -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
+
+    <!--
+      Android 13 (API 33) se foreground service ka notification dikhane ke
+      liye runtime permission chahiye. Iske bina bhi service kabhi-kabhi
+      fail/crash ho sakti hai kyunki foreground service ko notification
+      dikhana mandatory hai.
+    -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+
     <!-- Hardware Features -->
     <uses-feature android:name="android.hardware.camera" android:required="false" />
     <uses-feature android:name="android.hardware.camera.autofocus" android:required="false" />

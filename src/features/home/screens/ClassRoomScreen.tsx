@@ -21,6 +21,10 @@ import {
   Keyboard,
   TouchableWithoutFeedback,
   ScrollView,
+  useWindowDimensions,
+  KeyboardAvoidingView,
+  Linking,
+  PanResponder,
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
@@ -36,6 +40,8 @@ import {
   VideoTrack,
 } from '@livekit/react-native';
 import { Track, RoomEvent } from 'livekit-client';
+import { useCallSession } from './CallSessionProvider';
+import { checkClassRoomAccess } from '../../payments/paymentService';
 import {
   Mic,
   MicOff,
@@ -53,9 +59,52 @@ import {
   Check,
   Sparkles,
   UserCheck,
+  Monitor,
+  ChevronDown,
+  Paperclip,
+  FileText,
+  Image as ImageIconLucide,
+  Video as VideoFileIconLucide,
+  Mic2,
+  Play,
+  Pause,
+  Download,
 } from 'lucide-react-native';
 
 registerGlobals();
+
+// ─── OPTIONAL NATIVE MODULES (Attachments / Voice notes) ───
+// In kaafi native modules ko hum yaha "soft" require kar rahe hain, taaki agar
+// project me abhi install nahi hain to app crash na ho — sirf attachment ka
+// button tab tak disabled/alert dikhayega jab tak in packages ko install na
+// kiya jaaye:
+//   npm install react-native-image-picker react-native-document-picker react-native-audio-recorder-player
+// (Android/iOS dono ke liye pod install / permissions add karna hoga.)
+let ImagePickerLib: any = null;
+let DocumentPickerLib: any = null;
+let AudioRecorderPlayerLib: any = null;
+try {
+  ImagePickerLib = require('react-native-image-picker');
+} catch (e) {
+  ImagePickerLib = null;
+}
+try {
+  // Old `react-native-document-picker` uses deprecated RN-internal APIs
+  // (GuardedResultAsyncTask) that were removed in newer React Native
+  // versions and break the Android build. The community-maintained fork
+  // below is compatible with current RN/Gradle/AGP versions.
+  //   npm uninstall react-native-document-picker
+  //   npm install @react-native-documents/picker
+  DocumentPickerLib = require('@react-native-documents/picker');
+} catch (e) {
+  DocumentPickerLib = null;
+}
+try {
+  const RNAudioModule = require('react-native-audio-recorder-player');
+  AudioRecorderPlayerLib = RNAudioModule.default || RNAudioModule;
+} catch (e) {
+  AudioRecorderPlayerLib = null;
+}
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const STATUSBAR_SAFE_HEIGHT =
@@ -80,6 +129,14 @@ export const IN_ROOM_AVATARS = [
 const DEFAULT_FALLBACK_AVATAR = IN_ROOM_AVATARS[0].url;
 const QUICK_EMOJI_LIST = ['👏', '👍', '❤️', '🔥', '😂', '😮'];
 
+interface ChatAttachment {
+  type: 'image' | 'video' | 'file' | 'audio';
+  url: string;
+  name?: string;
+  mimeType?: string;
+  durationMs?: number;
+}
+
 interface ChatMessage {
   id: string;
   sender: string;
@@ -88,6 +145,7 @@ interface ChatMessage {
   isLocal: boolean;
   createdAt?: any;
   time?: string;
+  attachment?: ChatAttachment;
 }
 
 interface QueueUser {
@@ -178,6 +236,8 @@ const ClassTrackTile = ({
   reactions,
   totalCount,
   liveLocalAvatar,
+  columns,
+  compact,
 }: {
   participant: any;
   trackReference?: any;
@@ -185,7 +245,10 @@ const ClassTrackTile = ({
   reactions: Record<string, string>;
   totalCount: number;
   liveLocalAvatar?: string;
+  columns?: number;
+  compact?: boolean;
 }) => {
+  const { width: tileWinWidth } = useWindowDimensions();
   const isLocal = Boolean(participant?.isLocal);
   const identity = participant?.identity || 'User';
 
@@ -247,11 +310,20 @@ const ClassTrackTile = ({
     }
   }, [activeReaction]);
 
+  const cols = columns || (totalCount <= 1 ? 1 : tileWinWidth >= 768 ? 3 : 2);
+  const gutter = 12 * cols;
+  const dynamicTileSize = compact
+    ? { width: 96, height: 128 }
+    : totalCount <= 1
+    ? { width: Math.min(tileWinWidth * 0.45, 220), maxWidth: Math.min(tileWinWidth * 0.45, 220) }
+    : { flex: 1 / cols, maxWidth: (tileWinWidth - gutter) / cols };
+
   return (
     <View
       style={[
         styles.participantTile,
-        totalCount <= 1 && styles.singleParticipantTile,
+        dynamicTileSize,
+        compact && styles.compactParticipantTile,
         isSpeaking && styles.speakingBorderGlow,
         isHandRaised && styles.handRaisedBorderGlow,
       ]}
@@ -261,6 +333,7 @@ const ClassTrackTile = ({
           trackRef={trackReference}
           style={styles.videoStream}
           mirror={isLocal && trackReference.source === Track.Source.Camera}
+          zOrder={0}
         />
       ) : (
         <View style={styles.avatarPlaceholderContainer}>
@@ -311,9 +384,105 @@ const ClassTrackTile = ({
   );
 };
 
+// Separate player instance (independent of the recorder used to CREATE
+// voice notes) so a voice-note can be played back while another one is
+// mid-recording without the two instances stepping on each other.
+const sharedAudioPlayer: any = AudioRecorderPlayerLib
+  ? new AudioRecorderPlayerLib()
+  : null;
+
+// ─── CHAT ATTACHMENT RENDERER (image / video / file / voice-note) ───
+const ChatAttachmentBubble = ({ attachment }: { attachment: ChatAttachment }) => {
+  const [isPlaying, setIsPlaying] = useState(false);
+
+  const openAttachment = () => {
+    if (attachment.url) {
+      Linking.openURL(attachment.url).catch(() => {});
+    }
+  };
+
+  const toggleAudioPlayback = async () => {
+    if (!sharedAudioPlayer) {
+      Alert.alert(
+        'Setup Required',
+        'Voice notes play karne ke liye pehle install karein:\nnpm install react-native-audio-recorder-player'
+      );
+      return;
+    }
+    try {
+      if (isPlaying) {
+        await sharedAudioPlayer.stopPlayer();
+        setIsPlaying(false);
+      } else {
+        await sharedAudioPlayer.startPlayer(attachment.url);
+        setIsPlaying(true);
+        sharedAudioPlayer.addPlayBackListener((e: any) => {
+          if (e.currentPosition >= e.duration) {
+            sharedAudioPlayer.stopPlayer();
+            setIsPlaying(false);
+          }
+        });
+      }
+    } catch (e) {
+      console.log('Audio playback error:', e);
+      setIsPlaying(false);
+    }
+  };
+
+  if (attachment.type === 'image') {
+    return (
+      <TouchableOpacity onPress={openAttachment} activeOpacity={0.85}>
+        <Image source={{ uri: attachment.url }} style={styles.attachmentImagePreview} resizeMode="cover" />
+      </TouchableOpacity>
+    );
+  }
+
+  if (attachment.type === 'video') {
+    return (
+      <TouchableOpacity style={styles.attachmentVideoPreview} onPress={openAttachment} activeOpacity={0.85}>
+        <Play color="#FFF" size={26} />
+        <Text style={styles.attachmentFileLabel} numberOfLines={1}>
+          {attachment.name || 'Video'}
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+
+  if (attachment.type === 'audio') {
+    return (
+      <TouchableOpacity style={styles.attachmentAudioRow} onPress={toggleAudioPlayback} activeOpacity={0.8}>
+        <View style={styles.attachmentAudioPlayBtn}>
+          {isPlaying ? <Pause color="#FFF" size={14} /> : <Play color="#FFF" size={14} />}
+        </View>
+        <Text style={styles.attachmentFileLabel}>
+          Voice note{attachment.durationMs ? ` · ${Math.round(attachment.durationMs / 1000)}s` : ''}
+        </Text>
+      </TouchableOpacity>
+    );
+  }
+
+  // Generic file / PDF
+  return (
+    <TouchableOpacity style={styles.attachmentFileRow} onPress={openAttachment} activeOpacity={0.85}>
+      <FileText color="#38BDF8" size={20} />
+      <Text style={styles.attachmentFileLabel} numberOfLines={1}>
+        {attachment.name || 'Document'}
+      </Text>
+      <Download color="#94A3B8" size={16} />
+    </TouchableOpacity>
+  );
+};
+
 // ─── MAIN VIEW ───
-const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: any) => {
+export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId, userAvatarUrl }: any) => {
   const room = useRoomContext();
+  // 📱 Responsive dims — useWindowDimensions re-renders on rotation / split
+  // screen / tablet multi-window resize, unlike the static Dimensions.get()
+  // value computed once at module load.
+  const { width: winWidth, height: winHeight } = useWindowDimensions();
+  const isTablet = winWidth >= 768;
+  const chatCardWidth = isTablet ? Math.min(winWidth * 0.5, 520) : winWidth;
+  const chatCardHeight = isTablet ? Math.min(winHeight * 0.75, 640) : winHeight * 0.72;
   const connectionState = useConnectionState();
   const {
     isMicrophoneEnabled,
@@ -347,6 +516,10 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   const [isQueueVisible, setIsQueueVisible] = useState(false);
 
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  // 🎯 FIX: naya message aane par list auto-scroll ho ke neeche (latest tak)
+  // aaye — pehle isce koi ref nahi thi, isliye naya message list ke bottom
+  // me chala jaata tha bina visible hue jab tak user khud scroll na kare.
+  const chatListRef = useRef<FlatList<any>>(null);
   const [messageInput, setMessageInput] = useState('');
   const [queueList, setQueueList] = useState<QueueUser[]>([]);
 
@@ -357,23 +530,118 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     { id: string; emoji: string; startX: number }[]
   >([]);
 
+  const [isAttachSheetVisible, setIsAttachSheetVisible] = useState(false);
+  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
+  const [recordSeconds, setRecordSeconds] = useState(0);
+  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioRecorderRef = useRef<any>(
+    AudioRecorderPlayerLib ? new AudioRecorderPlayerLib() : null
+  );
+
   const [incomingRequest, setIncomingRequest] = useState<PermissionRequest | null>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(30);
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const keyboardShiftAnim = useRef(new Animated.Value(0)).current;
   const emojiWaveAnims = useRef(QUICK_EMOJI_LIST.map(() => new Animated.Value(0))).current;
 
-  // Track Subscriptions: Ensure both camera & screenshare tracks are tracked
-  const tracks = useTracks([Track.Source.Camera, Track.Source.ScreenShare], {
-    onlySubscribed: false,
-  });
-
-  // Find active screen share track
-  const activeScreenShare = tracks.find(
-    (t) => t.source === Track.Source.ScreenShare && t.publication?.track && !t.publication?.isMuted
+  // Track Subscriptions
+  const tracks = useTracks(
+    [
+      { source: Track.Source.Camera, withPlaceholder: false },
+      { source: Track.Source.ScreenShare, withPlaceholder: false },
+    ],
+    {
+      onlySubscribed: false,
+    }
   );
+
+  // REMOTE SCREEN SHARE TRACK SELECTOR (FIXED & STABLE)
+  // NOTE: pehle sirf `isMuted` check ho raha tha, isliye agar track abhi
+  // subscribe nahi hua ya publication.track hi nahi aaya, to bhi ye truthy
+  // maan liya jaata tha aur VideoTrack ko invalid reference milta tha.
+  // Ab hum explicitly check karte hain ki track subscribed hai aur uska
+  // actual `track` object bhi maujood hai, tabhi use render karenge.
+  const remoteScreenShareTrack = useMemo(() => {
+    return tracks.find(
+      (t) =>
+        t.source === Track.Source.ScreenShare &&
+        !t.participant.isLocal &&
+        t.publication &&
+        t.publication.isSubscribed !== false &&
+        !!t.publication.track &&
+        !t.publication.isMuted
+    );
+  }, [tracks]);
+
+  // LOCAL SCREEN SHARE TRACK REFERENCE (for local preview + keeping the
+  // capture pipeline actively bound to a renderer)
+  const localScreenShareTrackRef = useMemo(() => {
+    return tracks.find(
+      (t) => t.source === Track.Source.ScreenShare && t.participant.isLocal
+    );
+  }, [tracks]);
+
+  const isLocalSharing = isScreenShareEnabled;
+
+  // 🔍 DEBUG LISTENERS — Screen share publish/subscribe lifecycle
+  // Ye sirf console.log karte hain, taaki aap Metro/adb logcat me dekh sakein
+  // ki track actually PUBLISH ho raha hai ya nahi, aur REMOTE side par
+  // SUBSCRIBE ho raha hai ya nahi. Agar "Track published" to dikhe lekin
+  // remote device pe "Track subscribed" kabhi na aaye, to issue backend
+  // token permissions (canPublishSources) ya server routing me hai, is
+  // .tsx file me nahi.
+  useEffect(() => {
+    if (!room) return;
+
+    const onPublished = (publication: any, participant: any) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        console.log(
+          '[ScreenShare] Track PUBLISHED by',
+          participant?.identity,
+          publication?.trackSid
+        );
+      }
+    };
+    const onUnpublished = (publication: any, participant: any) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        console.log(
+          '[ScreenShare] Track UNPUBLISHED by',
+          participant?.identity
+        );
+      }
+    };
+    const onSubscribed = (track: any, publication: any, participant: any) => {
+      if (publication?.source === Track.Source.ScreenShare) {
+        console.log(
+          '[ScreenShare] Track SUBSCRIBED from',
+          participant?.identity
+        );
+      }
+    };
+    const onSubscriptionFailed = (trackSid: string, participant: any) => {
+      console.log(
+        '[ScreenShare] Subscription FAILED for',
+        trackSid,
+        'from',
+        participant?.identity
+      );
+    };
+
+    room.on(RoomEvent.TrackPublished, onPublished);
+    room.on(RoomEvent.LocalTrackPublished, onPublished);
+    room.on(RoomEvent.TrackUnpublished, onUnpublished);
+    room.on(RoomEvent.TrackSubscribed, onSubscribed);
+    room.on(RoomEvent.TrackSubscriptionFailed, onSubscriptionFailed);
+
+    return () => {
+      room.off(RoomEvent.TrackPublished, onPublished);
+      room.off(RoomEvent.LocalTrackPublished, onPublished);
+      room.off(RoomEvent.TrackUnpublished, onUnpublished);
+      room.off(RoomEvent.TrackSubscribed, onSubscribed);
+      room.off(RoomEvent.TrackSubscriptionFailed, onSubscriptionFailed);
+    };
+  }, [room]);
 
   const myIdentity =
     localParticipant?.identity ||
@@ -419,6 +687,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
                 isLocal: false,
                 time: data.time || '',
                 createdAt: data.createdAt,
+                attachment: data.attachment || undefined,
               });
             });
             setChatMessages((prev) => {
@@ -434,37 +703,12 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     return () => unsubscribe();
   }, [roomId]);
 
-  // Keyboard Animation
-  useEffect(() => {
-    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
-    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+  // Keyboard shifting is now handled declaratively by KeyboardAvoidingView
+  // around the chat modal, so the old manual Animated shift effect (jo
+  // pehle card ko keyboard khulte hi upar/off-screen dhakel deta tha) hata
+  // diya gaya hai.
 
-    const showSub = Keyboard.addListener(showEvent, (e) => {
-      const shiftDistance = -(e.endCoordinates.height - 70);
-      Animated.timing(keyboardShiftAnim, {
-        toValue: shiftDistance,
-        duration: Platform.OS === 'ios' ? e.duration || 250 : 200,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-    });
-
-    const hideSub = Keyboard.addListener(hideEvent, (e) => {
-      Animated.timing(keyboardShiftAnim, {
-        toValue: 0,
-        duration: Platform.OS === 'ios' ? e.duration || 250 : 200,
-        easing: Easing.out(Easing.cubic),
-        useNativeDriver: true,
-      }).start();
-    });
-
-    return () => {
-      showSub.remove();
-      hideSub.remove();
-    };
-  }, []);
-
-  // Sync Avatar
+  // Sync Avatar Metadata
   useEffect(() => {
     let isCancelled = false;
     const syncMetadata = async () => {
@@ -510,7 +754,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     }, 2800);
   };
 
-  // 📡 Universal Data Decoder (Handles Web Client, Mobile App, & Standard LiveKit Packets)
+  // 📡 LiveKit Data Packet Listener
   useEffect(() => {
     if (!room) return;
 
@@ -528,27 +772,19 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
 
         const packetType = String(data.type || '').toUpperCase();
 
-        // 1. CHAT MESSAGE
-        if (packetType === 'CHAT' || data.message) {
-          const incomingText = data.text || data.message;
-          const formattedTime = new Date().toLocaleTimeString([], {
-            hour: '2-digit',
-            minute: '2-digit',
-          });
-          setChatMessages((prev) => [
-            ...prev,
-            {
-              id: Math.random().toString(),
-              sender: senderIdentity,
-              senderId: participant?.sid || senderIdentity,
-              text: incomingText,
-              isLocal: false,
-              time: formattedTime,
-            },
-          ]);
-        }
-        // 2. HAND RAISE (Universal match for RAISE_HAND, raise_hand, hand_raise, handRaised)
-        else if (
+        // 🎯 FIX: DUPLICATE MESSAGES
+        // Pehle CHAT type packets yahan bhi setChatMessages() se seedhe add
+        // ho jaate the (random id ke sath), AUR wahi message thodi der baad
+        // Firestore ke onSnapshot listener se bhi add ho jaata tha (doc.id
+        // ke sath) — ye dono IDs kabhi match nahi karte the, isliye dedupe
+        // logic dono ko alag-alag maan kar rakh leta tha → har message
+        // remote participants ko DO BAAR dikhta tha.
+        //
+        // Firestore listener akela hi kaafi hai (sabko, sender included,
+        // real-time deliver karta hai), isliye CHAT ke liye ye data-packet
+        // path yahan se hata diya gaya hai. RAISE_HAND / REACTION jaise
+        // baaki data packets bilkul pehle jaise hi chalte rahenge.
+        if (
           packetType === 'RAISE_HAND' ||
           packetType === 'HAND_RAISE' ||
           data.handRaised !== undefined ||
@@ -560,7 +796,6 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
             [senderIdentity]: isRaised,
           }));
         }
-        // 3. EMOJI REACTION (Universal match for REACTION, reaction, or direct emoji string)
         else if (packetType === 'REACTION' || data.emoji) {
           const incomingEmoji = data.emoji || '👍';
           setReactions((prev) => ({
@@ -577,7 +812,6 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
             });
           }, 3800);
         }
-        // 4. QUEUE
         else if (packetType === 'QUEUE_JOIN') {
           setQueueList((prev) => {
             if (prev.some((item) => item.id === senderIdentity)) return prev;
@@ -590,7 +824,6 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
         } else if (packetType === 'QUEUE_LEAVE') {
           setQueueList((prev) => prev.filter((item) => item.id !== senderIdentity));
         }
-        // 5. PERMISSION REQUEST (ADMIN APPROVAL)
         else if (packetType === 'REQUEST_MEDIA_PERMISSION') {
           if (isHost) {
             setIncomingRequest({
@@ -720,13 +953,19 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     setIncomingRequest(null);
   };
 
+  // SAFE SCREEN SHARE TOGGLE
   const toggleScreenShare = async () => {
-    if (localParticipant && String(connectionState).toLowerCase() === 'connected') {
-      try {
-        await localParticipant.setScreenShareEnabled(!isScreenShareEnabled);
-      } catch (err) {
-        console.error('Screen share error:', err);
-      }
+    if (!localParticipant || String(connectionState).toLowerCase() !== 'connected') {
+      Alert.alert('Please wait', 'Connecting to room engine...');
+      return;
+    }
+
+    try {
+      const targetState = !isScreenShareEnabled;
+      await localParticipant.setScreenShareEnabled(targetState);
+    } catch (err: any) {
+      console.error('Screen share error:', err);
+      Alert.alert('Screen Share Error', err?.message || 'Could not toggle screen share.');
     }
   };
 
@@ -749,9 +988,10 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
     }
   };
 
-  const handleSendMessage = async () => {
-    if (!messageInput.trim() || !roomId) return;
+  const handleSendMessage = async (attachment?: ChatAttachment) => {
     const text = messageInput.trim();
+    if (!text && !attachment) return;
+    if (!roomId) return;
     setMessageInput('');
 
     const formattedTime = new Date().toLocaleTimeString([], {
@@ -759,11 +999,12 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
       minute: '2-digit',
     });
 
-    sendDataPacket({
-      type: 'CHAT',
-      text,
-      time: formattedTime,
-    });
+    // NOTE: pehle yahan sendDataPacket({ type: 'CHAT', ... }) bhi call hota
+    // tha, jo Firestore write ke sath MILKAR har message ko remote
+    // participants ko DO BAAR deliver karta tha (duplicate bug — fix upar
+    // handleDataReceived me bhi dekho). Firestore ka onSnapshot listener
+    // akela hi sabko real-time me message deliver kar deta hai, isliye ye
+    // data-packet call yahan se hata diya gaya hai.
 
     try {
       await firestore()
@@ -775,11 +1016,173 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           senderId: currentUser?.uid || localParticipant?.identity || myIdentity,
           text,
           time: formattedTime,
+          attachment: attachment || null,
           createdAt: firestore.FieldValue.serverTimestamp(),
         });
     } catch (e) {
       console.log('Error saving message to Firestore:', e);
     }
+  };
+
+  // ─── 📎 ATTACHMENTS: Image / Video / File(PDF) ───
+  // NOTE: Ye functions sirf DEVICE se file uthate hain (local uri). Real app
+  // me tumhe is uri ko apne server/Firebase Storage pe upload karke wahan se
+  // mila hua public `downloadUrl` yaha `url` field me daalna hoga, taaki
+  // doosre participants bhi wo file dekh/download kar sakein — abhi ke liye
+  // hum local uri hi attach kar rahe hain taaki UI turant kaam kare.
+  const ensureImagePickerAvailable = () => {
+    if (!ImagePickerLib) {
+      Alert.alert(
+        'Setup Required',
+        'Install first for attachments.:\nnpm install react-native-image-picker'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const ensureDocumentPickerAvailable = () => {
+    if (!DocumentPickerLib) {
+      Alert.alert(
+        'Setup Required',
+        'Install first to attach a file/PDF.:\nnpm install react-native-document-picker'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const handlePickImage = async () => {
+    setIsAttachSheetVisible(false);
+    if (!ensureImagePickerAvailable()) return;
+    try {
+      const result = await ImagePickerLib.launchImageLibrary({
+        mediaType: 'photo',
+        quality: 0.8,
+      });
+      if (result.didCancel || !result.assets?.length) return;
+      const asset = result.assets[0];
+      await handleSendMessage({
+        type: 'image',
+        url: asset.uri,
+        name: asset.fileName || 'photo.jpg',
+        mimeType: asset.type,
+      });
+    } catch (e) {
+      console.log('Image pick error:', e);
+    }
+  };
+
+  const handlePickVideo = async () => {
+    setIsAttachSheetVisible(false);
+    if (!ensureImagePickerAvailable()) return;
+    try {
+      const result = await ImagePickerLib.launchImageLibrary({
+        mediaType: 'video',
+        quality: 0.8,
+      });
+      if (result.didCancel || !result.assets?.length) return;
+      const asset = result.assets[0];
+      await handleSendMessage({
+        type: 'video',
+        url: asset.uri,
+        name: asset.fileName || 'video.mp4',
+        mimeType: asset.type,
+      });
+    } catch (e) {
+      console.log('Video pick error:', e);
+    }
+  };
+
+  const handlePickDocument = async () => {
+    setIsAttachSheetVisible(false);
+    if (!ensureDocumentPickerAvailable()) return;
+    try {
+      // @react-native-documents/picker's `pick()` returns an ARRAY of
+      // results (even for a single-file pick), unlike the old package's
+      // `pickSingle()` which returned one object directly.
+      const results = await DocumentPickerLib.pick({
+        type: [DocumentPickerLib.types.pdf, DocumentPickerLib.types.allFiles],
+      });
+      const result = results?.[0];
+      if (!result) return;
+      await handleSendMessage({
+        type: 'file',
+        url: result.uri,
+        name: result.name || 'document.pdf',
+        mimeType: result.type,
+      });
+    } catch (e: any) {
+      const isCancelled =
+        DocumentPickerLib?.isErrorWithCode &&
+        DocumentPickerLib.isErrorWithCode(e) &&
+        e.code === DocumentPickerLib.errorCodes?.OPERATION_CANCELED;
+      if (isCancelled) return;
+      console.log('Document pick error:', e);
+    }
+  };
+
+  // ─── 🎙️ VOICE / AUDIO MESSAGE ───
+  const ensureAudioRecorderAvailable = () => {
+    if (!AudioRecorderPlayerLib || !audioRecorderRef.current) {
+      Alert.alert(
+        'Setup Required',
+        'Audio message bhejne ke liye pehle install karein:\nnpm install react-native-audio-recorder-player'
+      );
+      return false;
+    }
+    return true;
+  };
+
+  const startAudioRecording = async () => {
+    if (!ensureAudioRecorderAvailable()) return;
+    try {
+      if (Platform.OS === 'android') {
+        await PermissionsAndroid.request(
+          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
+        );
+      }
+      await audioRecorderRef.current.startRecorder();
+      setIsRecordingAudio(true);
+      setRecordSeconds(0);
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      recordTimerRef.current = setInterval(() => {
+        setRecordSeconds((prev) => prev + 1);
+      }, 1000);
+    } catch (e) {
+      console.log('Start recording error:', e);
+    }
+  };
+
+  const stopAudioRecordingAndSend = async () => {
+    if (!audioRecorderRef.current) return;
+    try {
+      const filePath = await audioRecorderRef.current.stopRecorder();
+      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+      const durationMs = recordSeconds * 1000;
+      setIsRecordingAudio(false);
+      setRecordSeconds(0);
+      await handleSendMessage({
+        type: 'audio',
+        url: filePath,
+        name: 'voice-note.m4a',
+        durationMs,
+      });
+    } catch (e) {
+      console.log('Stop recording error:', e);
+      setIsRecordingAudio(false);
+    }
+  };
+
+  const cancelAudioRecording = async () => {
+    try {
+      if (audioRecorderRef.current) {
+        await audioRecorderRef.current.stopRecorder();
+      }
+    } catch (e) {}
+    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
+    setIsRecordingAudio(false);
+    setRecordSeconds(0);
   };
 
   const toggleHandRaise = async () => {
@@ -814,10 +1217,74 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   const handleLeaveCall = async () => {
     try {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (isHost && roomId) {
-        await firestore().collection('voice_rooms').doc(roomId).delete();
+
+      // 🔒 HOST-ONLY ROOM END — pehle sirf client se aaye `isHost` boolean
+      // pe bharosa karke room delete kar dete the. Problem: agar kisi
+      // wajah se `isHost: true` galat pass ho jaaye (ya koi aur admin
+      // baad me isi room me join kare), to unka "leave" button poore
+      // room ko sabke liye end kar deta — jo NAHI hona chahiye.
+      //
+      // Ab delete karne se PEHLE Firestore se room ka FRESH doc padhte
+      // hain aur uska `createdBy` current logged-in user ke uid se
+      // match karte hain. Sirf ASLI creator (jisne room banaya tha)
+      // ka delete chalega — koi bhi baad me join karne wala admin/user
+      // sirf khud room LEAVE karega, baaki sabka call chalta rahega.
+      if (roomId) {
+        try {
+          const roomSnap = await firestore().collection('voice_rooms').doc(roomId).get();
+          const roomData = roomSnap.data();
+          const currentUid = auth().currentUser?.uid;
+          const isActualCreator = !!roomData && !!currentUid && roomData.createdBy === currentUid;
+
+          if (isActualCreator) {
+            await firestore().collection('voice_rooms').doc(roomId).delete();
+          }
+        } catch (verifyErr) {
+          console.log('Room-owner verify failed, skipping delete (leave-only):', verifyErr);
+        }
       }
-      if (room) await room.disconnect();
+
+      // 🖤 WHITE-SCREEN-ON-LEAVE FIX: pehle yahan `room.disconnect()`
+      // MANUALLY call hota tha, aur uske turant baad `safeExit()` (jo
+      // `activeCall` ko null karke `<LiveKitRoom connect={canConnect}>`
+      // ko unmount karta hai) bhi apni taraf se disconnect trigger karta
+      // hai — matlab DO baar disconnect ek hi room pe, ek dusre ke bahut
+      // paas. Iss race condition me native media pipeline (Android pe
+      // camera/audio surface) kabhi-kabhi ek inconsistent state me phas
+      // jaata hai — JS me koi error nahi dikhta, bas screen white reh
+      // jaati hai, aur sirf pura Metro reload native module ko dobara
+      // init karke fix karta hai.
+      //
+      // Fix: pehle camera/mic tracks ko explicitly OFF karte hain (isse
+      // native camera surface turant release ho jaata hai, safely), aur
+      // manual `room.disconnect()` HATA diya — teardown ab sirf ek hi
+      // jagah se hota hai: `safeExit()` ke through jab `canConnect` false
+      // hota hai aur `<LiveKitRoom>` khud cleanly unmount/disconnect
+      // karta hai.
+      try {
+        if (localParticipant) {
+          await localParticipant.setCameraEnabled(false).catch(() => {});
+          await localParticipant.setMicrophoneEnabled(false).catch(() => {});
+
+          // ⏱️ TIMING FIX: `setCameraEnabled(false)` ka promise resolve
+          // hote hi native camera SurfaceView TURANT release nahi hota —
+          // Android pe actual surface teardown 1-2 frame BAAD hota hai.
+          // Agar hum turant `safeExit()` (unmount) kar dein, wo residual
+          // frame kabhi-kabhi screen pe white overlay ki tarah reh jaata
+          // hai. Isi wajah se ye bug sirf HOST me dikh raha tha — sirf
+          // host hi bina kisi restriction ke seedha camera/mic ON kar
+          // sakta hai (participants ke liye permission-request flow hai,
+          // jo test me aksar grant nahi hota), isliye HOST ka camera
+          // aksar actually chalu hota tha aur uska hi leftover surface
+          // bachta tha.
+          //
+          // Chhota sa delay dekar native side ko surface properly
+          // release karne ka time dete hain.
+          await new Promise(resolve => setTimeout(resolve, 400));
+        }
+      } catch (mediaErr) {
+        console.log('Error disabling camera/mic before leave:', mediaErr);
+      }
     } catch (e) {
       console.log('Error leaving class:', e);
     } finally {
@@ -826,18 +1293,85 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   };
 
   const isMyHandRaised = !!handRaisedUsers[myIdentity];
+  const isSharingActive = !!remoteScreenShareTrack || isLocalSharing;
+
+  // ─── ⬅️ MINIMIZE (do NOT disconnect) ───
+  // Ye call ko band nahi karta — sirf is screen ko background me bhej ke
+  // navigation stack ki pichli screen pe le jaata hai, taaki user app ke
+  // andar kahin aur (ya device ka koi aur app, share-sheet/gallery kholkar)
+  // ja sake aur wapas aa sake.
+  //
+  // ⚠️ IMPORTANT: React Navigation me `goBack()` is component (ClassRoomView
+  // → LiveKitRoom) ko UNMOUNT kar deta hai, jisse room actually disconnect ho
+  // jaayega — bilkul "safeExit/handleLeaveCall" jaisa hi, sirf firestore room
+  // delete nahi hota. Taaki call SACHME background me chalta rahe jab user
+  // dusri screen/app par ho, LiveKitRoom instance ko is screen ke bahar,
+  // ek top-level "CallProvider" (App.tsx ke navigator ke upar) me rakhna
+  // hoga, aur ye screen sirf us provider ke UI ko render kare. Wo restructure
+  // is file ke bahar hai — bata dena to wo Provider bhi bana deta hoon.
+  const handleMinimize = async () => {
+    // 🖤 MINIMIZE WHITE-SCREEN FIX: minimize karte waqt `ClassRoomView`
+    // (jisme camera tile hota hai) unmount ho jaata hai, lekin
+    // `LiveKitRoom` khud MOUNTED rehta hai (isliye ye camera SurfaceView
+    // ko band NAHI karta apne aap). Android pe camera preview ek native
+    // SurfaceView hai jo normal RN Views ke UPAR ek alag hardware layer
+    // me render hota hai — parent View transparent ho tab bhi ye leftover
+    // surface poori screen pe SOLID WHITE overlay ki tarah dikh jaata hai.
+    //
+    // Fix: minimize se PEHLE camera ko explicitly OFF kar dete hain (mic
+    // ON rehne dete hain taaki audio call chalti rahe) — isse wo native
+    // camera surface hi nahi banta jo white overlay ka source tha. Jab
+    // user wapas expand karega, wo chahe to camera phir se manually ON
+    // kar sakta hai (jaisa class/study room me normally hota hai).
+    try {
+      if (localParticipant) {
+        await localParticipant.setCameraEnabled(false).catch(() => {});
+
+        // ⏱️ TIMING FIX: camera disable ka promise resolve hote hi
+        // native SurfaceView turant release nahi hota (1-2 frame lagte
+        // hain Android pe). Turant minimize kar dene se wo residual
+        // frame white overlay ki tarah reh jaata tha — khaaskar HOST
+        // ke liye, jiska camera bina kisi restriction ke seedha ON ho
+        // sakta hai. Thoda delay dekar surface ko properly release hone
+        // ka time dete hain.
+        await new Promise(resolve => setTimeout(resolve, 400));
+      }
+    } catch (e) {
+      console.log('Error disabling camera on minimize:', e);
+    }
+
+    if (typeof onMinimize === 'function') {
+      onMinimize();
+    } else {
+      safeExit();
+    }
+  };
 
   return (
     <ImageBackground
-     source={require('../../../assets/room.png')}
+      // 🎨 New Class Room theme: dark navy with a subtle repeating
+      // school-doodle pattern (apple, pencil, ruler, calendar, book, cap),
+      // matching the target design. `resizeMode="repeat"` tiles the small
+      // pattern image edge-to-edge instead of stretching one big photo.
+      source={require('../../../assets/classroom-bg.png')}
       style={styles.backgroundImage}
-      resizeMode="cover"
+      resizeMode="repeat"
     >
+
       <SafeAreaView style={styles.container}>
         <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
 
         {/* HEADER */}
         <View style={[styles.header, { paddingTop: STATUSBAR_SAFE_HEIGHT }]}>
+          <TouchableOpacity
+            style={styles.minimizeBtn}
+            onPress={handleMinimize}
+            activeOpacity={0.75}
+            hitSlop={{ top: 12, bottom: 12, left: 12, right: 12 }}
+          >
+            <ChevronDown color="#F8FAFC" size={22} />
+          </TouchableOpacity>
+
           <View style={{ flex: 1 }}>
             <Text style={styles.roomTitle} numberOfLines={1}>
               {roomTitle || 'Official Class Room'}
@@ -869,51 +1403,131 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           </TouchableOpacity>
         </View>
 
-        {/* 📺 SCREEN SHARE HERO FRAME (Auto-Renders on Any Active Screen Share) */}
-        {Boolean(activeScreenShare) && (
-          <View style={styles.screenShareHeroBox}>
-            <VideoTrack
-              trackRef={activeScreenShare!}
-              style={styles.screenShareHeroVideo}
+        {/* 📺 SCREEN SHARE — now fills the ENTIRE remaining screen area
+            (mobile & tablet) instead of a small fixed-height box, with a
+            slim horizontal thumbnail strip of participants underneath. */}
+        {isSharingActive ? (
+          <View style={styles.shareFullContainer}>
+            {remoteScreenShareTrack ? (
+              // REMOTE PARTICIPANT SCREEN SHARE
+              <View
+                style={[
+                  styles.screenShareHeroBox,
+                  { borderRadius: isTablet ? 20 : 0 },
+                ]}
+              >
+                <VideoTrack
+                  trackRef={{
+                    participant: remoteScreenShareTrack.participant,
+                    source: Track.Source.ScreenShare,
+                    publication: remoteScreenShareTrack.publication,
+                  }}
+                  style={styles.screenShareHeroVideo}
+                  zOrder={1}
+                  objectFit="contain"
+                />
+                <View style={styles.screenShareBadge}>
+                  <ScreenShare size={14} color="#FFF" />
+                  <Text style={styles.screenShareBadgeText}>
+                    {remoteScreenShareTrack.participant?.identity || 'Presentation'}'s Screen
+                  </Text>
+                </View>
+              </View>
+            ) : (
+              // LOCAL PARTICIPANT SCREEN SHARE UI
+              <View
+                style={[
+                  styles.screenShareHeroBoxLocal,
+                  { borderRadius: isTablet ? 20 : 0 },
+                ]}
+              >
+                {localScreenShareTrackRef ? (
+                  <VideoTrack
+                    trackRef={localScreenShareTrackRef}
+                    style={styles.localScreenSharePreview}
+                    objectFit="contain"
+                    zOrder={0}
+                  />
+                ) : null}
+                <View style={styles.localSharingContent}>
+                  <View style={styles.sharingPulseIcon}>
+                    <Monitor size={isTablet ? 46 : 36} color="#38BDF8" />
+                  </View>
+                  <Text style={styles.localSharingTitle}>You are sharing your screen</Text>
+                  <Text style={styles.localSharingSub}>
+                    All members in this classroom can see your device screen.
+                  </Text>
+                  <TouchableOpacity
+                    style={styles.stopSharingBtn}
+                    onPress={toggleScreenShare}
+                    activeOpacity={0.8}
+                  >
+                    <Text style={styles.stopSharingBtnText}>Stop Screen Share</Text>
+                  </TouchableOpacity>
+                </View>
+              </View>
+            )}
+
+            {/* Slim thumbnail strip so faces are still visible while the
+                shared screen takes up the full viewport. */}
+            <FlatList
+              data={participantList}
+              keyExtractor={(item) => item.identity}
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              style={styles.thumbStripList}
+              contentContainerStyle={styles.thumbStripContent}
+              renderItem={({ item }) => {
+                const trackRef = tracks.find(
+                  (t) => t.participant?.identity === item.identity && t.source === Track.Source.Camera,
+                );
+                return (
+                  <View style={styles.thumbTileWrapper}>
+                    <ClassTrackTile
+                      participant={item}
+                      trackReference={trackRef}
+                      handRaisedUsers={handRaisedUsers}
+                      reactions={reactions}
+                      totalCount={2}
+                      liveLocalAvatar={currentAvatar}
+                      compact
+                    />
+                  </View>
+                );
+              }}
             />
-            <View style={styles.screenShareBadge}>
-              <ScreenShare size={14} color="#FFF" />
-              <Text style={styles.screenShareBadgeText}>
-                {activeScreenShare?.participant?.identity || 'Presentation'}'s Screen
-              </Text>
-            </View>
+          </View>
+        ) : (
+          /* ─── PARTICIPANTS GRID (no active share) ─── */
+          <View style={styles.mainContent}>
+            <FlatList
+              data={participantList}
+              keyExtractor={(item) => item.identity}
+              key={`${participantList.length <= 1 ? 'single' : 'grid'}-${isTablet ? 'tablet' : 'phone'}`}
+              numColumns={participantList.length <= 1 ? 1 : isTablet ? 3 : 2}
+              contentContainerStyle={[
+                styles.gridContainer,
+                participantList.length <= 1 && styles.singleGridContainer,
+              ]}
+              showsVerticalScrollIndicator={false}
+              renderItem={({ item }) => {
+                const trackRef = tracks.find(
+                  (t) => (t.participant?.identity === item.identity) && t.source === Track.Source.Camera,
+                );
+                return (
+                  <ClassTrackTile
+                    participant={item}
+                    trackReference={trackRef}
+                    handRaisedUsers={handRaisedUsers}
+                    reactions={reactions}
+                    totalCount={participantList.length}
+                    liveLocalAvatar={currentAvatar}
+                  />
+                );
+              }}
+            />
           </View>
         )}
-
-        {/* ─── PARTICIPANTS GRID ─── */}
-        <View style={styles.mainContent}>
-          <FlatList
-            data={participantList}
-            keyExtractor={(item) => item.identity}
-            key={participantList.length <= 1 ? 'single' : 'grid'}
-            numColumns={participantList.length <= 1 ? 1 : 2}
-            contentContainerStyle={[
-              styles.gridContainer,
-              participantList.length <= 1 && styles.singleGridContainer,
-            ]}
-            showsVerticalScrollIndicator={false}
-            renderItem={({ item }) => {
-              const trackRef = tracks.find(
-                (t) => (t.participant?.identity === item.identity) && t.source === Track.Source.Camera,
-              );
-              return (
-                <ClassTrackTile
-                  participant={item}
-                  trackReference={trackRef}
-                  handRaisedUsers={handRaisedUsers}
-                  reactions={reactions}
-                  totalCount={participantList.length}
-                  liveLocalAvatar={currentAvatar}
-                />
-              );
-            }}
-          />
-        </View>
 
         {/* FLOATING EMOJIS */}
         <View style={StyleSheet.absoluteFill} pointerEvents="none">
@@ -922,7 +1536,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           ))}
         </View>
 
-        {/* ─── 3D CONTROLS BAR ─── */}
+        {/* ─── CONTROLS BAR ─── */}
         <View style={styles.controlsWrapper}>
           <View style={styles.controlsBar}>
             <TouchableOpacity
@@ -1013,58 +1627,65 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               <View style={StyleSheet.absoluteFill} />
             </TouchableWithoutFeedback>
 
-            <View style={styles.floatingEmojiCard}>
-              <TouchableOpacity
-                style={[
-                  styles.compactRaiseHandBtn,
-                  isMyHandRaised ? styles.compactRaiseHandActive : styles.compactRaiseHandInactive,
-                ]}
-                onPress={toggleHandRaise}
-                activeOpacity={0.8}
+            <View style={[styles.floatingEmojiCard, { maxWidth: winWidth - 24 }]}>
+              <ScrollView
+                horizontal
+                showsHorizontalScrollIndicator={false}
+                contentContainerStyle={styles.emojiCardScrollContent}
               >
-                <Hand color={isMyHandRaised ? '#10B981' : '#FFF'} size={18} />
-                <Text style={styles.compactRaiseHandText}>
-                  {isMyHandRaised ? 'Lower ✋' : 'Raise Hand ✋'}
-                </Text>
-              </TouchableOpacity>
+                <TouchableOpacity
+                  style={[
+                    styles.compactRaiseHandBtn,
+                    isTablet && styles.compactRaiseHandBtnTablet,
+                    isMyHandRaised ? styles.compactRaiseHandActive : styles.compactRaiseHandInactive,
+                  ]}
+                  onPress={toggleHandRaise}
+                  activeOpacity={0.8}
+                >
+                  <Hand color={isMyHandRaised ? '#10B981' : '#FFF'} size={isTablet ? 20 : 18} />
+                  <Text style={styles.compactRaiseHandText}>
+                    {isMyHandRaised ? 'Lower ✋' : 'Raise Hand ✋'}
+                  </Text>
+                </TouchableOpacity>
 
-              <View style={styles.emojiRowDivider} />
+                <View style={styles.emojiRowDivider} />
 
-              <View style={styles.emojiWaveRow}>
-                {QUICK_EMOJI_LIST.map((emoji, index) => {
-                  const animVal = emojiWaveAnims[index] || new Animated.Value(1);
-                  return (
-                    <Animated.View
-                      key={emoji}
-                      style={{
-                        transform: [
-                          {
-                            translateY: animVal.interpolate({
-                              inputRange: [0, 0.5, 1],
-                              outputRange: [20, -10, 0],
-                            }),
-                          },
-                          {
-                            scale: animVal.interpolate({
-                              inputRange: [0, 1],
-                              outputRange: [0.3, 1],
-                            }),
-                          },
-                        ],
-                        opacity: animVal,
-                      }}
-                    >
-                      <TouchableOpacity
-                        style={styles.singleEmojiCircle}
-                        onPress={() => sendEmojiReaction(emoji)}
-                        activeOpacity={0.7}
+                <View style={styles.emojiWaveRow}>
+                  {QUICK_EMOJI_LIST.map((emoji, index) => {
+                    const animVal = emojiWaveAnims[index] || new Animated.Value(1);
+                    return (
+                      <Animated.View
+                        key={emoji}
+                        style={{
+                          transform: [
+                            {
+                              translateY: animVal.interpolate({
+                                inputRange: [0, 0.5, 1],
+                                outputRange: [20, -10, 0],
+                              }),
+                            },
+                            {
+                              scale: animVal.interpolate({
+                                inputRange: [0, 1],
+                                outputRange: [0.3, 1],
+                              }),
+                            },
+                          ],
+                          opacity: animVal,
+                        }}
                       >
-                        <Text style={styles.emojiText}>{emoji}</Text>
-                      </TouchableOpacity>
-                    </Animated.View>
-                  );
-                })}
-              </View>
+                        <TouchableOpacity
+                          style={[styles.singleEmojiCircle, isTablet && styles.singleEmojiCircleTablet]}
+                          onPress={() => sendEmojiReaction(emoji)}
+                          activeOpacity={0.7}
+                        >
+                          <Text style={[styles.emojiText, isTablet && styles.emojiTextTablet]}>{emoji}</Text>
+                        </TouchableOpacity>
+                      </Animated.View>
+                    );
+                  })}
+                </View>
+              </ScrollView>
             </View>
           </View>
         </Modal>
@@ -1126,17 +1747,28 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
           </View>
         </Modal>
 
-        {/* ─── CHAT MODAL ─── */}
+        {/* ─── CHAT MODAL ───
+            Fix: pehle Animated.View ko manually translateY diya jaa raha
+            tha jo keyboard khulte hi card ko screen ke top se bahar dhakel
+            deta tha. Ab KeyboardAvoidingView use karte hain jo card ko
+            hamesha visible area ke andar hi rakhta hai — mobile aur tablet
+            dono par, chahe portrait ho ya landscape. */}
         <Modal visible={isChatVisible} animationType="fade" transparent onRequestClose={() => setIsChatVisible(false)}>
-          <View style={styles.chatCenterBackdrop}>
+          <KeyboardAvoidingView
+            style={styles.chatCenterBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+          >
             <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setIsChatVisible(false); }}>
               <View style={StyleSheet.absoluteFill} />
             </TouchableWithoutFeedback>
 
-            <Animated.View style={[
-              styles.chatCenterCard,
-              { transform: [{ translateY: keyboardShiftAnim }] }
-            ]}>
+            <View
+              style={[
+                styles.chatCenterCard,
+                { width: chatCardWidth, height: chatCardHeight },
+              ]}
+            >
               <View style={styles.sheetHeader}>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <View style={styles.chatHeaderCircleIcon}>
@@ -1150,10 +1782,13 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
               </View>
 
               <FlatList
+                ref={chatListRef}
                 data={chatMessages}
                 keyExtractor={(item) => item.id}
                 contentContainerStyle={styles.chatList}
                 showsVerticalScrollIndicator={false}
+                onContentSizeChange={() => chatListRef.current?.scrollToEnd({ animated: true })}
+                onLayout={() => chatListRef.current?.scrollToEnd({ animated: false })}
                 renderItem={({ item }) => {
                   const isMe =
                     (currentUser?.uid && item.senderId === currentUser.uid) ||
@@ -1171,13 +1806,19 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
                       <View
                         style={[
                           styles.chatBubble,
+                          { maxWidth: isTablet ? '65%' : '80%' },
                           isMe ? styles.chatBubbleLocal : styles.chatBubbleRemote,
                         ]}
                       >
                         <Text style={[styles.chatSender, isMe ? { color: '#93C5FD' } : { color: '#38BDF8' }]}>
                           {isMe ? 'You' : item.sender}
                         </Text>
-                        <Text style={styles.chatText}>{item.text}</Text>
+
+                        {item.attachment && (
+                          <ChatAttachmentBubble attachment={item.attachment} />
+                        )}
+
+                        {!!item.text && <Text style={styles.chatText}>{item.text}</Text>}
                         <Text style={styles.chatTime}>{item.time}</Text>
                       </View>
                     </View>
@@ -1190,20 +1831,95 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
                 }
               />
 
-              <View style={styles.chatInputRow}>
-                <TextInput
-                  style={styles.chatInput}
-                  placeholder="Type a message..."
-                  placeholderTextColor="#64748B"
-                  value={messageInput}
-                  onChangeText={setMessageInput}
-                  onSubmitEditing={handleSendMessage}
-                />
-                <TouchableOpacity style={styles.sendBtn} onPress={handleSendMessage}>
-                  <Send color="#FFF" size={18} />
+              {isRecordingAudio ? (
+                <View style={styles.recordingRow}>
+                  <View style={styles.recordingDot} />
+                  <Text style={styles.recordingTimeText}>
+                    Recording… {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
+                    {String(recordSeconds % 60).padStart(2, '0')}
+                  </Text>
+                  <TouchableOpacity style={styles.recordingCancelBtn} onPress={cancelAudioRecording}>
+                    <X color="#F87171" size={16} />
+                  </TouchableOpacity>
+                  <TouchableOpacity style={styles.recordingSendBtn} onPress={stopAudioRecordingAndSend}>
+                    <Send color="#FFF" size={16} />
+                  </TouchableOpacity>
+                </View>
+              ) : (
+                <View style={styles.chatInputRow}>
+                  <TouchableOpacity
+                    style={styles.attachBtn}
+                    onPress={() => setIsAttachSheetVisible(true)}
+                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                  >
+                    <Paperclip color="#94A3B8" size={20} />
+                  </TouchableOpacity>
+
+                  <TextInput
+                    style={styles.chatInput}
+                    placeholder="Type a message..."
+                    placeholderTextColor="#64748B"
+                    value={messageInput}
+                    onChangeText={setMessageInput}
+                    onSubmitEditing={() => handleSendMessage()}
+                    multiline
+                  />
+
+                  {messageInput.trim().length > 0 ? (
+                    <TouchableOpacity style={styles.sendBtn} onPress={() => handleSendMessage()}>
+                      <Send color="#FFF" size={18} />
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity style={styles.sendBtn} onPress={startAudioRecording}>
+                      <Mic2 color="#FFF" size={18} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+              )}
+            </View>
+          </KeyboardAvoidingView>
+        </Modal>
+
+        {/* ─── 📎 ATTACHMENT SHEET ─── */}
+        <Modal
+          visible={isAttachSheetVisible}
+          transparent
+          animationType="fade"
+          onRequestClose={() => setIsAttachSheetVisible(false)}
+        >
+          <View style={styles.chatCenterBackdrop}>
+            <TouchableWithoutFeedback onPress={() => setIsAttachSheetVisible(false)}>
+              <View style={StyleSheet.absoluteFill} />
+            </TouchableWithoutFeedback>
+            <View style={[styles.attachSheetCard, { width: isTablet ? 380 : winWidth * 0.86 }]}>
+              <Text style={styles.attachSheetTitle}>Share attachment</Text>
+              <View style={styles.attachOptionsRow}>
+                <TouchableOpacity style={styles.attachOption} onPress={handlePickImage} activeOpacity={0.8}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(56,189,248,0.15)' }]}>
+                    <ImageIconLucide color="#38BDF8" size={22} />
+                  </View>
+                  <Text style={styles.attachOptionLabel}>Photo</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.attachOption} onPress={handlePickVideo} activeOpacity={0.8}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(167,139,250,0.15)' }]}>
+                    <VideoFileIconLucide color="#A78BFA" size={22} />
+                  </View>
+                  <Text style={styles.attachOptionLabel}>Video</Text>
+                </TouchableOpacity>
+
+                <TouchableOpacity style={styles.attachOption} onPress={handlePickDocument} activeOpacity={0.8}>
+                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(52,211,153,0.15)' }]}>
+                    <FileText color="#34D399" size={22} />
+                  </View>
+                  <Text style={styles.attachOptionLabel}>File / PDF</Text>
                 </TouchableOpacity>
               </View>
-            </Animated.View>
+
+              <TouchableOpacity style={styles.attachCancelBtn} onPress={() => setIsAttachSheetVisible(false)}>
+                <Text style={styles.attachCancelText}>Cancel</Text>
+              </TouchableOpacity>
+            </View>
           </View>
         </Modal>
 
@@ -1315,7 +2031,7 @@ const ClassRoomView = ({ safeExit, roomTitle, isHost, roomId, userAvatarUrl }: a
   );
 };
 
-// 🎈 Animated Floating Bottom-to-Top Emoji Component
+// Animated Floating Bottom-to-Top Emoji Component
 const FloatingEmojiItem = ({ emoji, startX }: { emoji: string; startX: number }) => {
   const floatAnim = useRef(new Animated.Value(SCREEN_HEIGHT - 120)).current;
   const opacityAnim = useRef(new Animated.Value(1)).current;
@@ -1358,78 +2074,287 @@ const FloatingEmojiItem = ({ emoji, startX }: { emoji: string; startX: number })
   );
 };
 
-export default function ClassRoomScreen({ route, navigation }: any) {
-  const { serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl } =
-    route?.params || {};
-  const [canConnect, setCanConnect] = useState(false);
+// ─── 🫧 FLOATING MINIMIZED CALL BUBBLE ───
+// Ye component <LiveKitRoom> ke ANDAR render hota hai (ClassRoomView ki jagah)
+// jab call minimize hoti hai. Isliye room connection kabhi disconnect nahi
+// hota — sirf UI ek chhoti draggable bubble me badal jaata hai. Tap karne se
+// wapas full call screen khul jaati hai, aur bubble ko drag karke kahin bhi
+// screen par move kiya ja sakta hai.
+export const FloatingCallBubble = ({ roomTitle, userAvatarUrl, onExpand, onEndCall }: any) => {
+  const { isMicrophoneEnabled } = useLocalParticipant();
+  const connectionState = useConnectionState();
 
-  useEffect(() => {
-    let isMounted = true;
-    const prepare = async () => {
-      try {
-        if (!token) {
-          Alert.alert('Error', 'Room token is missing.');
-          navigation.goBack();
+  const pan = useRef(
+    new Animated.ValueXY({ x: SCREEN_WIDTH - 84, y: SCREEN_HEIGHT * 0.55 })
+  ).current;
+
+  // Tap vs drag ko differentiate karne ke liye total movement track karte hain
+  const totalMovement = useRef(0);
+
+  const panResponder = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponderCapture: (_, g) =>
+        Math.abs(g.dx) > 2 || Math.abs(g.dy) > 2,
+      onPanResponderGrant: () => {
+        totalMovement.current = 0;
+        pan.setOffset({
+          x: (pan.x as any)._value,
+          y: (pan.y as any)._value,
+        });
+        pan.setValue({ x: 0, y: 0 });
+      },
+      onPanResponderMove: (_, gesture) => {
+        totalMovement.current += Math.abs(gesture.dx) + Math.abs(gesture.dy);
+        Animated.event([null, { dx: pan.x, dy: pan.y }], {
+          useNativeDriver: false,
+        })(_, gesture);
+      },
+      onPanResponderRelease: (_, gesture) => {
+        pan.flattenOffset();
+
+        // Agar bubble ko bahut kam move kiya gaya, to ye ek TAP tha — expand karo.
+        if (totalMovement.current < 6) {
+          onExpand();
           return;
         }
 
-        if (Platform.OS === 'android') {
-          await PermissionsAndroid.requestMultiple([
-            PermissionsAndroid.PERMISSIONS.RECORD_AUDIO,
-            PermissionsAndroid.PERMISSIONS.CAMERA,
-          ]);
-        }
-
-        await AudioSession.startAudioSession();
-        if (AudioSession.configureAudio) {
-          await AudioSession.configureAudio({
-            android: {
-              preferredOutputList: ['speaker'],
-            },
-            forceSpeakerOutput: true,
-            speakerphone: true,
-          } as any);
-        }
-
-        if (isMounted) setCanConnect(true);
-      } catch (err) {
-        console.error('Permissions or AudioSession error:', err);
-      }
-    };
-
-    prepare();
-    return () => {
-      isMounted = false;
-      AudioSession.stopAudioSession().catch(() => {});
-    };
-  }, [token]);
-
-  if (!canConnect || !token) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#2563EB" />
-        <Text style={styles.loadingText}>Joining Class Room...</Text>
-      </View>
-    );
-  }
+        // Warna, bubble ko screen ke sabse paas wale edge (left/right) pe
+        // snap kar do, taaki wo kisi content ko block na kare.
+        const currentX = (pan.x as any)._value;
+        const snapToRight = currentX > SCREEN_WIDTH / 2 - 60;
+        Animated.spring(pan, {
+          toValue: {
+            x: snapToRight ? SCREEN_WIDTH - 84 : 12,
+            y: Math.max(
+              40,
+              Math.min((pan.y as any)._value, SCREEN_HEIGHT - 160)
+            ),
+          },
+          useNativeDriver: false,
+          friction: 7,
+        }).start();
+      },
+    })
+  ).current;
 
   return (
-    <View style={styles.flexOne}>
-      <LiveKitRoom
-        serverUrl={serverUrl}
-        token={token}
-        connect={canConnect}
-        audio={false}
-        video={false}
-      >
-        <ClassRoomView
-          safeExit={() => navigation.goBack()}
-          roomTitle={roomTitle}
-          isHost={isHost}
-          roomId={roomId}
-          userAvatarUrl={userAvatarUrl}
+    <Animated.View
+      style={[
+        bubbleStyles.container,
+        { transform: pan.getTranslateTransform() },
+      ]}
+      {...panResponder.panHandlers}
+    >
+      <View style={bubbleStyles.avatarWrap}>
+        <Image
+          source={{ uri: userAvatarUrl || DEFAULT_FALLBACK_AVATAR }}
+          style={bubbleStyles.avatar}
         />
-      </LiveKitRoom>
+        {!isMicrophoneEnabled && (
+          <View style={bubbleStyles.micOffBadge}>
+            <MicOff size={10} color="#FFF" />
+          </View>
+        )}
+        {connectionState !== 'connected' && (
+          <View style={bubbleStyles.reconnectDot} />
+        )}
+      </View>
+      <TouchableOpacity
+        style={bubbleStyles.endCallMiniBtn}
+        onPress={onEndCall}
+        hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+      >
+        <PhoneOff size={11} color="#FFF" />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+};
+
+const bubbleStyles = StyleSheet.create({
+  container: {
+    position: 'absolute',
+    width: 64,
+    height: 64,
+    zIndex: 9999,
+    elevation: 20,
+  },
+  avatarWrap: {
+    width: 64,
+    height: 64,
+    borderRadius: 32,
+    borderWidth: 2.5,
+    borderColor: '#38BDF8',
+    backgroundColor: '#0F172A',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
+    overflow: 'hidden',
+  },
+  avatar: {
+    width: '100%',
+    height: '100%',
+  },
+  micOffBadge: {
+    position: 'absolute',
+    bottom: -2,
+    right: -2,
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: '#EF4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#0F172A',
+  },
+  reconnectDot: {
+    position: 'absolute',
+    top: -2,
+    left: -2,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: '#FBBF24',
+    borderWidth: 2,
+    borderColor: '#0F172A',
+  },
+  endCallMiniBtn: {
+    position: 'absolute',
+    bottom: -6,
+    left: -6,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: '#DC2626',
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 2,
+    borderColor: '#0F172A',
+  },
+});
+
+// ─── 🌍 ROUTE ENTRY POINT (thin trigger) ───
+// PEHLE: ye component khud <LiveKitRoom> ko mount karta tha, isliye jab bhi
+// navigator se ye screen hatti thi (goBack, ya kisi aur screen pe navigate),
+// LiveKitRoom UNMOUNT ho jaata tha aur call disconnect ho jaati thi. Isi
+// wajah se "minimize" ek chhote bubble tak hi limited tha, poori app me
+// navigate nahi kar sakte the.
+//
+// AB: actual call (LiveKitRoom + UI + floating bubble) ab CallSessionProvider
+// (App.tsx me NavigationContainer ke sath sibling) ke andar rehta hai — jo
+// navigator ke UPAR ek overlay ki tarah render hota hai. Ye route sirf
+// provider ko "yahan call start karo" bolta hai aur turant khud navigator se
+// hat jaata hai (goBack). Overlay ab navigator ke upar dikhta rehta hai chahe
+// user app me kahin bhi navigate kare.
+//
+// ⚠️ ZAROORI: Isko kaam karne ke liye `App.tsx` ko <CallSessionProvider> se
+// wrap karna hoga — dekho CallSessionProvider.tsx file + neeche di gayi
+// integration instructions.
+export default function ClassRoomScreen({ route, navigation }: any) {
+  const { serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl } =
+    route?.params || {};
+  const { startCall } = useCallSession();
+  const hasStartedRef = useRef(false);
+  const [checkingAccess, setCheckingAccess] = useState(true);
+
+  useEffect(() => {
+    if (hasStartedRef.current) return;
+    hasStartedRef.current = true;
+
+    const proceed = async () => {
+      if (!token) {
+        Alert.alert('Error', 'Room token is missing.');
+        navigation.goBack();
+        return;
+      }
+
+      // 👑 ADMIN BYPASS — agar current logged-in user ki email `admins`
+      // collection me hai (jaisa Firestore console me admin1/admin2 docs
+      // dikh rahe hain), to subscription/entitlement check SKIP kar do aur
+      // seedha join karwa do. Ye sirf email-match pe hai (admin/host ke
+      // liye) — normal students ke liye neeche wala normal subscription
+      // gate hi chalega.
+      //
+      // NOTE: Agar ye admin-check hi kisi wajah se fail ho jaaye (network
+      // waghera), to hum FAIL-SAFE default lete hain — yaani normal
+      // subscription check pe hi fall back karte hain, taaki koi galti se
+      // bina check ke andar na aa jaaye.
+      let isAdminUser = false;
+      try {
+        const currentEmail = auth().currentUser?.email?.toLowerCase().trim();
+        if (currentEmail) {
+          const adminSnap = await firestore()
+            .collection('admins')
+            .where('email', '==', currentEmail)
+            .limit(1)
+            .get();
+          isAdminUser = !adminSnap.empty;
+        }
+      } catch (adminCheckErr) {
+        console.log('Admin check failed, falling back to normal flow:', adminCheckErr);
+        isAdminUser = false;
+      }
+
+      if (isAdminUser) {
+        setCheckingAccess(false);
+        startCall({ serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl });
+        navigation.goBack();
+        return;
+      }
+
+      // 🔒 ENTITLEMENT GATE — Class Room paid hai, isliye join karne se
+      // pehle server se confirm karte hain ki subscription active hai ya
+      // nahi. Ye check hamesha SERVER (Cloud Function) se hota hai, kabhi
+      // bhi frontend me `user.isPaid` jaisi local value trust nahi karte —
+      // warna koi bhi ise bypass kar sakta hai.
+      //
+      // NOTE: Ye gate sirf Class Room pe lagaya hai. Study Room free hai,
+      // usme ye gate nahi lagega.
+      try {
+        const { hasAccess } = await checkClassRoomAccess();
+
+        if (!hasAccess) {
+          // Subscription active nahi hai — Subscribe karne ke liye bhejo.
+          // `returnTo` ke through, payment successful hone ke baad
+          // SubscriptionScreen seedha isी Class Room me wapas bhej dega.
+          navigation.replace('SubscriptionScreen', {
+            returnTo: {
+              screen: 'ClassRoomScreen',
+              params: { serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl },
+            },
+          });
+          return;
+        }
+      } catch (err) {
+        console.error('checkClassRoomAccess error:', err);
+        Alert.alert(
+          'Error',
+          'Access check nahi ho paaya. Please check your internet aur dobara try karo.'
+        );
+        navigation.goBack();
+        return;
+      }
+
+      setCheckingAccess(false);
+      startCall({ serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl });
+      // Is route ko turant navigator se hata do — call ab provider ke overlay
+      // me chal rahi hai, is screen ki ab zaroorat nahi.
+      navigation.goBack();
+    };
+
+    proceed();
+  }, []);
+
+  // Ye screen khud kabhi visible nahi hoti (turant pop ho jaati hai), isliye
+  // render kuch nahi karta — bas ek chhota loading fallback safety ke liye.
+  return (
+    <View style={styles.loadingContainer}>
+      <ActivityIndicator size="large" color="#2563EB" />
+      <Text style={styles.loadingText}>
+        {checkingAccess ? 'Checking access...' : 'Joining Class Room...'}
+      </Text>
     </View>
   );
 }
@@ -1446,7 +2371,14 @@ const styles = StyleSheet.create({
   },
   container: {
     flex: 1,
-    backgroundColor: 'rgba(7, 13, 24, 0.85)',
+    // 🎨 Transparent so the new classroom-bg.png doodle pattern (set on the
+    // <ImageBackground> that wraps this) is actually visible — an opaque
+    // color here would hide it completely. This is still safe against the
+    // old transparency-bleed issue: CallSessionProvider's own wrapping
+    // <View> already paints a solid '#070D18' behind everything while the
+    // call is full-screen (see CallSessionProvider.tsx), so nothing from
+    // the screen underneath can show through.
+    backgroundColor: 'transparent',
   },
   loadingContainer: {
     flex: 1,
@@ -1468,6 +2400,17 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'center',
     backgroundColor: 'rgba(15, 23, 42, 0.85)',
+  },
+  minimizeBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+    borderWidth: 1,
+    borderColor: 'rgba(51, 65, 85, 0.8)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginRight: 10,
   },
   roomTitle: {
     fontSize: 19,
@@ -1546,18 +2489,86 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
+  // Wraps the full-screen share video + the thumbnail strip underneath it.
+  shareFullContainer: {
+    flex: 1,
+    width: '100%',
+  },
   screenShareHeroBox: {
-    width: SCREEN_WIDTH - 24,
-    height: 220,
-    marginHorizontal: 12,
-    marginTop: 8,
+    flex: 1,
+    width: '100%',
+    marginTop: 4,
     marginBottom: 4,
-    borderRadius: 18,
     overflow: 'hidden',
-    backgroundColor: '#000000',
-    borderWidth: 2,
-    borderColor: '#38BDF8',
+    backgroundColor: '#0F172A',
+    borderWidth: 0,
     position: 'relative',
+    zIndex: 10,
+  },
+  screenShareHeroBoxLocal: {
+    flex: 1,
+    width: '100%',
+    marginTop: 4,
+    marginBottom: 4,
+    backgroundColor: '#0F172A',
+    borderWidth: 0,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+    position: 'relative',
+    overflow: 'hidden',
+  },
+  thumbStripList: {
+    flexGrow: 0,
+    maxHeight: 138,
+    backgroundColor: 'rgba(15, 23, 42, 0.85)',
+  },
+  thumbStripContent: {
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    alignItems: 'center',
+  },
+  thumbTileWrapper: {
+    marginRight: 4,
+  },
+  localScreenSharePreview: {
+    ...StyleSheet.absoluteFillObject,
+    opacity: 0.25,
+  },
+  localSharingContent: {
+    alignItems: 'center',
+  },
+  sharingPulseIcon: {
+    width: 54,
+    height: 54,
+    borderRadius: 27,
+    backgroundColor: 'rgba(56, 189, 248, 0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  localSharingTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 4,
+  },
+  localSharingSub: {
+    color: '#94A3B8',
+    fontSize: 12,
+    textAlign: 'center',
+    marginBottom: 12,
+  },
+  stopSharingBtn: {
+    backgroundColor: '#DC2626',
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 20,
+  },
+  stopSharingBtnText: {
+    color: '#FFF',
+    fontSize: 12,
+    fontWeight: '700',
   },
   screenShareHeroVideo: {
     width: '100%',
@@ -1598,6 +2609,11 @@ const styles = StyleSheet.create({
     width: 175,
     maxWidth: 175,
     flex: 0,
+  },
+  compactParticipantTile: {
+    height: 128,
+    borderRadius: 16,
+    margin: 5,
   },
   speakingBorderGlow: {
     borderColor: '#10B981',
@@ -1762,6 +2778,10 @@ const styles = StyleSheet.create({
     paddingVertical: 7,
     borderRadius: 20,
   },
+  compactRaiseHandBtnTablet: {
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+  },
   compactRaiseHandInactive: {
     backgroundColor: '#1E293B',
     borderWidth: 1,
@@ -1783,6 +2803,11 @@ const styles = StyleSheet.create({
     backgroundColor: '#334155',
     marginHorizontal: 10,
   },
+  emojiCardScrollContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingRight: 6,
+  },
   emojiWaveRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1798,8 +2823,16 @@ const styles = StyleSheet.create({
     borderWidth: 1,
     borderColor: '#334155',
   },
+  singleEmojiCircleTablet: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+  },
   emojiText: {
     fontSize: 18,
+  },
+  emojiTextTablet: {
+    fontSize: 24,
   },
 
   modalOverlay: {
@@ -2104,6 +3137,155 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#1E293B',
+    borderWidth: 1,
+    borderColor: '#334155',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  recordingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    gap: 10,
+    backgroundColor: '#0F172A',
+  },
+  recordingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#EF4444',
+  },
+  recordingTimeText: {
+    flex: 1,
+    color: '#F8FAFC',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  recordingCancelBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(239,68,68,0.15)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  recordingSendBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: '#2563EB',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+
+  attachSheetCard: {
+    backgroundColor: '#0F172A',
+    borderRadius: 22,
+    borderWidth: 1.5,
+    borderColor: '#334155',
+    padding: 18,
+    marginBottom: 40,
+  },
+  attachSheetTitle: {
+    color: '#F8FAFC',
+    fontSize: 15,
+    fontWeight: '800',
+    marginBottom: 16,
+    textAlign: 'center',
+  },
+  attachOptionsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    marginBottom: 8,
+  },
+  attachOption: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  attachOptionIcon: {
+    width: 52,
+    height: 52,
+    borderRadius: 26,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachOptionLabel: {
+    color: '#CBD5E1',
+    fontSize: 11.5,
+    fontWeight: '600',
+  },
+  attachCancelBtn: {
+    marginTop: 14,
+    paddingVertical: 12,
+    borderRadius: 14,
+    backgroundColor: '#1E293B',
+    alignItems: 'center',
+  },
+  attachCancelText: {
+    color: '#94A3B8',
+    fontSize: 13.5,
+    fontWeight: '700',
+  },
+
+  attachmentImagePreview: {
+    width: 190,
+    height: 140,
+    borderRadius: 12,
+    marginBottom: 6,
+    backgroundColor: '#1E293B',
+  },
+  attachmentVideoPreview: {
+    width: 190,
+    height: 110,
+    borderRadius: 12,
+    marginBottom: 6,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    gap: 6,
+  },
+  attachmentFileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(15,23,42,0.5)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 10,
+    marginBottom: 6,
+    maxWidth: 200,
+  },
+  attachmentFileLabel: {
+    color: '#F1F5F9',
+    fontSize: 12,
+    fontWeight: '600',
+    flexShrink: 1,
+  },
+  attachmentAudioRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    backgroundColor: 'rgba(15,23,42,0.5)',
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginBottom: 6,
+  },
+  attachmentAudioPlayBtn: {
+    width: 26,
+    height: 26,
+    borderRadius: 13,
+    backgroundColor: '#2563EB',
     justifyContent: 'center',
     alignItems: 'center',
   },

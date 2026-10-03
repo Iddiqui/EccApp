@@ -22,6 +22,8 @@ import {
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
+import { useFocusEffect } from '@react-navigation/native';
+import { useCallSession } from './CallSessionProvider';
 
 import {
   ChevronLeft,
@@ -38,8 +40,64 @@ import { useTheme } from '../../../hooks/useTheme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const STATUSBAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 0);
-const TOKEN_SERVER_BASE_URL = 'http://192.168.1.5:5000';
+const TOKEN_SERVER_BASE_URL = 'https://livekit-token-server-2uvb.onrender.com';
 const LIVEKIT_FALLBACK_URL = 'wss://eccapp-4hmra95b.livekit.cloud';
+
+// ─── RESILIENT FETCH FOR TOKEN SERVER ───
+// `TOKEN_SERVER_BASE_URL` Render.com ke FREE tier pe hosted hai. Free tier
+// services 15 min inactivity ke baad SO JAATE hain — pehli request unhe
+// "wake up" karti hai jisme 30-60s tak lag sakte hain. React Native ka
+// plain `fetch()` is slow cold-start ke dauraan aksar TLS handshake poora
+// hone se pehle hi "TypeError: Network request failed" throw kar deta hai
+// (koi built-in timeout/retry nahi hota) — Create Room error isi wajah se
+// aa raha tha.
+//
+// Ye helper 2 cheezein karta hai:
+//   1. AbortController se ek explicit timeout deta hai (taaki fetch hamesha
+//      ke liye hang na ho aur ek clear error mile),
+//   2. Pehla attempt fail hone par (jo cold-start me common hai) THODA RUK
+//      KAR ek dobara attempt karta hai — dusre attempt tak server usually
+//      jaag chuka hota hai.
+const fetchWithTimeoutRetry = async (
+  url: string,
+  { timeoutMs = 15000, retries = 1, retryDelayMs = 3000 }: {
+    timeoutMs?: number;
+    retries?: number;
+    retryDelayMs?: number;
+  } = {}
+): Promise<Response> => {
+  let lastError: any;
+
+  for (let attempt = 0; attempt <= retries; attempt++) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    try {
+      const response = await fetch(url, { signal: controller.signal });
+      clearTimeout(timeoutId);
+      return response;
+    } catch (err: any) {
+      clearTimeout(timeoutId);
+      lastError = err;
+
+      const isLastAttempt = attempt === retries;
+      if (isLastAttempt) break;
+
+      // Render free-tier cold start ke liye rukiye phir retry kariye.
+      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
+    }
+  }
+
+  // Dono attempts fail ho gaye — ek clear, user-samajhne-laayak error do.
+  if (lastError?.name === 'AbortError') {
+    throw new Error(
+      'The token server is currently waking up or is slow (free hosting). Please try again in a little while.'
+    );
+  }
+  throw new Error(
+    'Network request failed — Check your internet connection, or the token server might be down.'
+  );
+};
 
 export const ILLUSTRATED_AVATARS = [
   { id: 'm1', gender: 'Male', label: 'Boy 1', url: 'https://api.dicebear.com/7.x/adventurer/png?seed=Oliver&backgroundColor=ffd5dc' },
@@ -101,7 +159,41 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const [pendingJoinRoom, setPendingJoinRoom] = useState<VoiceRoom | null>(null);
   const [isJoiningPending, setIsJoiningPending] = useState<boolean>(false);
 
+  // 🖤 WHITE-SCREEN / DEAD-TOUCH SAFETY NET: Agar kisi bhi wajah se
+  // `isModalVisible` (Create Room form) ya `showAvatarPickerModal` (avatar
+  // picker) stuck `true` reh jaaye — jaise create/join flow ke beech me
+  // koi error/interruption aa jaaye jahan humara `closeModal()`/
+  // `setShowAvatarPickerModal(false)` call hi na ho paaye — to wo poore-
+  // screen-cover karne wala overlay HAMESHA ke liye khula reh jaata hai.
+  // Chahe uska content kisi wajah se blank/white dikhe, ye overlay phir
+  // bhi saare touches KHUD absorb karta rehta hai — isliye peeche ki
+  // screen "bilkul dead" lagti hai (koi tap response nahi milta), jab tak
+  // koi Class Room call join karke leave/minimize na kare aur wapas is
+  // screen par focus na aaye.
+  //
+  // Fix: jab bhi ye screen FOCUS me aaye (jaise Class Room se leave karke
+  // wapas aane par), dono modals ko FORCE-CLOSE kar dete hain. Isse chahe
+  // asli root-cause kuch bhi ho, koi leftover modal kabhi is screen ko
+  // permanently block nahi kar payega.
+  useFocusEffect(
+    React.useCallback(() => {
+      setIsModalVisible(false);
+      setShowAvatarPickerModal(false);
+    }, [])
+  );
+
   const currentUser = auth().currentUser;
+
+  // 🖤 NATIVE-SURFACE RESIDUE WORKAROUND (see CallSessionProvider.tsx for
+  // full explanation): LiveKit's React Native SDK doesn't yet support the
+  // New Architecture, so a leftover camera/video native surface can
+  // sometimes paint a white "ghost" overlay over this screen after a call
+  // minimizes or ends — with no JS error, since it happens outside
+  // Fabric's control. `remountSignal` increments every time the call
+  // state changes; using it as this screen's root `key` forces a full
+  // unmount+remount whenever that happens, which recreates the native
+  // view tree from scratch and clears any such residue.
+  const { remountSignal } = useCallSession();
   const isDarkMode = themeHook?.isDarkMode || false;
 
   const colors = isDarkMode
@@ -213,13 +305,30 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     }
   }, [route?.params?.roomId]);
 
-  const handleTabChange = (tab: 'public' | 'official', animateScroll: boolean = true) => {
+  const handleTabChange = (tab: 'public' | 'official') => {
     setActiveTab(tab);
-    if (pagerRef.current && animateScroll) {
-      const targetIndex = tab === 'public' ? 0 : 1;
-      pagerRef.current.scrollTo({ x: targetIndex * SCREEN_WIDTH, animated: true });
-    }
   };
+
+  // 🔑 THE ACTUAL FIX: previously, scrolling the pager to match the tapped
+  // tab happened INLINE inside handleTabChange, in the same call as
+  // setActiveTab. That scrollTo() call would occasionally silently no-op
+  // (pagerRef not yet attached / ScrollView mid-layout right after the
+  // loading spinner disappears), leaving `activeTab` saying "official"
+  // while the ScrollView was still physically sitting on page 0 (Study
+  // Rooms). Result: "Class Rooms" header + empty-state text, but Study
+  // Room cards still visible underneath — until you tapped the tab again
+  // and the scrollTo happened to succeed.
+  //
+  // Now the scroll is driven by a dedicated effect that re-runs on every
+  // `activeTab` change (tap OR anything else that sets it), so the pager
+  // position and the header text can never drift apart.
+  useEffect(() => {
+    const targetIndex = activeTab === 'public' ? 0 : 1;
+    const frame = requestAnimationFrame(() => {
+      pagerRef.current?.scrollTo({ x: targetIndex * SCREEN_WIDTH, animated: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab]);
 
   const handleScrollEnd = (e: any) => {
     const xOffset = e.nativeEvent.contentOffset.x;
@@ -249,6 +358,17 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       Alert.alert('Required', 'Please enter a room title');
       return;
     }
+    // 🐛 ROOT-CAUSE FIX: pehle yahan sirf avatar-picker modal khulta tha,
+    // "Create Room" title-form wala `isModalVisible` overlay band NAHI
+    // hota tha — wo sirf BAAD me `handleProceedCreateRoom` ke poori tarah
+    // SUCCESS hone par `closeModal()` se band hota tha. Agar us async
+    // step ke beech kahin bhi (network, error) kuch atak jaaye, to ye
+    // poori-screen-cover karne wala overlay HAMESHA ke liye khula reh
+    // jaata — chahe upar call UI dikhta rahe (usse dhak jaata tha), call
+    // khatam hote hi ye "stuck" overlay surface ho jaata aur SAARE touches
+    // khud absorb kar leta (screen "dead" lagti), chahe khud blank/white
+    // hi kyun na dikhe.
+    setIsModalVisible(false);
     setPendingJoinRoom(null);
     setShowAvatarPickerModal(true);
   };
@@ -267,12 +387,23 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       const isPublicType = activeTab === 'public';
       const selectedType: 'public' | 'official' = isPublicType ? 'public' : 'official';
 
+      // 🆕 CREATE-ONLY FLOW: pehle yahan room create hote hi turant
+      // token fetch karke seedha call screen me navigate ho jaate the
+      // (auto-join). Ab creator turant join NAHI hota — room sirf
+      // Firestore me ek "not yet joined" entry ki tarah create hota hai,
+      // list me dikhta hai, aur creator baad me normal "join" flow
+      // (`handleInitiateJoinRoom` → `handleProceedJoinRoom`) se hi
+      // andar jaata hai, bilkul kisi aur participant ki tarah.
+      //
+      // Isi liye `totalParticipants`/`activeSpeakersCount` ab 0 se
+      // start hote hain — abhi tak koi actually LiveKit room me connect
+      // nahi hua hai.
       const roomData: Partial<VoiceRoom> = {
         title: roomTitle.trim(),
         category: roomCategory.trim() || 'General English',
         hostName: participantName,
-        activeSpeakersCount: 1,
-        totalParticipants: 1,
+        activeSpeakersCount: 0,
+        totalParticipants: 0,
         livekitRoomId: livekitRoomName,
         createdBy: currentUser?.uid || '',
         type: selectedType,
@@ -280,41 +411,14 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         createdAt: firestore.FieldValue.serverTimestamp(),
       };
 
-      const url = `${TOKEN_SERVER_BASE_URL}/getToken?roomName=${encodeURIComponent(
-        livekitRoomName
-      )}&participantName=${encodeURIComponent(participantName)}`;
-
-      const response = await fetch(url);
-      const responseText = await response.text();
-
-      let data: any;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error('Server returned invalid response format.');
-      }
-
-      if (!response.ok || !data.token) {
-        throw new Error(data?.error || `Server error with status ${response.status}`);
-      }
-
       await newRoomRef.set(roomData);
+
       setCreating(false);
       closeModal();
-
-      const targetScreen = selectedType === 'official' ? 'ClassRoomScreen' : 'StudyRoomScreen';
-      navigation.navigate(targetScreen, {
-        serverUrl: data.serverUrl || LIVEKIT_FALLBACK_URL,
-        token: data.token,
-        roomTitle: roomData.title,
-        isHost: true,
-        roomId: roomId,
-        userAvatarUrl: chosenAvatarUrl,
-      });
     } catch (error: any) {
       setCreating(false);
       console.error('Create Room Error:', error);
-      Alert.alert('Error', error.message || 'Failed to connect to token server.');
+      Alert.alert('Error', error.message || 'Failed to create room.');
     }
   };
 
@@ -340,7 +444,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         pendingJoinRoom.livekitRoomId
       )}&participantName=${encodeURIComponent(participantName)}`;
 
-      const response = await fetch(url);
+      const response = await fetchWithTimeoutRetry(url);
       const responseText = await response.text();
 
       let data: any;
@@ -368,7 +472,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     } catch (error: any) {
       setIsJoiningPending(false);
       console.error('Join Room Error:', error);
-      Alert.alert('Error', 'Unable to join room. Check token server.');
+      Alert.alert('Error', error.message || 'Unable to join room. Check token server.');
     }
   };
 
@@ -484,8 +588,8 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
           <View style={styles.emptyContainer}>
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
               {isOfficialTab
-                ? 'Abhi koi official class room active nahi hai.'
-                : 'Koi study group active nahi hai. Aap pehla room create karein!'}
+                ? 'There is currently no active official classroom.'
+                : 'No study group is active. Create the first room!'}
             </Text>
           </View>
         }
@@ -494,7 +598,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   );
 
   return (
-    <View style={styles.rootWrapper}>
+    <View key={remountSignal} style={styles.rootWrapper}>
       {/* 🌟 Dynamic Background: Light me room2-p2.png & Dark me room2.png */}
       <ImageBackground
         source={

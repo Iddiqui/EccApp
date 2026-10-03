@@ -44,6 +44,16 @@ import {
   Headphones
 } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
+import {
+  checkIsHost,
+  getMyUpcomingSessionsAsStudent,
+  getMyUpcomingSessionsAsTeacher,
+  getAllAvailableSlots,
+  bookAndPaySession,
+  joinVideoSession,
+  type OpenSlot,
+} from '../../sessions/sessionService';
+import type { Booking } from '../../sessions/sessionTypes';
 
 // Sound module for playback
 let SoundPlayer: any = null;
@@ -199,6 +209,166 @@ const MONTH_NAMES = [
 
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
+
+  // ─── UPCOMING SESSIONS (real data) ───
+  const [upcomingSessions, setUpcomingSessions] = useState<Booking[]>([]);
+  const [isTeacher, setIsTeacher] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
+
+  // 🆕 OPEN/AVAILABLE SLOTS — sab teachers ke un-booked slots, taaki koi
+  // bhi user seedha yahin se (bina pehle teacher choose kiye) tap-to-book
+  // kar sake. Sirf STUDENTS ko chahiye (teacher/admin ka kaam "Manage
+  // Session Slots" se slots BANANA hai, khud book karna nahi).
+  const [availableSlots, setAvailableSlots] = useState<OpenSlot[]>([]);
+  const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadSessions = async () => {
+      try {
+        const isHost = await checkIsHost();
+        const sessions = isHost
+          ? await getMyUpcomingSessionsAsTeacher()
+          : await getMyUpcomingSessionsAsStudent();
+
+        if (isMounted) {
+          setIsTeacher(isHost);
+          setUpcomingSessions(sessions);
+        }
+
+        if (!isHost) {
+          const slots = await getAllAvailableSlots();
+          if (isMounted) setAvailableSlots(slots);
+        }
+      } catch (err) {
+        console.error('Failed to load upcoming sessions:', err);
+      } finally {
+        if (isMounted) setSessionsLoading(false);
+      }
+    };
+
+    loadSessions();
+    // 🔑 THE ACTUAL FIX: pehle ye effect sirf [] deps ke saath ek hi baar
+    // chalta tha (mount par). Matlab agar student OneToOneSessionsScreen
+    // se ek session book karke wapas Home pe aata (navigation.goBack()),
+    // HomeScreen already-mounted hone ki wajah se dobara loadSessions() call
+    // hi nahi hota — naya booking "Upcoming Sessions" me tab tak nahi dikhta
+    // jab tak app poora reload na ho. Ab 'focus' event par bhi refetch hota
+    // hai, taaki Home screen par WAPAS AANE par hamesha latest data mile.
+    const unsubscribeFocus = navigation.addListener('focus', loadSessions);
+
+    return () => {
+      isMounted = false;
+      unsubscribeFocus();
+    };
+  }, [navigation]);
+
+  // Session start time se 10 min pehle se "Join" allow karte hain — usse
+  // pehle card tap karne par sirf details dikhते hain (join button disabled).
+  const isSessionJoinable = (session: Booking) => {
+    const sessionDateTime = new Date(`${session.date}T${session.startTime}:00`);
+    const now = new Date();
+    const minutesUntilStart = (sessionDateTime.getTime() - now.getTime()) / 60000;
+    return minutesUntilStart <= 10 && minutesUntilStart > -60; // 10 min pehle se 1hr baad tak
+  };
+
+  const handleJoinSession = async (session: Booking) => {
+    if (joiningSessionId) return; // ek time pe ek hi join process ho
+
+    if (!isSessionJoinable(session)) {
+      Alert.alert(
+        'Not yet',
+        `Ye session ${session.date} ${session.startTime} baje shuru hoga. Session shuru hone se 10 min pehle Join button active ho jaayega.`
+      );
+      return;
+    }
+
+    setJoiningSessionId(session.id);
+    try {
+      const { serverUrl, token, otherPersonName, bookingId } =
+        await joinVideoSession(session);
+
+      navigation.navigate('VideoSessionScreen', {
+        serverUrl,
+        token,
+        otherPersonName,
+        bookingId,
+      });
+    } catch (err: any) {
+      console.error('Join session error:', err);
+      Alert.alert('Error', 'Session join nahi ho payi. Please try again.');
+    } finally {
+      setJoiningSessionId(null);
+    }
+  };
+
+  // 🆕 EK TAP SE BOOK+PAY — Home card / "See all" par kisi bhi open slot
+  // ko tap karne par ye chalta hai. Pehle ek chhota confirm-Alert dikhate
+  // hain (price + time saaf batane ke liye), fir seedha
+  // `bookAndPaySession()` (booking reserve + Razorpay checkout) chalta
+  // hai. Success par dono lists (available slots aur "meri sessions")
+  // refresh kar dete hain — jo slot abhi book hua wo turant available
+  // list se gayab ho jaayega, aur agar isi user ne book kiya hai to wo
+  // uski "upcoming/joinable" list me aa jaayega.
+  const handleBookSlot = (slot: OpenSlot) => {
+    if (bookingSlotId) return; // ek time pe ek hi booking process ho
+
+    const dateLabel = slot.date === new Date().toISOString().split('T')[0] ? 'Today' : slot.date;
+
+    Alert.alert(
+      'Confirm Booking',
+      `${slot.teacherName} ke saath ${dateLabel}, ${slot.startTime} - ${slot.endTime} ka session book karein?\n\nPrice: ₹${slot.teacherPricePerSession}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Book & Pay',
+          onPress: async () => {
+            setBookingSlotId(slot.id);
+            try {
+              const result = await bookAndPaySession({
+                teacherId: slot.teacherId,
+                slotId: slot.id,
+              });
+              if (result.success) {
+                Alert.alert(
+                  'Booking Confirmed 🎉',
+                  'Aapka session book ho gaya hai — decided time par yahin se Join kar sakte ho.'
+                );
+                // Refresh both lists — booked slot ab available list me
+                // nahi dikhna chahiye, aur naya booking "meri sessions"
+                // me aana chahiye.
+                const [sessions, slots] = await Promise.all([
+                  getMyUpcomingSessionsAsStudent(),
+                  getAllAvailableSlots(),
+                ]);
+                setUpcomingSessions(sessions);
+                setAvailableSlots(slots);
+              } else {
+                Alert.alert(
+                  'Payment Incomplete',
+                  'Payment complete nahi hui — slot free kar diya gaya hai. Dobara try karo.'
+                );
+                getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
+              }
+            } catch (err: any) {
+              console.error('handleBookSlot error:', err);
+              const message =
+                err?.message?.includes('already-exists') || err?.code === 'already-exists'
+                  ? 'Ye slot abhi kisi aur ne book kar liya. Koi aur slot try karo.'
+                  : err?.message || 'Booking nahi ho payi. Dobara try karo.';
+              Alert.alert('Error', message);
+              getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
+            } finally {
+              setBookingSlotId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? false;
@@ -1098,59 +1268,201 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
 
-        {/* 5. UPCOMING SESSIONS */}
+        {/* 5. UPCOMING SESSIONS (1-to-1) */}
         <View style={styles.sectionHeaderContainer}>
           <Text style={[styles.sectionHeadingMarginless, { color: colors.textPrimary }]}>
-            {t?.home?.upcomingSessions || 'Upcoming Sessions'}
+            {t?.home?.upcomingSessions || 'Book 1-1 Session'}
           </Text>
-          <View>
+          <TouchableOpacity onPress={() => navigation.navigate('UpcomingSessionsListScreen')} activeOpacity={0.7}>
             <Text style={[styles.seeAllText, { color: colors.primary }]}>
               {t?.home?.seeAll || 'See all'}
             </Text>
-          </View>
+          </TouchableOpacity>
         </View>
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScrollWrapper}>
-          <View style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
-            <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
-              <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
-                {t?.home?.todayTime1 || '📅 Today, 6:00 PM'}
-              </Text>
-            </View>
-            <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-              {t?.home?.session1Title || '1:1 with Priya'}
-            </Text>
-            <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-              {t?.home?.session1Desc || 'IELTS Speaking coaching'}
-            </Text>
-            <View style={styles.sessionFooterRow}>
-              <View style={[styles.sessionInitialsCircle, { backgroundColor: '#22C55E' }]}><Text style={styles.initialsText}>PN</Text></View>
-              <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                {t?.home?.session1Details || '30 min • Video'}
-              </Text>
-            </View>
+        {sessionsLoading ? (
+          <View style={{ paddingVertical: 20, alignItems: 'center' }}>
+            <ActivityIndicator size="small" color={colors.primary} />
           </View>
+        ) : upcomingSessions.length === 0 && availableSlots.length === 0 ? (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              {
+                backgroundColor: cardBg,
+                borderColor: activeGlowBorder,
+                width: SCREEN_WIDTH - 40,
+                // 🎯 FIX: upcomingSessionCard has marginRight:16 built in (for
+                // spacing between cards inside the horizontal ScrollView
+                // below). This box isn't in that ScrollView — it's a single
+                // standalone box — so that leftover marginRight was pushing
+                // it off-center, giving it a wider gap on the right than the
+                // left. Zeroing it out AND explicitly adding a matching
+                // marginLeft (since this box, unlike the ScrollView cards,
+                // has no parent paddingLeft giving it a left inset)
+                // restores equal left/right gaps.
+                marginRight: 0,
+                marginLeft: 20,
+              },
+            ]}
+            onPress={() => !isTeacher && navigation.navigate('OneToOneSessionsScreen')}
+            activeOpacity={isTeacher ? 1 : 0.8}
+            disabled={isTeacher}
+          >
+            <Text style={[styles.sessionDescText, { color: colors.textSecondary, textAlign: 'center' }]}>
+              {isTeacher
+                ? 'Abhi koi upcoming session scheduled nahi hai.'
+                : 'Abhi koi open slot available nahi hai. Baad me dobara check karo!'}
+            </Text>
+          </TouchableOpacity>
+        ) : (
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScrollWrapper}>
+            {/* 🆕 COMBINED CARD LIST: pehle meri APNI confirmed sessions
+                (Join karne ke liye), fir un-booked OPEN SLOTS (Book karne
+                ke liye) — dono milakar top 3 dikhte hain. Isse Home card
+                par EK HI jagah dono kaam ho jaate hain: jo already book
+                kiya hai use join karna, aur naya open slot seedha book
+                karna. "See all" (UpcomingSessionsListScreen) par dono ki
+                POORI list alag-alag sections me dikhti hai. */}
+            {upcomingSessions.slice(0, 3).map((session) => {
+              const joinable = isSessionJoinable(session);
+              const isJoiningThis = joiningSessionId === session.id;
+              const displayName = isTeacher ? 'Student' : session.teacherName;
+              const initials = displayName
+                .split(' ')
+                .map((w) => w[0])
+                .join('')
+                .slice(0, 2)
+                .toUpperCase();
 
-          <View style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
-            <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
-              <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
-                {t?.home?.todayTime2 || '🎙️ Today, 7:30 PM'}
+              return (
+                <TouchableOpacity
+                  key={`booking-${session.id}`}
+                  style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                  onPress={() => handleJoinSession(session)}
+                  activeOpacity={0.85}
+                  disabled={isJoiningThis}
+                >
+                  <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
+                    <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
+                      📅 {session.date === new Date().toISOString().split('T')[0] ? 'Today' : session.date}, {session.startTime}
+                    </Text>
+                  </View>
+                  <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
+                    1:1 with {displayName}
+                  </Text>
+                  <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                    ₹{session.price} session
+                  </Text>
+                  <View style={styles.sessionFooterRow}>
+                    <View style={[styles.sessionInitialsCircle, { backgroundColor: '#22C55E' }]}>
+                      <Text style={styles.initialsText}>{initials}</Text>
+                    </View>
+                    <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
+                      {session.startTime} - {session.endTime} • Video
+                    </Text>
+                  </View>
+                  {isJoiningThis ? (
+                    <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
+                  ) : (
+                    <Text
+                      style={{
+                        marginTop: 8,
+                        fontSize: 12,
+                        fontWeight: '700',
+                        color: joinable ? '#22C55E' : colors.textSecondary,
+                      }}
+                    >
+                      {joinable ? '● Join Now' : 'Not started yet'}
+                    </Text>
+                  )}
+                </TouchableOpacity>
+              );
+            })}
+
+            {!isTeacher &&
+              availableSlots.slice(0, Math.max(0, 3 - upcomingSessions.length)).map((slot) => {
+                const isBookingThis = bookingSlotId === slot.id;
+                const initials = slot.teacherName
+                  .split(' ')
+                  .map((w) => w[0])
+                  .join('')
+                  .slice(0, 2)
+                  .toUpperCase();
+
+                return (
+                  <TouchableOpacity
+                    key={`slot-${slot.id}`}
+                    style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                    onPress={() => handleBookSlot(slot)}
+                    activeOpacity={0.85}
+                    disabled={isBookingThis}
+                  >
+                    <View style={[styles.sessionHeaderPill, { backgroundColor: '#F59E0B18' }]}>
+                      <Text style={[styles.sessionTimeText, { color: '#F59E0B' }]}>
+                        📅 {slot.date === new Date().toISOString().split('T')[0] ? 'Today' : slot.date}, {slot.startTime}
+                      </Text>
+                    </View>
+                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
+                      1:1 with {slot.teacherName}
+                    </Text>
+                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                      ₹{slot.teacherPricePerSession} session
+                    </Text>
+                    <View style={styles.sessionFooterRow}>
+                      <View style={[styles.sessionInitialsCircle, { backgroundColor: colors.primary }]}>
+                        <Text style={styles.initialsText}>{initials}</Text>
+                      </View>
+                      <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
+                        {slot.startTime} - {slot.endTime} • Video
+                      </Text>
+                    </View>
+                    {isBookingThis ? (
+                      <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
+                    ) : (
+                      <Text style={{ marginTop: 8, fontSize: 12, fontWeight: '700', color: colors.primary }}>
+                        Book Now →
+                      </Text>
+                    )}
+                  </TouchableOpacity>
+                );
+              })}
+          </ScrollView>
+        )}
+
+        {/* 🎯 NEW: Admin/Teacher-only entry point to create session slots.
+            Sirf tab dikhta hai jab checkIsHost() (admins collection ka email
+            match) true return kare — students ko ye kabhi nahi dikhega. */}
+        {isTeacher && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              {
+                backgroundColor: cardBg,
+                borderColor: activeGlowBorder,
+                width: SCREEN_WIDTH - 40,
+                marginRight: 0,
+                marginLeft: 20, // same left/right-gap fix as the empty-state box above
+                marginTop: 12,
+                flexDirection: 'row',
+                alignItems: 'center',
+                justifyContent: 'space-between',
+              },
+            ]}
+            onPress={() => navigation.navigate('AdminSlotCreationScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
+                🗓️ Manage Session Slots
+              </Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                Naye 1-to-1 session slots add karo
               </Text>
             </View>
-            <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-              {t?.home?.session2Title || 'Debate Club'}
-            </Text>
-            <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-              {t?.home?.session2Desc || 'Technology & Society'}
-            </Text>
-            <View style={styles.sessionFooterRow}>
-              <View style={[styles.sessionInitialsCircle, { backgroundColor: colors.primary }]}><Text style={styles.initialsText}>DR</Text></View>
-              <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                {t?.home?.session2Details || '45 min • Audio'}
-              </Text>
-            </View>
-          </View>
-        </ScrollView>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
 
         {/* 🌟 6. UNIQUE ULTRA-PREMIUM 'FROM THE COMMUNITY' CARD */}
         <View style={styles.sectionHeaderContainer}>
@@ -2014,7 +2326,7 @@ const styles = StyleSheet.create({
   sectionHeaderContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginTop: 22 },
   sectionHeadingMarginless: { fontSize: 19, fontWeight: '900', letterSpacing: -0.2 },
   seeAllText: { fontSize: 13.5, fontWeight: '800' },
-  horizontalScrollWrapper: { paddingLeft: 20, marginTop: 12 },
+  horizontalScrollWrapper: { paddingLeft: 20, paddingRight: 4, marginTop: 12 },
   upcomingSessionCard: { width: SCREEN_WIDTH * 0.68, marginRight: 16, padding: 18, borderRadius: 26, borderWidth: 1.5 },
   sessionHeaderPill: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   sessionTimeText: { fontSize: 11.5, fontWeight: '900' },
