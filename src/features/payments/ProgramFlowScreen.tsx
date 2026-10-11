@@ -835,7 +835,7 @@ export default function ProgramFlowScreen() {
       <StatusBar barStyle={isDarkMode ? 'light-content' : 'dark-content'} backgroundColor={colors.bgLight} />
 
       {step !== 'mode' && step !== 'intro' && (
-        <Image source={IMG_PLAN} style={styles.bgArt} resizeMode="cover" pointerEvents="none" />
+        <Image source={IMG_PLAN} style={styles.bgArt} resizeMode="cover" />
       )}
 
       {step === 'mode' && renderMode()}

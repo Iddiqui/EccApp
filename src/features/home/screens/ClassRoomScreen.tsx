@@ -1121,7 +1121,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                   trackRef={{
                     participant: remoteScreenShareTrack.participant,
                     source: Track.Source.ScreenShare,
-                    publication: remoteScreenShareTrack.publication,
+                    publication: remoteScreenShareTrack.publication!,
                   }}
                   style={styles.screenShareHeroVideo}
                   zOrder={1}
@@ -1144,7 +1144,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
               >
                 {localScreenShareTrackRef ? (
                   <VideoTrack
-                    trackRef={localScreenShareTrackRef}
+                    trackRef={localScreenShareTrackRef as any}
                     style={styles.localScreenSharePreview}
                     objectFit="contain"
                     zOrder={0}
@@ -2156,7 +2156,7 @@ const styles = StyleSheet.create({
     marginRight: 4,
   },
   localScreenSharePreview: {
-    ...StyleSheet.absoluteFillObject,
+    ...StyleSheet.absoluteFill,
     opacity: 0.25,
   },
   localSharingContent: {

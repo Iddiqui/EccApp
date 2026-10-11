@@ -322,6 +322,7 @@ export default function HomeScreen() {
   const [nextAudio, setNextAudio] = useState<AudioSession | null>(null);
   const [audioJoining, setAudioJoining] = useState(false);
   const [audioTick, setAudioTick] = useState(0);
+  const [audioSub, setAudioSub] = useState<ProgramAccess | null>(null);
   useEffect(() => {
     const timer = setInterval(() => setAudioTick((x) => x + 1), 30000);
     return () => clearInterval(timer);
@@ -377,7 +378,6 @@ export default function HomeScreen() {
 
   // Video plan status (drives the plan card: "Choose your plan" vs "Book a Session")
   const [videoSub, setVideoSub] = useState<ProgramAccess | null>(null);
-  const [audioSub, setAudioSub] = useState<ProgramAccess | null>(null);
   useEffect(() => {
     if (isTeacher) return;
     let alive = true;

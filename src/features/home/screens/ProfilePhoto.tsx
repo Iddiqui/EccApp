@@ -160,7 +160,7 @@ export default function ProfilePhoto({ size = 96, name, accent = '#2563EB', onCh
 const styles = StyleSheet.create({
   circle: { alignItems: 'center', justifyContent: 'center', overflow: 'hidden' },
   initial: { color: '#FFFFFF', fontWeight: '800' },
-  busy: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
+  busy: { ...StyleSheet.absoluteFill, backgroundColor: 'rgba(0,0,0,0.45)', alignItems: 'center', justifyContent: 'center' },
   badge: {
     position: 'absolute', right: -2, bottom: -2, width: 28, height: 28, borderRadius: 14,
     alignItems: 'center', justifyContent: 'center', borderWidth: 2, borderColor: '#FFFFFF',

@@ -320,7 +320,9 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
           options={{
             adaptiveStream: true,
             dynacast: true,
-            autoSubscribe: true,
+            // @ts-ignore
+autoSubscribe: true,
+            
           }}
         >
           {/* Full call UI — minimize hote hi genuinely 0x0 + clipped ho

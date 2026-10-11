@@ -54,6 +54,11 @@ const previewProgramFn = httpsCallable<
   { planId: string; teacherId?: string; couponCode?: string },
   ProgramPreview
 >(functions, 'previewProgramPricing');
+const checkClassRoomAccessFn = httpsCallable<
+  Record<string, never>,
+  { hasAccess: boolean; reason?: string; expiresAt?: number }
+>(functions, 'checkClassRoomAccess');
+
 const getMySubscriptionsFn = httpsCallable<
   Record<string, never>,
   { video: ProgramAccess; audio: ProgramAccess }
@@ -264,4 +269,14 @@ export async function payWithRazorpay(
       true
     );
   }
+}
+
+/** ClassRoomScreen join se pehle isse access check karta hai (asli check server pe hota hai). */
+export async function checkClassRoomAccess(): Promise<{
+  hasAccess: boolean;
+  reason?: string;
+  expiresAt?: number;
+}> {
+  const { data } = await checkClassRoomAccessFn({});
+  return data;
 }

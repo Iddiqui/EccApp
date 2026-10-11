@@ -11,6 +11,11 @@ import type {
   CreateBookingResponse,
 } from './sessionTypes';
 
+// RN Firebase ke naye versions me `exists` method hai, purane me property.
+const docExists = (d: any): boolean =>
+  typeof d?.exists === 'function' ? d.exists() : Boolean(d?.exists);
+
+
 // 🆕 TEACHER PROFILE REVIEWS
 // NOTE: `Review` type yahan locally define kiya hai kyunki `sessionTypes.ts`
 // me abhi ye nahi hai — agar chaho to ise wahan move kar sakte ho for
@@ -58,7 +63,7 @@ export const getTeachers = async (): Promise<Teacher[]> => {
 
 export const getTeacherById = async (teacherId: string): Promise<Teacher | null> => {
   const doc = await firestore().collection('session_teachers').doc(teacherId).get();
-  if (!doc.exists) return null;
+  if (!docExists(doc)) return null;
   return { id: doc.id, ...doc.data() } as Teacher;
 };
 
@@ -257,7 +262,7 @@ export const getMyAudioBookingIds = async (sessionIds: string[]): Promise<Set<st
   await Promise.all(
     sessionIds.map(async (id) => {
       const doc = await firestore().collection('audioSessions').doc(id).collection('attendees').doc(uid).get();
-      if (doc.exists) ids.add(id);
+      if (docExists(doc)) ids.add(id);
     })
   );
   return ids;
