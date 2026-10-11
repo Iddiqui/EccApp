@@ -22,6 +22,19 @@ import {
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
+import functions from '@react-native-firebase/functions';
+import { useFocusEffect } from '@react-navigation/native';
+import { useCallSession } from './CallSessionProvider';
+import {
+  getAudioSessionsForTeacher,
+  getMyAudioBookingIds,
+  bookAudioSession,
+  getMyTeacherProfile,
+  createAudioSession,
+  type AudioSession,
+} from '../../sessions/sessionService';
+import { launchAudioRoom } from '../../sessions/audioRoomLauncher';
+import { getMySubscriptions } from '../../payments/paymentService';
 
 import {
   ChevronLeft,
@@ -33,19 +46,12 @@ import {
   UserCheck,
   Plus,
   Radio,
-  GraduationCap,
 } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const STATUSBAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 0);
-const TOKEN_SERVER_BASE_URL = 'https://livekit-token-server-2uvb.onrender.com';
 const LIVEKIT_FALLBACK_URL = 'wss://eccapp-4hmra95b.livekit.cloud';
-
-// 📱 Tablet / Large Screen Responsive Image Sizing
-const IS_TABLET = SCREEN_WIDTH >= 600;
-const MIC_IMG_SIZE = IS_TABLET ? 115 : 92;
-const BOOK_IMG_SIZE = IS_TABLET ? 60 : 50;
 
 export const ILLUSTRATED_AVATARS = [
   { id: 'm1', gender: 'Male', label: 'Boy 1', url: 'https://api.dicebear.com/7.x/adventurer/png?seed=Oliver&backgroundColor=ffd5dc' },
@@ -87,7 +93,10 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const t = themeHook?.t;
   const currentLang = themeHook?.currentLang || 'en';
 
-  const [activeTab, setActiveTab] = useState<'public' | 'official'>('public');
+  // route.params.tab = 'official' opens the Class Rooms tab directly (Home "Join Group Class" card)
+  const [activeTab, setActiveTab] = useState<'public' | 'official'>(
+    route?.params?.tab === 'official' ? 'official' : 'public'
+  );
   const [highlightedRoomId, setHighlightedRoomId] = useState<string | null>(null);
 
   const pagerRef = useRef<ScrollView>(null);
@@ -102,16 +111,225 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const [roomCategory, setRoomCategory] = useState<string>('General English');
   const [creating, setCreating] = useState<boolean>(false);
 
-  // Modal Animation Drivers
-  const modalScaleAnim = useRef(new Animated.Value(0.85)).current;
-  const modalOpacityAnim = useRef(new Animated.Value(0)).current;
-
   const [showAvatarPickerModal, setShowAvatarPickerModal] = useState<boolean>(false);
   const [selectedAvatarUrl, setSelectedAvatarUrl] = useState<string>(ILLUSTRATED_AVATARS[0].url);
   const [pendingJoinRoom, setPendingJoinRoom] = useState<VoiceRoom | null>(null);
   const [isJoiningPending, setIsJoiningPending] = useState<boolean>(false);
 
+  // 🖤 WHITE-SCREEN / DEAD-TOUCH SAFETY NET: Agar kisi bhi wajah se
+  // `isModalVisible` (Create Room form) ya `showAvatarPickerModal` (avatar
+  // picker) stuck `true` reh jaaye — jaise create/join flow ke beech me
+  // koi error/interruption aa jaaye jahan humara `closeModal()`/
+  // `setShowAvatarPickerModal(false)` call hi na ho paaye — to wo poore-
+  // screen-cover karne wala overlay HAMESHA ke liye khula reh jaata hai.
+  // Chahe uska content kisi wajah se blank/white dikhe, ye overlay phir
+  // bhi saare touches KHUD absorb karta rehta hai — isliye peeche ki
+  // screen "bilkul dead" lagti hai (koi tap response nahi milta), jab tak
+  // koi Class Room call join karke leave/minimize na kare aur wapas is
+  // screen par focus na aaye.
+  //
+  // Fix: jab bhi ye screen FOCUS me aaye (jaise Class Room se leave karke
+  // wapas aane par), dono modals ko FORCE-CLOSE kar dete hain. Isse chahe
+  // asli root-cause kuch bhi ho, koi leftover modal kabhi is screen ko
+  // permanently block nahi kar payega.
+  useFocusEffect(
+    React.useCallback(() => {
+      setIsModalVisible(false);
+      setShowAvatarPickerModal(false);
+    }, [])
+  );
+
   const currentUser = auth().currentUser;
+
+  // 🖤 NATIVE-SURFACE RESIDUE WORKAROUND (see CallSessionProvider.tsx for
+  // full explanation): LiveKit's React Native SDK doesn't yet support the
+  // New Architecture, so a leftover camera/video native surface can
+  // sometimes paint a white "ghost" overlay over this screen after a call
+  // minimizes or ends — with no JS error, since it happens outside
+  // Fabric's control. `remountSignal` increments every time the call
+  // state changes; using it as this screen's root `key` forces a full
+  // unmount+remount whenever that happens, which recreates the native
+  // view tree from scratch and clears any such residue.
+  const { remountSignal, startCall } = useCallSession();
+
+  // ─── GROUP AUDIO CLASSES (shown at the top of the Class Rooms tab) ───
+  // Student: classes of the teacher linked to their Audio plan. Teacher: their own classes.
+  const [audioSessions, setAudioSessions] = useState<AudioSession[]>([]);
+  const [audioBooked, setAudioBooked] = useState<Set<string>>(new Set());
+  const [audioRole, setAudioRole] = useState<'student' | 'teacher' | 'none'>('none');
+  const [audioPlanActive, setAudioPlanActive] = useState<boolean>(true);
+  const [audioBusyId, setAudioBusyId] = useState<string | null>(null);
+
+  // Teacher: create a group audio class from this screen
+  const [classModalOpen, setClassModalOpen] = useState(false);
+  const [classTitle, setClassTitle] = useState('');
+  const [classDesc, setClassDesc] = useState('');
+  const [classDayOffset, setClassDayOffset] = useState(0);
+  const [classHour, setClassHour] = useState('18');
+  const [classMin, setClassMin] = useState('00');
+  const [classDuration, setClassDuration] = useState(60);
+  const [classSeats, setClassSeats] = useState('10');
+  const [classSaving, setClassSaving] = useState(false);
+
+  const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  const classDays = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    return d;
+  });
+  const dayKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  const submitClass = async () => {
+    if (classSaving) return;
+    const h = parseInt(classHour, 10);
+    const m = parseInt(classMin === '' ? '0' : classMin, 10);
+    const seats = Number(classSeats);
+    if (!classTitle.trim()) {
+      Alert.alert('Title Required', 'Please enter a title for the class.');
+      return;
+    }
+    if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
+      Alert.alert('Invalid time', 'Enter hour 0-23 and minutes 0-59 (24-hour format).');
+      return;
+    }
+    if (!Number.isInteger(seats) || seats < 1 || seats > 200) {
+      Alert.alert('Invalid Seats', 'Maximum participants must be between 1 and 200.');
+      return;
+    }
+    setClassSaving(true);
+    try {
+      await createAudioSession({
+        title: classTitle.trim(),
+        description: classDesc.trim(),
+        date: dayKey(classDays[classDayOffset]),
+        startTime: `${pad2(h)}:${pad2(m)}`,
+        durationMins: classDuration,
+        maxParticipants: seats,
+      });
+      setClassModalOpen(false);
+      setClassTitle('');
+      setClassDesc('');
+      await loadAudioClasses();
+      Alert.alert('Class Created', 'Students with your Audio plan can now book a seat.');
+    } catch (e: any) {
+      Alert.alert('Could Not Create', e?.message || 'Please try again.');
+    } finally {
+      setClassSaving(false);
+    }
+  };
+
+  const loadAudioClasses = async () => {
+    try {
+      const teacher = await getMyTeacherProfile().catch(() => null);
+      if (teacher) {
+        setAudioRole('teacher');
+        setAudioPlanActive(true);
+        setAudioSessions(await getAudioSessionsForTeacher(teacher.id));
+        return;
+      }
+      const subs = await getMySubscriptions();
+      if (subs.audio?.active && subs.audio.teacherId) {
+        setAudioRole('student');
+        setAudioPlanActive(true);
+        const list = await getAudioSessionsForTeacher(subs.audio.teacherId);
+        setAudioSessions(list);
+        setAudioBooked(await getMyAudioBookingIds(list.map((x) => x.id)));
+      } else {
+        setAudioRole('student');
+        setAudioPlanActive(false);
+        setAudioSessions([]);
+      }
+    } catch (e) {
+      console.log('VoiceRoomScreen: audio classes load error', e);
+    }
+  };
+  useFocusEffect(
+    React.useCallback(() => {
+      loadAudioClasses();
+    }, [])
+  );
+
+  const handleAudioAction = async (session: AudioSession) => {
+    if (audioBusyId) return;
+    setAudioBusyId(session.id);
+    try {
+      if (audioRole === 'student' && !audioBooked.has(session.id)) {
+        await bookAudioSession(session.id);
+        await loadAudioClasses();
+        Alert.alert('Seat booked', 'Your seat is booked. Come back here to join when the class starts.');
+      } else {
+        await launchAudioRoom(startCall, session);
+      }
+    } catch (e: any) {
+      Alert.alert('Group Class', e?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setAudioBusyId(null);
+    }
+  };
+
+  const renderAudioClasses = () => (
+    <View style={{ marginBottom: 6 }}>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary, marginTop: 6, marginBottom: 8 }}>
+        Group Audio Classes
+      </Text>
+      {audioRole === 'student' && !audioPlanActive ? (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => navigation.navigate('ProgramFlowScreen', { mode: 'audio' })}
+          style={[styles.roomCardGlow, { backgroundColor: colors.bgCard, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0' }]}
+        >
+          <Text style={{ color: colors.textPrimary, fontWeight: '800', fontSize: 14 }}>Join group audio classes</Text>
+          <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 3 }}>
+            Get an Audio plan to book seats in live group classes. Tap to see plans.
+          </Text>
+        </TouchableOpacity>
+      ) : audioSessions.length === 0 ? (
+        <Text style={{ color: colors.textSecondary, fontSize: 12, marginBottom: 6 }}>
+          No group audio class is scheduled right now.
+        </Text>
+      ) : (
+        audioSessions.map((s) => {
+          const isHost = audioRole === 'teacher';
+          const booked = audioBooked.has(s.id);
+          const full = !isHost && !booked && s.bookedCount >= s.maxParticipants;
+          const label = isHost ? 'Join as host' : booked ? 'Join' : full ? 'Full' : 'Book seat';
+          return (
+            <View
+              key={s.id}
+              style={[styles.roomCardGlow, { backgroundColor: colors.bgCard, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0' }]}
+            >
+              <Text style={{ color: colors.textPrimary, fontWeight: '800', fontSize: 15 }} numberOfLines={1}>{s.title}</Text>
+              <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 3 }}>
+                {s.teacherName} · {s.date} · {s.startTime} - {s.endTime}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+                <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
+                  {s.bookedCount}/{s.maxParticipants} seats booked
+                </Text>
+                <TouchableOpacity
+                  disabled={full || audioBusyId === s.id}
+                  onPress={() => handleAudioAction(s)}
+                  activeOpacity={0.85}
+                  style={{ backgroundColor: full ? '#94A3B8' : '#0284C7', borderRadius: 18, paddingHorizontal: 16, paddingVertical: 8 }}
+                >
+                  {audioBusyId === s.id ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12.5 }}>{label}</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })
+      )}
+      {roomDataListHasOfficial && (
+        <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary, marginTop: 14, marginBottom: 8 }}>
+          Live Class Rooms
+        </Text>
+      )}
+    </View>
+  );
   const isDarkMode = themeHook?.isDarkMode || false;
 
   const colors = isDarkMode
@@ -120,16 +338,16 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         textPrimary: '#F8FAFC',
         textSecondary: '#94A3B8',
         primary: '#38BDF8',
-        bgCard: 'rgba(15, 23, 42, 0.90)',
-        border: 'rgba(56, 189, 248, 0.35)',
+        bgCard: 'rgba(15, 23, 42, 0.86)',
+        border: 'rgba(56, 189, 248, 0.28)',
       }
     : {
         bgLight: '#F8FAFC',
         textPrimary: '#0F172A',
         textSecondary: '#64748B',
         primary: '#0284C7',
-        bgCard: 'rgba(255, 255, 255, 0.95)',
-        border: '#CBD5E1',
+        bgCard: 'rgba(255, 255, 255, 0.94)',
+        border: '#E2E8F0',
       };
 
   const glowAnim = useRef(new Animated.Value(0.6)).current;
@@ -161,19 +379,33 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
 
     let isMounted = true;
     const checkAdminRights = async () => {
-      try {
-        const userEmail = currentUser.email?.toLowerCase().trim();
-        const [adminSnap, subAdminSnap] = await Promise.all([
-          firestore().collection('admins').where('email', '==', userEmail).get(),
-          firestore().collection('sub_admins').where('email', '==', userEmail).get(),
-        ]);
+      const rawEmail = (currentUser.email || '').trim();
+      const emails = Array.from(new Set([rawEmail.toLowerCase(), rawEmail])).filter(Boolean);
 
-        if (isMounted) {
-          setIsAdminOrSubAdmin(!adminSnap.empty || !subAdminSnap.empty);
+      // Each list is checked on its own: if one list cannot be read (for example a
+      // Firestore rule is missing), the other one still decides. Before, a failure in
+      // `sub_admins` also made real admins look like normal users, so "Create Room"
+      // for Class Rooms did not appear.
+      const isInList = async (collection: string) => {
+        try {
+          const snap = await firestore()
+            .collection(collection)
+            .where('email', 'in', emails)
+            .limit(1)
+            .get();
+          return !snap.empty;
+        } catch (error) {
+          console.error(`Error checking ${collection}:`, error);
+          return false;
         }
-      } catch (error) {
-        console.error('Error checking admin rights:', error);
-        if (isMounted) setIsAdminOrSubAdmin(false);
+      };
+
+      try {
+        const [isAdminUser, isSubAdminUser] = await Promise.all([
+          isInList('admins'),
+          isInList('sub_admins'),
+        ]);
+        if (isMounted) setIsAdminOrSubAdmin(isAdminUser || isSubAdminUser);
       } finally {
         if (isMounted) setCheckingRole(false);
       }
@@ -223,13 +455,30 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     }
   }, [route?.params?.roomId]);
 
-  const handleTabChange = (tab: 'public' | 'official', animateScroll: boolean = true) => {
+  const handleTabChange = (tab: 'public' | 'official') => {
     setActiveTab(tab);
-    if (pagerRef.current && animateScroll) {
-      const targetIndex = tab === 'public' ? 0 : 1;
-      pagerRef.current.scrollTo({ x: targetIndex * SCREEN_WIDTH, animated: true });
-    }
   };
+
+  // 🔑 THE ACTUAL FIX: previously, scrolling the pager to match the tapped
+  // tab happened INLINE inside handleTabChange, in the same call as
+  // setActiveTab. That scrollTo() call would occasionally silently no-op
+  // (pagerRef not yet attached / ScrollView mid-layout right after the
+  // loading spinner disappears), leaving `activeTab` saying "official"
+  // while the ScrollView was still physically sitting on page 0 (Study
+  // Rooms). Result: "Class Rooms" header + empty-state text, but Study
+  // Room cards still visible underneath — until you tapped the tab again
+  // and the scrollTo happened to succeed.
+  //
+  // Now the scroll is driven by a dedicated effect that re-runs on every
+  // `activeTab` change (tap OR anything else that sets it), so the pager
+  // position and the header text can never drift apart.
+  useEffect(() => {
+    const targetIndex = activeTab === 'public' ? 0 : 1;
+    const frame = requestAnimationFrame(() => {
+      pagerRef.current?.scrollTo({ x: targetIndex * SCREEN_WIDTH, animated: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTab]);
 
   const handleScrollEnd = (e: any) => {
     const xOffset = e.nativeEvent.contentOffset.x;
@@ -240,46 +489,23 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     }
   };
 
-  // 🚀 Animated Modal Open & Close
   const openCreateModal = () => {
+    if (activeTab === 'official' && audioRole === 'teacher') {
+      // Teachers create their group audio class from here
+      setClassModalOpen(true);
+      return;
+    }
     if (activeTab === 'official' && !isAdminOrSubAdmin) {
       Alert.alert('Restricted', 'Only Admins & Sub-Admins can create Class Rooms.');
       return;
     }
     setIsModalVisible(true);
-    Animated.parallel([
-      Animated.spring(modalScaleAnim, {
-        toValue: 1,
-        tension: 70,
-        friction: 7,
-        useNativeDriver: true,
-      }),
-      Animated.timing(modalOpacityAnim, {
-        toValue: 1,
-        duration: 200,
-        useNativeDriver: true,
-      }),
-    ]).start();
   };
 
   const closeModal = () => {
-    Animated.parallel([
-      Animated.timing(modalScaleAnim, {
-        toValue: 0.85,
-        duration: 160,
-        easing: Easing.in(Easing.ease),
-        useNativeDriver: true,
-      }),
-      Animated.timing(modalOpacityAnim, {
-        toValue: 0,
-        duration: 160,
-        useNativeDriver: true,
-      }),
-    ]).start(() => {
-      setIsModalVisible(false);
-      setRoomTitle('');
-      setRoomCategory('General English');
-    });
+    setIsModalVisible(false);
+    setRoomTitle('');
+    setRoomCategory('General English');
   };
 
   const handleInitiateCreateRoom = () => {
@@ -287,6 +513,17 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       Alert.alert('Required', 'Please enter a room title');
       return;
     }
+    // 🐛 ROOT-CAUSE FIX: pehle yahan sirf avatar-picker modal khulta tha,
+    // "Create Room" title-form wala `isModalVisible` overlay band NAHI
+    // hota tha — wo sirf BAAD me `handleProceedCreateRoom` ke poori tarah
+    // SUCCESS hone par `closeModal()` se band hota tha. Agar us async
+    // step ke beech kahin bhi (network, error) kuch atak jaaye, to ye
+    // poori-screen-cover karne wala overlay HAMESHA ke liye khula reh
+    // jaata — chahe upar call UI dikhta rahe (usse dhak jaata tha), call
+    // khatam hote hi ye "stuck" overlay surface ho jaata aur SAARE touches
+    // khud absorb kar leta (screen "dead" lagti), chahe khud blank/white
+    // hi kyun na dikhe.
+    setIsModalVisible(false);
     setPendingJoinRoom(null);
     setShowAvatarPickerModal(true);
   };
@@ -305,58 +542,46 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       const isPublicType = activeTab === 'public';
       const selectedType: 'public' | 'official' = isPublicType ? 'public' : 'official';
 
+      // 🆕 CREATE-ONLY FLOW: pehle yahan room create hote hi turant
+      // token fetch karke seedha call screen me navigate ho jaate the
+      // (auto-join). Ab creator turant join NAHI hota — room sirf
+      // Firestore me ek "not yet joined" entry ki tarah create hota hai,
+      // list me dikhta hai, aur creator baad me normal "join" flow
+      // (`handleInitiateJoinRoom` → `handleProceedJoinRoom`) se hi
+      // andar jaata hai, bilkul kisi aur participant ki tarah.
+      //
+      // Isi liye `totalParticipants`/`activeSpeakersCount` ab 0 se
+      // start hote hain — abhi tak koi actually LiveKit room me connect
+      // nahi hua hai.
       const roomData: Partial<VoiceRoom> = {
         title: roomTitle.trim(),
         category: roomCategory.trim() || 'General English',
         hostName: participantName,
-        activeSpeakersCount: 1,
-        totalParticipants: 1,
+        activeSpeakersCount: 0,
+        totalParticipants: 0,
         livekitRoomId: livekitRoomName,
         createdBy: currentUser?.uid || '',
         type: selectedType,
-        maxLimit: 9999,
+        maxLimit: isPublicType ? 10 : 9999,
         createdAt: firestore.FieldValue.serverTimestamp(),
       };
 
-      const url = `${TOKEN_SERVER_BASE_URL}/getToken?roomName=${encodeURIComponent(
-        livekitRoomName
-      )}&participantName=${encodeURIComponent(participantName)}`;
-
-      const response = await fetch(url);
-      const responseText = await response.text();
-
-      let data: any;
-      try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error('Server returned invalid response format.');
-      }
-
-      if (!response.ok || !data.token) {
-        throw new Error(data?.error || `Server error with status ${response.status}`);
-      }
-
       await newRoomRef.set(roomData);
+
       setCreating(false);
       closeModal();
-
-      const targetScreen = selectedType === 'official' ? 'ClassRoomScreen' : 'StudyRoomScreen';
-      navigation.navigate(targetScreen, {
-        serverUrl: data.serverUrl || LIVEKIT_FALLBACK_URL,
-        token: data.token,
-        roomTitle: roomData.title,
-        isHost: true,
-        roomId: roomId,
-        userAvatarUrl: chosenAvatarUrl,
-      });
     } catch (error: any) {
       setCreating(false);
       console.error('Create Room Error:', error);
-      Alert.alert('Error', error.message || 'Failed to connect to token server.');
+      Alert.alert('Error', error.message || 'Failed to create room.');
     }
   };
 
   const handleInitiateJoinRoom = (item: VoiceRoom) => {
+    if (item.type === 'public' && (item.totalParticipants || 0) >= 10) {
+      Alert.alert('Room Full', 'This public study room has reached its maximum limit of 10 users.');
+      return;
+    }
     setPendingJoinRoom(item);
     setShowAvatarPickerModal(true);
   };
@@ -370,23 +595,42 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       const participantName =
         currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
 
-      const url = `${TOKEN_SERVER_BASE_URL}/getToken?roomName=${encodeURIComponent(
-        pendingJoinRoom.livekitRoomId
-      )}&participantName=${encodeURIComponent(participantName)}`;
-
-      const response = await fetch(url);
-      const responseText = await response.text();
-
+      // One Cloud Function gives the token for BOTH room types. The server checks:
+      //  - Study Room (public): login is enough.
+      //  - Class Room (official): active Audio plan (or admin / sub-admin / creator).
       let data: any;
       try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error('Server returned invalid response format.');
+        const res: any = await functions().httpsCallable('getLiveKitToken')({
+          roomName: pendingJoinRoom.livekitRoomId,
+          participantName,
+        });
+        data = { token: res.data?.token, serverUrl: LIVEKIT_FALLBACK_URL };
+      } catch (e: any) {
+        const code = e?.code || '';
+        if (
+          pendingJoinRoom.type === 'official' &&
+          (code === 'functions/permission-denied' || code === 'permission-denied')
+        ) {
+          setIsJoiningPending(false);
+          Alert.alert(
+            'Audio Plan Required',
+            'Group classes are included in the Audio Mode plan. Choose a plan to join.',
+            [
+              { text: 'Not now', style: 'cancel' },
+              {
+                text: 'View Plans',
+                onPress: () => navigation.navigate('ProgramFlowScreen', { mode: 'audio' }),
+              },
+            ]
+          );
+          return;
+        }
+        if (code === 'functions/not-found' || code === 'not-found') {
+          throw new Error('This room is no longer available.');
+        }
+        throw new Error('Could not connect to the room. Please check your internet and try again.');
       }
-
-      if (!response.ok || !data.token) {
-        throw new Error(data?.error || 'Failed to fetch token');
-      }
+      if (!data.token) throw new Error('Failed to get the room token.');
 
       const targetScreen = pendingJoinRoom.type === 'official' ? 'ClassRoomScreen' : 'StudyRoomScreen';
       setIsJoiningPending(false);
@@ -402,47 +646,47 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     } catch (error: any) {
       setIsJoiningPending(false);
       console.error('Join Room Error:', error);
-      Alert.alert('Error', 'Unable to join room. Check token server.');
+      Alert.alert('Error', error.message || 'Unable to join the room.');
     }
   };
 
   const publicRooms = rooms.filter(r => r.type === 'public' || !r.type);
   const officialRooms = rooms.filter(r => r.type === 'official');
-  const canCreateInCurrentTab = activeTab === 'public' || (activeTab === 'official' && isAdminOrSubAdmin);
-
-  const displayRoomTitle = t?.rooms?.title || 'Voice Rooms';
-  const displaySubtitle = t?.rooms?.subtitle || 'Practice live audio communication instantly';
-  const displaySectionTitle = activeTab === 'public' ? 'Active Study Rooms' : 'Official Live Classes';
+  const roomDataListHasOfficial = officialRooms.length > 0;
+  const canCreateInCurrentTab = activeTab === 'public' || (activeTab === 'official' && (isAdminOrSubAdmin || audioRole === 'teacher'));
 
   const renderRoomList = (roomDataList: VoiceRoom[], isOfficialTab: boolean) => (
     <View style={{ width: SCREEN_WIDTH, paddingHorizontal: 16 }}>
       <FlatList
         data={roomDataList}
         keyExtractor={item => item.id}
+        ListHeaderComponent={isOfficialTab ? renderAudioClasses() : null}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => {
-          const isFull = false;
+          const isFull = item.type === 'public' && (item.totalParticipants || 0) >= 10;
           const isTargeted = item.id === highlightedRoomId;
 
           return (
             <TouchableOpacity
               style={[
-                styles.roomCardDeepEmboss,
-                isDarkMode ? styles.darkCardEmboss : styles.lightCardEmboss,
+                styles.roomCardGlow,
+                {
+                  backgroundColor: colors.bgCard,
+                  borderColor: isTargeted
+                    ? '#0284C7'
+                    : (isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0'),
+                },
                 isTargeted && styles.roomCardTargetedGlow,
               ]}
               activeOpacity={0.88}
               onPress={() => handleInitiateJoinRoom(item)}
             >
-              <View style={[styles.cardSpecularRim, isDarkMode ? styles.darkCardRim : styles.lightCardRim]} />
-
               <View style={styles.roomCardHeader}>
                 <View
                   style={[
                     styles.liveBadgeGlow,
-                    { backgroundColor: isFull ? 'rgba(239, 68, 68, 0.15)' : 'rgba(16, 185, 129, 0.15)' },
-                    isDarkMode ? styles.darkPillEmboss : styles.lightPillEmboss,
+                    { backgroundColor: isFull ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
                   ]}
                 >
                   <Volume2 color={isFull ? '#EF4444' : '#10B981'} size={13} style={{ marginRight: 4 }} />
@@ -459,12 +703,15 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 <View
                   style={[
                     styles.listenerCountContainer,
-                    isDarkMode ? styles.darkPillEmboss : styles.lightPillEmboss,
+                    {
+                      backgroundColor: isDarkMode ? 'rgba(30, 41, 59, 0.75)' : '#F8FAFC',
+                      borderColor: isDarkMode ? 'rgba(148, 163, 184, 0.2)' : '#E2E8F0',
+                    },
                   ]}
                 >
                   <Users color={isDarkMode ? '#38BDF8' : '#0284C7'} size={13} />
                   <Text style={[styles.listenerCountText, { color: colors.textPrimary }]}>
-                    {item.totalParticipants || 1} {t?.rooms?.listening || 'listening'}
+                    {item.totalParticipants || 1}{item.type === 'public' ? '/10' : ''} {t?.rooms?.listening || 'listening'}
                   </Text>
                 </View>
               </View>
@@ -483,7 +730,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 </View>
               </View>
 
-              <View style={[styles.roomCardFooter, { borderTopColor: isDarkMode ? 'rgba(56, 189, 248, 0.2)' : 'rgba(203, 213, 225, 0.7)' }]}>
+              <View style={[styles.roomCardFooter, { borderTopColor: isDarkMode ? 'rgba(51, 65, 85, 0.4)' : '#F1F5F9' }]}>
                 <View style={styles.tagsContainer}>
                   <View
                     style={[
@@ -514,20 +761,23 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
           );
         }}
         ListEmptyComponent={
+          isOfficialTab && audioSessions.length > 0 ? null : (
           <View style={styles.emptyContainer}>
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
               {isOfficialTab
-                ? 'Abhi koi official class room active nahi hai.'
-                : 'Koi study group active nahi hai. Aap pehla room create karein!'}
+                ? 'There is currently no active official classroom.'
+                : 'No study group is active. Create the first room!'}
             </Text>
           </View>
+          )
         }
       />
     </View>
   );
 
   return (
-    <View style={styles.rootWrapper}>
+    <View key={remountSignal} style={styles.rootWrapper}>
+      {/* 🌟 Dynamic Background: Light me room2-p2.png & Dark me room2.png */}
       <ImageBackground
         source={
           isDarkMode
@@ -544,7 +794,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
           {
             backgroundColor: isDarkMode
               ? 'rgba(7, 13, 27, 0.65)'
-              : 'rgba(255, 255, 255, 0.40)',
+              : 'rgba(255, 255, 255, 0.55)',
           },
         ]}
       >
@@ -556,140 +806,59 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
 
         {/* ─── HEADER ─── */}
         <View style={styles.fixedHeader}>
-          {navigation?.canGoBack() && (
-            <TouchableOpacity
-              style={[
-                styles.backButton,
-                {
-                  backgroundColor: isDarkMode ? 'rgba(30, 41, 59, 0.75)' : '#FFFFFF',
-                  borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#E2E8F0',
-                },
-              ]}
-              onPress={() => navigation.goBack()}
-              activeOpacity={0.7}
-            >
-              <ChevronLeft size={22} color={colors.textPrimary} />
-            </TouchableOpacity>
-          )}
-
-          {/* 🎙️ 3D Metallic Mic Image (Responsive & Perfectly Sized like Reference) */}
-          <View style={styles.headerMicContainer} pointerEvents="none">
-            <Image
-              source={require('../../../assets/voice-room.png')}
-              style={styles.headerMicImg}
-              resizeMode="contain"
-            />
-          </View>
-
-          <View style={styles.centerHeaderContainer}>
-            <View
-              style={[
-                styles.headerBadgePill,
-                {
-                  backgroundColor: isDarkMode ? 'rgba(56, 189, 248, 0.14)' : '#E0F2FE',
-                  borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.35)' : '#BAE6FD',
-                },
-              ]}
-            >
-              <Radio size={11} color={isDarkMode ? '#38BDF8' : '#0284C7'} />
-              <Text
+          <View style={styles.headerTopRow}>
+            {navigation?.canGoBack() && (
+              <TouchableOpacity
                 style={[
-                  styles.headerBadgePillText,
-                  { color: isDarkMode ? '#38BDF8' : '#0284C7' },
-                ]}
-              >
-                LIVE AUDIO SPACES
-              </Text>
-            </View>
-
-            {/* Title */}
-            <View style={styles.embossWrapper}>
-              <Text
-                style={[
-                  styles.embossBaseText,
-                  styles.embossHighlightLayer,
-                  { color: isDarkMode ? 'rgba(56, 189, 248, 0.6)' : '#FFFFFF' },
-                ]}
-              >
-                {displayRoomTitle}
-              </Text>
-
-              <Text
-                style={[
-                  styles.embossBaseText,
-                  styles.embossShadowLayer,
-                  { color: isDarkMode ? '#020617' : 'rgba(0, 0, 0, 0.35)' },
-                ]}
-              >
-                {displayRoomTitle}
-              </Text>
-
-              <Text
-                style={[
-                  styles.embossBaseText,
+                  styles.backButton,
                   {
-                    color: isDarkMode ? '#FFFFFF' : '#475569',
-                    textShadowColor: isDarkMode ? '#38BDF8' : 'rgba(0, 0, 0, 0.5)',
-                    textShadowOffset: isDarkMode ? { width: 0, height: 1 } : { width: 1, height: 1 },
-                    textShadowRadius: isDarkMode ? 8 : 2,
+                    backgroundColor: isDarkMode ? 'rgba(30, 41, 59, 0.75)' : '#FFFFFF',
+                    borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#E2E8F0',
+                  },
+                ]}
+                onPress={() => navigation.goBack()}
+                activeOpacity={0.7}
+              >
+                <ChevronLeft size={22} color={colors.textPrimary} />
+              </TouchableOpacity>
+            )}
+
+            <View style={{ flex: 1 }}>
+              <View
+                style={[
+                  styles.headerBadgePill,
+                  {
+                    backgroundColor: isDarkMode ? 'rgba(56, 189, 248, 0.14)' : '#E0F2FE',
+                    borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#BAE6FD',
                   },
                 ]}
               >
-                {displayRoomTitle}
-              </Text>
-            </View>
-
-            {/* Subtitle */}
-            <View
-              style={[
-                styles.subtitleEmbossCapsule,
-                isDarkMode ? styles.subtitleDarkEmboss : styles.subtitleLightEmboss,
-              ]}
-            >
-              <View style={styles.subtitleLayerWrapper}>
+                <Radio size={12} color={isDarkMode ? '#38BDF8' : '#0284C7'} />
                 <Text
                   style={[
-                    styles.subtitleBaseText,
-                    styles.subtitleHighlightLayer,
-                    { color: isDarkMode ? 'rgba(56, 189, 248, 0.45)' : '#FFFFFF' },
+                    styles.headerBadgePillText,
+                    { color: isDarkMode ? '#38BDF8' : '#0284C7' },
                   ]}
                 >
-                  {displaySubtitle}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.subtitleBaseText,
-                    styles.subtitleShadowLayer,
-                    { color: isDarkMode ? '#000000' : 'rgba(15, 23, 42, 0.35)' },
-                  ]}
-                >
-                  {displaySubtitle}
-                </Text>
-
-                <Text
-                  style={[
-                    styles.subtitleBaseText,
-                    {
-                      color: isDarkMode ? '#E2E8F0' : '#334155',
-                      textShadowColor: isDarkMode ? 'rgba(56, 189, 248, 0.8)' : '#FFFFFF',
-                      textShadowOffset: isDarkMode ? { width: 0, height: 1 } : { width: -0.5, height: -0.5 },
-                      textShadowRadius: isDarkMode ? 4 : 1,
-                    },
-                  ]}
-                >
-                  {displaySubtitle}
+                  LIVE AUDIO SPACES
                 </Text>
               </View>
+              <Text style={[styles.title, { color: colors.textPrimary }]}>
+                {t?.rooms?.title || 'Voice Rooms'}
+              </Text>
             </View>
           </View>
 
-          {/* ─── 💎 TOP NAVIGATION TABS ─── */}
+          <Text style={[styles.subtitle, { color: colors.textSecondary }]}>
+            {t?.rooms?.subtitle || 'Connect with learners & speak fluently in real time'}
+          </Text>
+
+          {/* Tab Control */}
           <View
             style={[
               styles.tabBarContainer,
               {
-                backgroundColor: isDarkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(238, 242, 246, 0.85)',
+                backgroundColor: isDarkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(241, 245, 249, 0.88)',
                 borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.2)' : '#E2E8F0',
               },
             ]}
@@ -699,29 +868,20 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 styles.tabButton,
                 activeTab === 'public' && [
                   styles.activeTabButton,
-                  {
-                    backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF',
-                  },
+                  { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' },
                 ],
               ]}
               onPress={() => handleTabChange('public')}
               activeOpacity={0.8}
             >
-              <GraduationCap
-                size={18}
-                color={activeTab === 'public' ? '#0284C7' : '#64748B'}
-                strokeWidth={2.5}
-                style={{ marginRight: 6 }}
-              />
-              <Text style={styles.tabTextRow}>
-                <Text
-                  style={[
-                    styles.tabPrimaryText,
-                    { color: activeTab === 'public' ? (isDarkMode ? '#38BDF8' : '#0284C7') : colors.textSecondary },
-                  ]}
-                >
-                  Study Rooms{' '}
-                </Text>
+              <Text
+                style={[
+                  styles.tabText,
+                  { color: colors.textSecondary },
+                  activeTab === 'public' && { color: isDarkMode ? '#38BDF8' : '#0284C7', fontWeight: '800' },
+                ]}
+              >
+                Study Rooms (Max 10)
               </Text>
             </TouchableOpacity>
 
@@ -730,20 +890,12 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 styles.tabButton,
                 activeTab === 'official' && [
                   styles.activeTabButton,
-                  {
-                    backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF',
-                  },
+                  { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' },
                 ],
               ]}
               onPress={() => handleTabChange('official')}
               activeOpacity={0.8}
             >
-              <Users
-                size={17}
-                color={activeTab === 'official' ? (isDarkMode ? '#38BDF8' : '#0284C7') : '#64748B'}
-                strokeWidth={2.4}
-                style={{ marginRight: 6 }}
-              />
               <Text
                 style={[
                   styles.tabText,
@@ -757,57 +909,15 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
           </View>
         </View>
 
-        {/* ─── 🌟 SECTION CARD WITH REPLACED 3D BOOK.PNG IMAGE ─── */}
+        {/* ─── SECTION HEADER BAR ─── */}
         <View style={styles.sectionHeaderRow}>
-          <View
-            style={[
-              styles.sectionMainCard,
-              isDarkMode ? styles.darkSectionCard : styles.lightSectionCard,
-            ]}
-          >
-            <View style={styles.sectionCardContent}>
-              {/* 📖 Real 3D Book Image Replaced Responsive */}
-              <Image
-                source={require('../../../assets/book.png')}
-                style={styles.book3dImage}
-                resizeMode="contain"
-              />
-
-              {/* Text Column with Dark Blue Heading */}
-              <View style={styles.sectionCardTextCol}>
-                <Text
-                  style={[
-                    styles.sectionHeadingClear,
-                    { color: isDarkMode ? '#F8FAFC' : '#0A1931' },
-                  ]}
-                  numberOfLines={1}
-                >
-                  {displaySectionTitle}
-                </Text>
-                <Text
-                  style={[
-                    styles.sectionSubtitleClear,
-                    { color: isDarkMode ? '#94A3B8' : '#64748B' },
-                  ]}
-                  numberOfLines={1}
-                >
-                  Tap or swipe between rooms
-                </Text>
-              </View>
-
-              {/* Decorative Dot Matrix Grid */}
-              <View style={styles.dotMatrixGrid}>
-                {[...Array(6)].map((_, i) => (
-                  <View
-                    key={i}
-                    style={[
-                      styles.matrixDot,
-                      { backgroundColor: isDarkMode ? 'rgba(56, 189, 248, 0.4)' : '#93C5FD' },
-                    ]}
-                  />
-                ))}
-              </View>
-            </View>
+          <View>
+            <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
+              {activeTab === 'public' ? 'Active Study Rooms' : 'Official Live Classes'}
+            </Text>
+            <Text style={{ fontSize: 11.5, color: colors.textSecondary, marginTop: 1 }}>
+              Tap or swipe between rooms
+            </Text>
           </View>
 
           {canCreateInCurrentTab && (
@@ -818,7 +928,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 activeOpacity={0.85}
               >
                 <Plus size={15} color="#FFFFFF" strokeWidth={3} />
-                <Text style={styles.glowingCreateBtnText}>Create Room</Text>
+                <Text style={styles.glowingCreateBtnText}>{activeTab === 'official' && audioRole === 'teacher' && !isAdminOrSubAdmin ? 'Create Class' : 'Create Room'}</Text>
               </TouchableOpacity>
             </Animated.View>
           )}
@@ -844,30 +954,130 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
             scrollEventThrottle={16}
             style={{ flex: 1 }}
           >
+            {/* Page 0: Study Rooms */}
             {renderRoomList(publicRooms, false)}
+
+            {/* Page 1: Class Rooms */}
             {renderRoomList(officialRooms, true)}
           </ScrollView>
         )}
 
-        {/* ─── 🚀 ANIMATED CREATE ROOM DETAILS MODAL ─── */}
-        <Modal
-          visible={isModalVisible}
-          transparent
-          animationType="none"
-          onRequestClose={closeModal}
-        >
+        {/* ─── CREATE GROUP AUDIO CLASS (teachers) ─── */}
+        {classModalOpen && (
+          <View style={styles.customModalOverlay}>
+            <Pressable style={styles.overlayBackground} onPress={() => setClassModalOpen(false)} />
+            <View style={[styles.customModalCard, { backgroundColor: isDarkMode ? '#0F172A' : '#FFFFFF', maxHeight: '88%' }]}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Create Group Audio Class</Text>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Title</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  placeholder="e.g. Speaking practice: daily life"
+                  placeholderTextColor="#64748B"
+                  value={classTitle}
+                  onChangeText={setClassTitle}
+                  maxLength={80}
+                />
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Description (optional)</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  placeholder="What will students do in this class?"
+                  placeholderTextColor="#64748B"
+                  value={classDesc}
+                  onChangeText={setClassDesc}
+                  maxLength={500}
+                />
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Date</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                  {classDays.map((d, i) => {
+                    const active = i === classDayOffset;
+                    return (
+                      <TouchableOpacity
+                        key={i}
+                        onPress={() => setClassDayOffset(i)}
+                        style={{ width: 52, paddingVertical: 8, marginRight: 8, borderRadius: 12, alignItems: 'center', backgroundColor: active ? '#0284C7' : (isDarkMode ? '#1E293B' : '#F1F5F9') }}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: active ? '#FFF' : colors.textSecondary }}>
+                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]}
+                        </Text>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: active ? '#FFF' : colors.textPrimary }}>{d.getDate()}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Start time (24-hour, India time)</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <TextInput
+                    style={[styles.input, { width: 70, textAlign: 'center', marginBottom: 0, color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                    value={classHour}
+                    onChangeText={(t) => setClassHour(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    placeholder="HH"
+                    placeholderTextColor="#64748B"
+                  />
+                  <Text style={{ color: colors.textSecondary, fontWeight: '800' }}>:</Text>
+                  <TextInput
+                    style={[styles.input, { width: 70, textAlign: 'center', marginBottom: 0, color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                    value={classMin}
+                    onChangeText={(t) => setClassMin(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    placeholder="MM"
+                    placeholderTextColor="#64748B"
+                  />
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Duration</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  {[30, 45, 60, 90].map((dur) => {
+                    const active = dur === classDuration;
+                    return (
+                      <TouchableOpacity
+                        key={dur}
+                        onPress={() => setClassDuration(dur)}
+                        style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: active ? '#0284C7' : (isDarkMode ? '#1E293B' : '#F1F5F9') }}
+                      >
+                        <Text style={{ fontWeight: '700', color: active ? '#FFF' : colors.textPrimary }}>{dur} min</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Maximum students</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  value={classSeats}
+                  onChangeText={(t) => setClassSeats(t.replace(/[^0-9]/g, ''))}
+                  keyboardType="number-pad"
+                  maxLength={3}
+                />
+
+                <TouchableOpacity
+                  onPress={submitClass}
+                  disabled={classSaving}
+                  activeOpacity={0.85}
+                  style={{ backgroundColor: '#0284C7', borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 6 }}
+                >
+                  {classSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 14 }}>Create class</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setClassModalOpen(false)} style={{ alignItems: 'center', paddingVertical: 12 }}>
+                  <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>Cancel</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
+        )}
+
+        {/* ─── CREATE ROOM DETAILS MODAL ─── */}
+        {isModalVisible && (
           <View style={styles.customModalOverlay}>
             <Pressable style={styles.overlayBackground} onPress={closeModal} />
-            <Animated.View
-              style={[
-                styles.customModalCard,
-                {
-                  backgroundColor: isDarkMode ? '#0F172A' : '#FFFFFF',
-                  opacity: modalOpacityAnim,
-                  transform: [{ scale: modalScaleAnim }],
-                },
-              ]}
-            >
+            <View style={[styles.customModalCard, { backgroundColor: isDarkMode ? '#0F172A' : '#FFFFFF' }]}>
               <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>
                 Create {activeTab === 'public' ? 'Study' : 'Class'} Room
               </Text>
@@ -922,9 +1132,9 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                   <Text style={styles.submitBtnText}>Next: Choose Avatar ›</Text>
                 </TouchableOpacity>
               </View>
-            </Animated.View>
+            </View>
           </View>
-        </Modal>
+        )}
 
         {/* ─── ILLUSTRATED AVATAR PICKER MODAL ─── */}
         <Modal
@@ -1029,15 +1239,31 @@ const styles = StyleSheet.create({
   },
   fixedHeader: {
     paddingHorizontal: 16,
-    paddingTop: (STATUSBAR_HEIGHT || 0) + 8,
+    paddingTop: (STATUSBAR_HEIGHT || 0) + 10,
     paddingBottom: 8,
-    position: 'relative',
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  headerBadgePill: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 5,
+    alignSelf: 'flex-start',
+    paddingHorizontal: 8,
+    paddingVertical: 2.5,
+    borderRadius: 8,
+    borderWidth: 1,
+    marginBottom: 4,
+  },
+  headerBadgePillText: {
+    fontSize: 10,
+    fontWeight: '800',
+    letterSpacing: 0.6,
   },
   backButton: {
-    position: 'absolute',
-    left: 16,
-    top: (STATUSBAR_HEIGHT || 0) + 12,
-    zIndex: 10,
     width: 38,
     height: 38,
     borderRadius: 19,
@@ -1045,316 +1271,94 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     borderWidth: 1.2,
   },
-
-  // 🎙️ Header Top Right Mic Image (Prominent & Balanced)
-  headerMicContainer: {
-    position: 'absolute',
-    right: 8,
-    top: (STATUSBAR_HEIGHT || 0) - 2,
-    zIndex: 4,
-  },
-  headerMicImg: {
-    width: MIC_IMG_SIZE,
-    height: MIC_IMG_SIZE,
-  },
-
-  centerHeaderContainer: {
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 48,
-    marginTop: 2,
-  },
-  headerBadgePill: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 5,
-    paddingHorizontal: 10,
-    paddingVertical: 3,
-    borderRadius: 12,
-    borderWidth: 1,
-    marginBottom: 6,
-  },
-  headerBadgePillText: {
-    fontSize: 10,
-    fontWeight: '800',
-    letterSpacing: 0.8,
-  },
-  
-  // Title
-  embossWrapper: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 38,
-  },
-  embossBaseText: {
-    fontSize: 29,
+  title: {
+    fontSize: 27,
     fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: 0.8,
+    letterSpacing: -0.5,
   },
-  embossHighlightLayer: {
-    position: 'absolute',
-    top: -1.2,
-    left: -1.2,
+  subtitle: {
+    fontSize: 13,
+    marginTop: 4,
+    fontWeight: '500',
   },
-  embossShadowLayer: {
-    position: 'absolute',
-    bottom: -1.5,
-    right: -1.5,
-  },
-
-  // Subtitle
-  subtitleEmbossCapsule: {
-    paddingHorizontal: 14,
-    paddingVertical: 6,
-    borderRadius: 16,
-    marginTop: 8,
-    borderWidth: 1.4,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  subtitleDarkEmboss: {
-    backgroundColor: 'rgba(15, 23, 42, 0.75)',
-    borderColor: 'rgba(56, 189, 248, 0.45)',
-    shadowColor: '#38BDF8',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.35,
-    shadowRadius: 5,
-    elevation: 4,
-  },
-  subtitleLightEmboss: {
-    backgroundColor: '#EEF2F6',
-    borderColor: '#CBD5E1',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
-    shadowRadius: 4,
-    borderTopColor: '#FFFFFF',
-    borderLeftColor: '#FFFFFF',
-    borderBottomColor: '#94A3B8',
-    borderRightColor: '#94A3B8',
-    elevation: 3,
-  },
-  subtitleLayerWrapper: {
-    position: 'relative',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  subtitleBaseText: {
-    fontSize: 12,
-    fontWeight: '700',
-    textAlign: 'center',
-    letterSpacing: 0.3,
-  },
-  subtitleHighlightLayer: {
-    position: 'absolute',
-    top: -1,
-    left: -1,
-  },
-  subtitleShadowLayer: {
-    position: 'absolute',
-    bottom: -1,
-    right: -1,
-  },
-
-  // Tab Bar
   tabBarContainer: {
     flexDirection: 'row',
-    borderRadius: 20,
+    borderRadius: 16,
     padding: 4,
     marginTop: 14,
     borderWidth: 1,
   },
   tabButton: {
     flex: 1,
-    flexDirection: 'row',
-    paddingVertical: 11,
+    paddingVertical: 10,
     alignItems: 'center',
-    justifyContent: 'center',
-    borderRadius: 16,
+    borderRadius: 12,
   },
   activeTabButton: {
+    shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.12,
+    shadowOpacity: 0.1,
     shadowRadius: 4,
     elevation: 3,
-  },
-  tabTextRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  tabPrimaryText: {
-    fontSize: 13,
-    fontWeight: '800',
-  },
-  tabSecondaryTag: {
-    fontSize: 13,
-    fontWeight: '900',
   },
   tabText: {
     fontSize: 13,
     fontWeight: '600',
   },
-
-  // ─── SECTION CARD ───
+  scrollContent: {
+    paddingBottom: 40,
+    paddingTop: 4,
+  },
   sectionHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     paddingHorizontal: 16,
     marginVertical: 12,
-    gap: 10,
   },
-  sectionMainCard: {
-    flex: 1,
-    borderRadius: 22,
-    paddingHorizontal: 12,
-    paddingVertical: 10,
-    borderWidth: 1.2,
-    position: 'relative',
-    overflow: 'hidden',
+  sectionHeading: {
+    fontSize: 17,
+    fontWeight: '800',
+    letterSpacing: -0.2,
   },
-  darkSectionCard: {
-    backgroundColor: 'rgba(15, 23, 42, 0.90)',
-    borderColor: 'rgba(56, 189, 248, 0.35)',
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 6,
-    elevation: 4,
-  },
-  lightSectionCard: {
-    backgroundColor: '#E0E7FF',
-    borderColor: '#C7D2FE',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.08,
-    shadowRadius: 5,
-    elevation: 3,
-  },
-  sectionCardContent: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-
-  // 📖 3D Book Image (Smooth & Direct)
-  book3dImage: {
-    width: BOOK_IMG_SIZE,
-    height: BOOK_IMG_SIZE,
-    marginRight: 10,
-  },
-
-  sectionCardTextCol: {
-    flex: 1,
-  },
-  sectionHeadingClear: {
-    fontSize: 17.5,
-    fontWeight: '900',
-    letterSpacing: -0.3,
-  },
-  sectionSubtitleClear: {
-    fontSize: 11.5,
-    fontWeight: '600',
-    marginTop: 2,
-  },
-  dotMatrixGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    width: 20,
-    gap: 4,
-    marginLeft: 6,
-  },
-  matrixDot: {
-    width: 4,
-    height: 4,
-    borderRadius: 2,
-  },
-
   glowingCreateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    backgroundColor: '#2563EB',
-    paddingHorizontal: 15,
-    paddingVertical: 11,
+    backgroundColor: '#0284C7',
+    paddingHorizontal: 14,
+    paddingVertical: 9,
     borderRadius: 22,
-    shadowColor: '#2563EB',
+    shadowColor: '#38BDF8',
     shadowOffset: { width: 0, height: 3 },
     shadowOpacity: 0.45,
     shadowRadius: 8,
     elevation: 6,
+    borderWidth: 1.2,
+    borderColor: '#7DD3FC',
   },
   glowingCreateBtnText: {
     color: '#FFFFFF',
     fontWeight: '800',
-    fontSize: 13,
+    fontSize: 12.5,
   },
-
-  // Room Cards
-  scrollContent: {
-    paddingBottom: 40,
-    paddingTop: 6,
-  },
-  roomCardDeepEmboss: {
-    borderRadius: 24,
-    padding: 17,
-    marginBottom: 16,
-    position: 'relative',
-    overflow: 'hidden',
-    borderWidth: 1.8,
-  },
-  darkCardEmboss: {
-    backgroundColor: 'rgba(15, 23, 42, 0.88)',
-    borderColor: 'rgba(56, 189, 248, 0.45)',
-    shadowColor: '#0284C7',
-    shadowOffset: { width: 0, height: 5 },
-    shadowOpacity: 0.38,
-    shadowRadius: 10,
-    elevation: 7,
-  },
-  lightCardEmboss: {
-    backgroundColor: '#F8FAFC',
-    borderColor: '#E2E8F0',
-    borderTopColor: '#FFFFFF',
-    borderLeftColor: '#FFFFFF',
-    borderBottomColor: '#94A3B8',
-    borderRightColor: '#94A3B8',
+  roomCardGlow: {
+    borderRadius: 22,
+    padding: 16,
+    marginBottom: 14,
+    borderWidth: 1.5,
+    elevation: 3,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 4,
-  },
-  cardSpecularRim: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 3,
-  },
-  darkCardRim: {
-    backgroundColor: 'rgba(56, 189, 248, 0.5)',
-  },
-  lightCardRim: {
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-  },
-  darkPillEmboss: {
-    backgroundColor: 'rgba(30, 41, 59, 0.85)',
-    borderWidth: 1,
-    borderColor: 'rgba(56, 189, 248, 0.3)',
-  },
-  lightPillEmboss: {
-    backgroundColor: '#FFFFFF',
-    borderWidth: 1,
-    borderColor: '#CBD5E1',
+    shadowOffset: { width: 0, height: 3 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
   },
   roomCardTargetedGlow: {
-    borderWidth: 2.2,
-    borderColor: '#38BDF8',
-    shadowColor: '#38BDF8',
-    shadowOpacity: 0.6,
-    shadowRadius: 12,
+    borderWidth: 2,
+    borderColor: '#0284C7',
+    shadowColor: '#0284C7',
+    shadowOpacity: 0.4,
+    shadowRadius: 8,
   },
   roomCardHeader: {
     flexDirection: 'row',
@@ -1380,6 +1384,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 4,
     borderRadius: 20,
+    borderWidth: 1,
     gap: 5,
   },
   listenerCountText: {
@@ -1433,17 +1438,17 @@ const styles = StyleSheet.create({
     fontWeight: '800',
   },
   glowArrowButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 17,
+    width: 32,
+    height: 32,
+    borderRadius: 16,
     backgroundColor: '#0284C7',
     justifyContent: 'center',
     alignItems: 'center',
     shadowColor: '#0284C7',
     shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.4,
-    shadowRadius: 5,
-    elevation: 4,
+    shadowOpacity: 0.35,
+    shadowRadius: 4,
+    elevation: 3,
   },
   loaderContainer: {
     flex: 1,
@@ -1462,10 +1467,14 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   customModalOverlay: {
-    flex: 1,
+    position: 'absolute',
+    top: 0,
+    bottom: 0,
+    left: 0,
+    right: 0,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: 'rgba(0,0,0,0.65)',
+    zIndex: 1000,
   },
   overlayBackground: {
     position: 'absolute',
@@ -1473,6 +1482,7 @@ const styles = StyleSheet.create({
     bottom: 0,
     left: 0,
     right: 0,
+    backgroundColor: 'rgba(0,0,0,0.65)',
   },
   customModalCard: {
     width: '88%',

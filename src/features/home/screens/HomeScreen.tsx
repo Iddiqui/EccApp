@@ -41,11 +41,31 @@ import {
   Pause,
   Trash2,
   RotateCcw,
-  Headphones,
-  CheckCircle2,
-  BarChart3
+  Headphones
 } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
+import {
+  checkIsHost,
+  getMyUpcomingSessionsAsStudent,
+  getMyUpcomingSessionsAsTeacher,
+  getAllAvailableSlots,
+  bookAndPaySession,
+  joinVideoSession,
+  getDemoConfig,
+  checkIsAdmin,
+  getMyTeacherProfile,
+  getAudioSessionsForTeacher,
+  getMyAudioBookingIds,
+  type AudioSession,
+  type OpenSlot,
+  type DemoConfig,
+} from '../../sessions/sessionService';
+import { getSessionsToReview } from '../../sessions/reviewService';
+import { useCallSession } from './CallSessionProvider';
+import { launchAudioRoom } from '../../sessions/audioRoomLauncher';
+import { getMySubscriptions } from '../../payments/paymentService';
+import type { ProgramAccess } from '../../payments/paymentTypes';
+import type { Booking } from '../../sessions/sessionTypes';
 
 // Sound module for playback
 let SoundPlayer: any = null;
@@ -199,8 +219,334 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+// Shared look of the Home "trial" and "plan" cards
+const homeActionCard = {
+  width: '100%' as const,
+  marginRight: 0,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 12,
+};
+const homeIconCircle = {
+  width: 48,
+  height: 48,
+  borderRadius: 24,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+};
+const homePill = { borderRadius: 22, paddingHorizontal: 14, paddingVertical: 10 };
+const homePillText = { fontSize: 13, fontWeight: '800' as const };
+
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
+
+  // ─── UPCOMING SESSIONS (real data) ───
+  const [upcomingSessions, setUpcomingSessions] = useState<Booking[]>([]);
+  const [isTeacher, setIsTeacher] = useState(false);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
+
+  // 🆕 OPEN/AVAILABLE SLOTS — sab teachers ke un-booked slots, taaki koi
+  // bhi user seedha yahin se (bina pehle teacher choose kiye) tap-to-book
+  // kar sake. Sirf STUDENTS ko chahiye (teacher/admin ka kaam "Manage
+  // Session Slots" se slots BANANA hai, khud book karna nahi).
+  const [availableSlots, setAvailableSlots] = useState<OpenSlot[]>([]);
+  const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
+
+  // 🆕 Demo class card: shown only while demo classes are on and this student has not used theirs.
+  const [demoCfg, setDemoCfg] = useState<DemoConfig | null>(null);
+  // Role flags: Admin Panel is for admins; Teacher Dashboard is for approved teachers
+  const [isPanelAdmin, setIsPanelAdmin] = useState(false);
+  // Finished sessions this student has not rated yet (card shows only when > 0)
+  const [reviewCount, setReviewCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const loadReviews = () => {
+      getSessionsToReview()
+        .then((list) => alive && setReviewCount(list.length))
+        .catch(() => {});
+    };
+    loadReviews();
+    const unsub = navigation.addListener('focus', loadReviews);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [navigation]);
+  // Live public Study Room for the hero card: the public room with the most people in it right now.
+  // Shows real data only; when nobody is live the card invites the student to start a room.
+  const [liveRoom, setLiveRoom] = useState<any | null>(null);
+  useEffect(() => {
+    const unsub = firestore()
+      .collection('voice_rooms')
+      .where('type', '==', 'public')
+      .onSnapshot(
+        (snap) => {
+          const rooms = snap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as any) }))
+            .filter((r) => (r.totalParticipants || 0) > 0)
+            .sort((a, b) => (b.totalParticipants || 0) - (a.totalParticipants || 0));
+          setLiveRoom(rooms[0] || null);
+        },
+        () => setLiveRoom(null)
+      );
+    return () => unsub();
+  }, []);
+  // The student's booked (confirmed) upcoming sessions: drives the "My sessions / Join" card.
+  const [myBookings, setMyBookings] = useState<Booking[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const loadBookings = () => {
+      getMyUpcomingSessionsAsStudent()
+        .then((list) => {
+          if (!alive) return;
+          // Drop sessions that ended more than 30 minutes ago (today's earlier sessions)
+          const now = Date.now();
+          setMyBookings(
+            list.filter((b) => new Date(`${b.date}T${b.endTime}:00+05:30`).getTime() + 30 * 60000 > now)
+          );
+        })
+        .catch(() => {});
+    };
+    loadBookings();
+    const unsub = navigation.addListener('focus', loadBookings);
+    const timer = setInterval(loadBookings, 60000);
+    return () => {
+      alive = false;
+      unsub();
+      clearInterval(timer);
+    };
+  }, [navigation]);
+  // Next group audio class this student has booked a seat in (drives the Join button on the Audio card)
+  const { startCall } = useCallSession();
+  const [nextAudio, setNextAudio] = useState<AudioSession | null>(null);
+  const [audioJoining, setAudioJoining] = useState(false);
+  const [audioTick, setAudioTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setAudioTick((x) => x + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const teacherId = audioSub?.active ? audioSub.teacherId : null;
+    if (!teacherId) {
+      setNextAudio(null);
+      return;
+    }
+    getAudioSessionsForTeacher(teacherId)
+      .then(async (list) => {
+        const booked = await getMyAudioBookingIds(list.map((x) => x.id));
+        if (!alive) return;
+        setNextAudio(list.find((x) => booked.has(x.id)) || null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [audioSub, audioTick]);
+  const joinNextAudio = async () => {
+    if (!nextAudio || audioJoining) return;
+    setAudioJoining(true);
+    try {
+      await launchAudioRoom(startCall, nextAudio);
+    } catch (e: any) {
+      Alert.alert('Group Class', e?.message || 'Could not join the class. Please try again.');
+    } finally {
+      setAudioJoining(false);
+    }
+  };
+  const [myTeacher, setMyTeacher] = useState<any | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const loadRoles = () => {
+      Promise.all([checkIsAdmin(), getMyTeacherProfile()])
+        .then(([a, t]) => {
+          if (!alive) return;
+          setIsPanelAdmin(a);
+          setMyTeacher(t);
+        })
+        .catch(() => {});
+    };
+    loadRoles();
+    const unsub = navigation.addListener('focus', loadRoles);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [navigation]);
+
+  // Video plan status (drives the plan card: "Choose your plan" vs "Book a Session")
+  const [videoSub, setVideoSub] = useState<ProgramAccess | null>(null);
+  const [audioSub, setAudioSub] = useState<ProgramAccess | null>(null);
+  useEffect(() => {
+    if (isTeacher) return;
+    let alive = true;
+    const loadDemo = () => {
+      getDemoConfig()
+        .then((cfg) => alive && setDemoCfg(cfg))
+        .catch(() => {});
+      getMySubscriptions()
+        .then((subs) => {
+          if (!alive) return;
+          setVideoSub(subs.video);
+          setAudioSub(subs.audio);
+        })
+        .catch(() => {});
+    };
+    loadDemo();
+    const unsub = navigation.addListener('focus', loadDemo);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [isTeacher, navigation]);
+
+  useEffect(() => {
+    let isMounted = true;
+
+    const loadSessions = async () => {
+      try {
+        const isHost = await checkIsHost();
+        const sessions = isHost
+          ? await getMyUpcomingSessionsAsTeacher()
+          : await getMyUpcomingSessionsAsStudent();
+
+        if (isMounted) {
+          setIsTeacher(isHost);
+          setUpcomingSessions(sessions);
+        }
+
+        if (!isHost) {
+          const slots = await getAllAvailableSlots();
+          if (isMounted) setAvailableSlots(slots);
+        }
+      } catch (err) {
+        console.error('Failed to load upcoming sessions:', err);
+      } finally {
+        if (isMounted) setSessionsLoading(false);
+      }
+    };
+
+    loadSessions();
+    // 🔑 THE ACTUAL FIX: pehle ye effect sirf [] deps ke saath ek hi baar
+    // chalta tha (mount par). Matlab agar student OneToOneSessionsScreen
+    // se ek session book karke wapas Home pe aata (navigation.goBack()),
+    // HomeScreen already-mounted hone ki wajah se dobara loadSessions() call
+    // hi nahi hota — naya booking "Upcoming Sessions" me tab tak nahi dikhta
+    // jab tak app poora reload na ho. Ab 'focus' event par bhi refetch hota
+    // hai, taaki Home screen par WAPAS AANE par hamesha latest data mile.
+    const unsubscribeFocus = navigation.addListener('focus', loadSessions);
+
+    return () => {
+      isMounted = false;
+      unsubscribeFocus();
+    };
+  }, [navigation]);
+
+  // Session start time se 10 min pehle se "Join" allow karte hain — usse
+  // pehle card tap karne par sirf details dikhते hain (join button disabled).
+  const isSessionJoinable = (session: Booking) => {
+    const sessionDateTime = new Date(`${session.date}T${session.startTime}:00`);
+    const now = new Date();
+    const minutesUntilStart = (sessionDateTime.getTime() - now.getTime()) / 60000;
+    return minutesUntilStart <= 10 && minutesUntilStart > -60; // 10 min pehle se 1hr baad tak
+  };
+
+  const handleJoinSession = async (session: Booking) => {
+    if (joiningSessionId) return; // ek time pe ek hi join process ho
+
+    if (!isSessionJoinable(session)) {
+      Alert.alert(
+        'Not yet',
+        `Ye session ${session.date} ${session.startTime} baje shuru hoga. Session shuru hone se 10 min pehle Join button active ho jaayega.`
+      );
+      return;
+    }
+
+    setJoiningSessionId(session.id);
+    try {
+      const { serverUrl, token, otherPersonName, bookingId } =
+        await joinVideoSession(session);
+
+      navigation.navigate('VideoSessionScreen', {
+        serverUrl,
+        token,
+        otherPersonName,
+        bookingId,
+      });
+    } catch (err: any) {
+      console.error('Join session error:', err);
+      Alert.alert('Error', 'Session join nahi ho payi. Please try again.');
+    } finally {
+      setJoiningSessionId(null);
+    }
+  };
+
+  // 🆕 EK TAP SE BOOK+PAY — Home card / "See all" par kisi bhi open slot
+  // ko tap karne par ye chalta hai. Pehle ek chhota confirm-Alert dikhate
+  // hain (price + time saaf batane ke liye), fir seedha
+  // `bookAndPaySession()` (booking reserve + Razorpay checkout) chalta
+  // hai. Success par dono lists (available slots aur "meri sessions")
+  // refresh kar dete hain — jo slot abhi book hua wo turant available
+  // list se gayab ho jaayega, aur agar isi user ne book kiya hai to wo
+  // uski "upcoming/joinable" list me aa jaayega.
+  const handleBookSlot = (slot: OpenSlot) => {
+    if (bookingSlotId) return; // ek time pe ek hi booking process ho
+
+    const dateLabel = slot.date === new Date().toISOString().split('T')[0] ? 'Today' : slot.date;
+
+    Alert.alert(
+      'Confirm Booking',
+      `${slot.teacherName} ke saath ${dateLabel}, ${slot.startTime} - ${slot.endTime} ka session book karein?\n\nPrice: ₹${slot.teacherPricePerSession}`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Book & Pay',
+          onPress: async () => {
+            setBookingSlotId(slot.id);
+            try {
+              const result = await bookAndPaySession({
+                teacherId: slot.teacherId,
+                slotId: slot.id,
+              });
+              if (result.success) {
+                Alert.alert(
+                  'Booking Confirmed 🎉',
+                  'Aapka session book ho gaya hai — decided time par yahin se Join kar sakte ho.'
+                );
+                // Refresh both lists — booked slot ab available list me
+                // nahi dikhna chahiye, aur naya booking "meri sessions"
+                // me aana chahiye.
+                const [sessions, slots] = await Promise.all([
+                  getMyUpcomingSessionsAsStudent(),
+                  getAllAvailableSlots(),
+                ]);
+                setUpcomingSessions(sessions);
+                setAvailableSlots(slots);
+              } else {
+                Alert.alert(
+                  'Payment Incomplete',
+                  'Payment complete nahi hui — slot free kar diya gaya hai. Dobara try karo.'
+                );
+                getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
+              }
+            } catch (err: any) {
+              console.error('handleBookSlot error:', err);
+              const message =
+                err?.message?.includes('already-exists') || err?.code === 'already-exists'
+                  ? 'Ye slot abhi kisi aur ne book kar liya. Koi aur slot try karo.'
+                  : err?.message || 'Booking nahi ho payi. Dobara try karo.';
+              Alert.alert('Error', message);
+              getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
+            } finally {
+              setBookingSlotId(null);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? false;
@@ -268,23 +614,11 @@ export default function HomeScreen() {
   const [adminNewTopicSubtitle, setAdminNewTopicSubtitle] = useState('');
   const [adminSelectedDuration, setAdminSelectedDuration] = useState(60);
 
-  // 🌟 Custom Premium Popup State
-  const [customPopup, setCustomPopup] = useState<{ visible: boolean; title: string; message: string; type: 'success' | 'info' }>({
-    visible: false,
-    title: '',
-    message: '',
-    type: 'success'
-  });
-
-  const showCustomPopup = (title: string, message: string, type: 'success' | 'info' = 'success') => {
-    setCustomPopup({ visible: true, title, message, type });
-  };
-
   useEffect(() => {
     Animated.loop(
       Animated.timing(borderShineAnim, {
         toValue: 1,
-        duration: 2505,
+        duration: 2500,
         easing: Easing.linear,
         useNativeDriver: false,
       })
@@ -398,7 +732,7 @@ export default function HomeScreen() {
     return () => unsubTopic();
   }, [localRecordedAudioUri, isRecordingAudio]);
 
-  // 🔒 PERSISTENT AUDIO LISTENER
+  // 🔒 PERSISTENT AUDIO LISTENER (Client-side sorted: zero index issues)
   useEffect(() => {
     if (!currentUser) return;
 
@@ -442,6 +776,7 @@ export default function HomeScreen() {
     }
   }, [currentUser, isAdmin]);
 
+  // Audio recording initialization
   useEffect(() => {
     try {
       const options = {
@@ -471,6 +806,7 @@ export default function HomeScreen() {
     }
   };
 
+  // ⏱️ TIMER FUNCTION (CONTINUOUS BACKGROUND RUN ON PAUSE)
   const startRecordingTimer = () => {
     stopRecordingTimer();
     timerRef.current = setInterval(() => {
@@ -508,11 +844,12 @@ export default function HomeScreen() {
     return true;
   };
 
+  // 🎙️ START RECORDING
   const handleStartRecording = async () => {
     stopAudioPlayback();
     const hasPermission = await requestAudioPermissions();
     if (!hasPermission) {
-      showCustomPopup('Permission Required', 'Microphone access is required to record your voice.', 'info');
+      Alert.alert('Permission Required', 'Microphone access is required to record your voice.');
       return;
     }
 
@@ -532,20 +869,23 @@ export default function HomeScreen() {
       setIsPausedAudio(false);
       startRecordingTimer();
     } catch (e: any) {
-      showCustomPopup('Recording Error', e.message || 'Unable to start audio recording.', 'info');
+      Alert.alert('Recording Error', e.message || 'Unable to start audio recording.');
     }
   };
 
+  // ⏸️ PAUSE RECORDING (Timer runs continuously in background)
   const handlePauseRecording = () => {
     if (!isRecordingAudio || isPausedAudio) return;
     setIsPausedAudio(true);
   };
 
+  // ▶️ RESUME RECORDING
   const handleResumeRecording = () => {
     if (!isRecordingAudio || !isPausedAudio) return;
     setIsPausedAudio(false);
   };
 
+  // ⏹️ STOP RECORDING (Anytime at student's choice)
   const handleStopRecording = async () => {
     stopRecordingTimer();
     setIsRecordingAudio(false);
@@ -563,6 +903,7 @@ export default function HomeScreen() {
     }
   };
 
+  // 🗑️ DISCARD LOCAL DRAFT
   const handleDiscardLocalDraft = async () => {
     stopRecordingTimer();
     stopAudioPlayback();
@@ -580,9 +921,10 @@ export default function HomeScreen() {
     } catch (e) {}
   };
 
+  // 📤 SEND RESPONSE (FIXED [storage/object-not-found] ON BOTH PLATFORMS)
   const handleSaveRecordingPermanently = async () => {
     if (!localRecordedAudioUri) {
-      showCustomPopup('Recording Missing', 'Please record your response before sending.', 'info');
+      Alert.alert('Recording Missing', 'Please record your response before sending.');
       return;
     }
     if (!currentUser) return;
@@ -591,12 +933,14 @@ export default function HomeScreen() {
     stopAudioPlayback();
 
     try {
+      // Small sync tick to guarantee local audio file is fully written to disk
       await new Promise((resolve) => setTimeout(resolve, 250));
 
       const fileName = `challenge_${currentUser.uid}_${Date.now()}.wav`;
       const storagePath = `challenges_recordings/${currentUser.uid}/${fileName}`;
       const reference = storage().ref(storagePath);
 
+      // Safe normalization for Android / iOS local file paths
       let uploadUri = localRecordedAudioUri;
       if (Platform.OS === 'android') {
         if (!uploadUri.startsWith('file://')) {
@@ -609,6 +953,7 @@ export default function HomeScreen() {
       await reference.putFile(uploadUri);
       const downloadUrl = await reference.getDownloadURL();
 
+      // Saved in challenge_recordings for User view & Admin dashboard
       await firestore().collection('challenge_recordings').add({
         challengeTitle: dailyTopicData.title,
         uid: currentUser.uid,
@@ -620,20 +965,22 @@ export default function HomeScreen() {
         createdAt: firestore.FieldValue.serverTimestamp()
       });
 
+      // Increment User XP (+10 XP)
       await firestore().collection('users').doc(currentUser.uid).set({
         xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
       }, { merge: true });
 
       setIsSavingAudio(false);
       setLocalRecordedAudioUri(null);
-      showCustomPopup('🎉 Sent Successfully!', 'Your speaking challenge response has been saved.');
+      Alert.alert('🎉 Sent Successfully!', 'Your speaking challenge response has been saved.');
     } catch (e: any) {
       setIsSavingAudio(false);
       console.log('Firebase storage upload error:', e);
-      showCustomPopup('Send Failed', e.message || 'Unable to upload recording. Please try again.', 'info');
+      Alert.alert('Send Failed', e.message || 'Unable to upload recording. Please try again.');
     }
   };
 
+  // 🗑️ DELETE RECORDING FROM FIRESTORE (USER / ADMIN ACCESS)
   const handleDeleteFirestoreRecording = (docId: string, audioUrl?: string) => {
     Alert.alert(
       'Delete Recording',
@@ -654,7 +1001,7 @@ export default function HomeScreen() {
                 } catch (e) {}
               }
             } catch (err: any) {
-              showCustomPopup('Error', err.message || 'Could not delete recording.', 'info');
+              Alert.alert('Error', err.message || 'Could not delete recording.');
             }
           }
         }
@@ -662,6 +1009,7 @@ export default function HomeScreen() {
     );
   };
 
+  // 🔊 AUDIO PLAYBACK (FOR LOCAL DRAFT AND CLOUD AUDIOS)
   const handleTogglePlayAudio = (audioTarget: string) => {
     if (!audioTarget) return;
 
@@ -674,7 +1022,7 @@ export default function HomeScreen() {
     }
 
     if (!SoundPlayer) {
-      showCustomPopup('Playback Ready', 'Audio playback is supported on this device.', 'info');
+      Alert.alert('Playback Ready', 'Audio playback is supported on this device.');
       return;
     }
 
@@ -709,9 +1057,10 @@ export default function HomeScreen() {
     setActivePlayingUrl(null);
   };
 
+  // ✏️ ADMIN TOPIC & TIME UPDATE
   const handleAdminSaveTopic = async () => {
     if (!adminNewTopicTitle.trim()) {
-      showCustomPopup('Validation', 'Please enter challenge topic prompt.', 'info');
+      Alert.alert('Validation', 'Please enter challenge topic prompt.');
       return;
     }
     try {
@@ -724,9 +1073,9 @@ export default function HomeScreen() {
         updatedAt: firestore.FieldValue.serverTimestamp()
       }, { merge: true });
       setIsAdminEditTopicModal(false);
-      showCustomPopup('✨ Success!', `Daily challenge updated and broadcasted successfully with a ${duration}s limit!`);
+      Alert.alert('Success', `Daily topic updated with ${duration}s limit!`);
     } catch (e: any) {
-      showCustomPopup('Error', e.message, 'info');
+      Alert.alert('Error', e.message);
     }
   };
 
@@ -755,7 +1104,7 @@ export default function HomeScreen() {
   const rawFirstName = rawFullDisplayName.split(' ')[0];
   const userFirstNameInHindi = toHindiName(rawFirstName, currentLang);
   const avatarInitials = rawFirstName.charAt(0).toUpperCase();
-  const profilePhotoUrl = currentUser?.photoURL;
+  const profilePhotoUrl = typeof userData?.photoURL === 'string' ? userData.photoURL : currentUser?.photoURL;
 
   const greetingText = t?.home?.[greetingKey] || 
     (greetingKey === 'goodMorning' ? 'Good morning,' : greetingKey === 'goodAfternoon' ? 'Good afternoon,' : 'Good evening,');
@@ -771,6 +1120,7 @@ export default function HomeScreen() {
   const realToday = new Date();
   const todayIndex = realToday.getDay();
 
+  // Dynamic Calendar Month Logic
   const calYear = calendarDate.getFullYear();
   const calMonth = calendarDate.getMonth();
   const firstDayOfMonth = new Date(calYear, calMonth, 1).getDay();
@@ -887,7 +1237,7 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </View>
 
-        {/* 2. STATS ROW */}
+        {/* 2. STATS ROW (CLICK TO OPEN CALENDAR - FIXED OVAL PILL & BOLD LETTERS) */}
         <View style={styles.statsRow}>
           <TouchableOpacity 
             style={styles.streakCardContainer}
@@ -921,6 +1271,7 @@ export default function HomeScreen() {
               <Text style={styles.streakNumberText}>{userStreak}</Text>
               <Text style={styles.streakDaysSubText}>{t?.home?.daysInRow || 'Days in a row'}</Text>
 
+              {/* 🌟 7 DAYS ROW WITH ORIGINAL OVAL PILL & BOLD LETTERS */}
               <View style={styles.streakDaysRow}>
                 {SEVEN_DAYS.map((letter, idx) => {
                   const isToday = idx === todayIndex;
@@ -943,7 +1294,7 @@ export default function HomeScreen() {
                         styles.dayDot, 
                         isToday 
                           ? { backgroundColor: '#FFFFFF', width: 5, height: 5 } 
-                          : (isDayStudied ? { backgroundColor: '#10B981' } : { backgroundColor: 'rgba(255,255,255,0.45)' })
+                          : (isDayStudied ? { backgroundColor: '#F59E0B' } : { backgroundColor: 'rgba(255,255,255,0.45)' })
                       ]} />
                     </View>
                   );
@@ -998,33 +1349,46 @@ export default function HomeScreen() {
             
             <View style={styles.liveHeroCardContent}>
               <View style={styles.liveBadge}>
-                <View style={styles.liveBadgeDot} />
-                <Text style={styles.liveBadgeText}>{t?.home?.liveNow || 'LIVE NOW'}</Text>
+                <View style={[styles.liveBadgeDot, !liveRoom && { backgroundColor: '#94A3B8' }]} />
+                <Text style={styles.liveBadgeText}>{liveRoom ? (t?.home?.liveNow || 'LIVE NOW') : 'NO LIVE ROOM'}</Text>
               </View>
 
-              <Text style={styles.heroCardTitle}>
-                {t?.home?.morningTalk || 'Morning Small Talk'} 👋
+              <Text style={styles.heroCardTitle} numberOfLines={1}>
+                {liveRoom ? liveRoom.title : 'Start a public room'} 👋
               </Text>
-              <Text style={styles.heroCardDesc}>
-                {t?.home?.casualConv || 'Great conversations start your day'}
+              <Text style={styles.heroCardDesc} numberOfLines={2}>
+                {liveRoom
+                  ? `Hosted by ${liveRoom.hostName || 'a member'}`
+                  : 'No room is live right now. Be the first to start one!'}
               </Text>
 
               <View style={styles.heroFooterRow}>
                 <View style={styles.heroAvatarStack}>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#3B82F6', marginLeft: 0 }]}><Text style={styles.stackAvatarText}>AK</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#F59E0B' }]}><Text style={styles.stackAvatarText}>YT</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#60A5FA' }]}><Text style={styles.stackAvatarText}>OF</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#A78BFA' }]}><Text style={styles.stackAvatarText}>DR</Text></View>
-                  <View style={[styles.stackAvatarCount]}><Text style={styles.stackAvatarCountText}>+24</Text></View>
+                  {liveRoom && (
+                    <>
+                      <View style={[styles.stackAvatar, { backgroundColor: '#3B82F6', marginLeft: 0 }]}>
+                        <Text style={styles.stackAvatarText}>
+                          {String(liveRoom.hostName || 'H').trim().slice(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+                      {(liveRoom.totalParticipants || 0) > 1 && (
+                        <View style={[styles.stackAvatarCount]}>
+                          <Text style={styles.stackAvatarCountText}>+{(liveRoom.totalParticipants || 1) - 1}</Text>
+                        </View>
+                      )}
+                    </>
+                  )}
                 </View>
 
                 <TouchableOpacity 
                   style={styles.heroJoinButton} 
                   activeOpacity={0.88}
-                  onPress={() => navigation.navigate('VoiceRooms')}
+                  onPress={() =>
+                    navigation.navigate('VoiceRoomScreen', liveRoom ? { tab: 'public', roomId: liveRoom.id } : { tab: 'public' })
+                  }
                 >
                   <Text style={[styles.heroJoinBtnText, { color: '#6366F1' }]}>
-                    {t?.home?.joinRoom || 'Join room →'}
+                    {liveRoom ? (t?.home?.joinRoom || 'Join room →') : 'Start room →'}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1032,7 +1396,7 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* 4. TODAY'S CHALLENGE CARD */}
+        {/* 4. TODAY'S CHALLENGE CARD (HYPER-PREMIUM NEON GLOW & VIBRANT TOPIC) */}
         <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
           {t?.home?.todayChallenge || "Today's Challenge"}
         </Text>
@@ -1095,61 +1459,214 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
 
-        {/* 5. UPCOMING SESSIONS */}
-        <View style={styles.sectionHeaderContainer}>
-          <Text style={[styles.sectionHeadingMarginless, { color: colors.textPrimary }]}>
-            {t?.home?.upcomingSessions || 'Upcoming Sessions'}
-          </Text>
-          <View>
-            <Text style={[styles.seeAllText, { color: colors.primary }]}>
-              {t?.home?.seeAll || 'See all'}
-            </Text>
-          </View>
-        </View>
+        {/* 🆕 TRIAL + PLAN CARDS (students only): the demo class and the subscription are separate cards.
+            Demo card shows only while demo classes are on and this student has not used theirs. */}
+        {!isTeacher && (
+          <View style={{ paddingHorizontal: 20, marginBottom: 18, gap: 12 }}>
+            {demoCfg?.isActive && !demoCfg.alreadyUsed && (
+              <TouchableOpacity
+                style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                onPress={() => navigation.navigate('DemoClassScreen')}
+                activeOpacity={0.85}
+              >
+                <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+                  <Text style={{ fontSize: 22 }}>🎥</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Book 1-on-1 Trial</Text>
+                  <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                    Try a 30-minute class with a tutor
+                  </Text>
+                </View>
+                <View style={[homePill, { backgroundColor: colors.primary }]}>
+                  <Text style={[homePillText, { color: '#FFFFFF' }]}>
+                    {demoCfg.price === 0 ? 'Book Now · Free' : `Book Now @${demoCfg.price}`}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
 
-        <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScrollWrapper}>
-          <View style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
-            <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
-              <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
-                {t?.home?.todayTime1 || '📅 Today, 6:00 PM'}
-              </Text>
-            </View>
-            <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-              {t?.home?.session1Title || '1:1 with Priya'}
-            </Text>
-            <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-              {t?.home?.session1Desc || 'IELTS Speaking coaching'}
-            </Text>
-            <View style={styles.sessionFooterRow}>
-              <View style={[styles.sessionInitialsCircle, { backgroundColor: '#22C55E' }]}><Text style={styles.initialsText}>PN</Text></View>
-              <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                {t?.home?.session1Details || '30 min • Video'}
-              </Text>
-            </View>
-          </View>
+            {(() => {
+              // Active Video plan with sessions left -> "Book a Session"; otherwise -> "Choose your plan"
+              const hasSessions = !!videoSub?.active && (videoSub.remainingSessions ?? 0) > 0;
+              const usedUp = videoSub?.reason === 'no_sessions_left';
+              const title = hasSessions ? 'Book a Session' : usedUp ? 'All sessions used' : 'Choose your plan';
+              const subtitle = hasSessions
+                ? `${videoSub!.remainingSessions} of ${videoSub!.totalSessions} sessions left with ${videoSub!.teacherName}`
+                : usedUp
+                ? 'You can buy a new plan after your current plan expires'
+                : 'Practice with experts';
+              const cta = hasSessions ? 'Book Now' : usedUp ? 'My plan' : 'Subscribe';
+              return (
+                <TouchableOpacity
+                  style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                  onPress={() =>
+                    hasSessions
+                      ? navigation.navigate('BookSessionScreen')
+                      : navigation.navigate('ProgramFlowScreen', usedUp ? { mode: 'video' } : undefined)
+                  }
+                  activeOpacity={0.85}
+                >
+                  <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+                    <Text style={{ fontSize: 22 }}>{hasSessions ? '📅' : '👑'}</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>{title}</Text>
+                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>{subtitle}</Text>
+                  </View>
+                  <View style={[homePill, { backgroundColor: hasSessions ? colors.primary : colors.primary + '1A' }]}>
+                    <Text style={[homePillText, { color: hasSessions ? '#FFFFFF' : colors.primary }]}>{cta}</Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })()}
 
-          <View style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
-            <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
-              <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
-                {t?.home?.todayTime2 || '🎙️ Today, 7:30 PM'}
-              </Text>
-            </View>
-            <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-              {t?.home?.session2Title || 'Debate Club'}
-            </Text>
-            <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-              {t?.home?.session2Desc || 'Technology & Society'}
-            </Text>
-            <View style={styles.sessionFooterRow}>
-              <View style={[styles.sessionInitialsCircle, { backgroundColor: colors.primary }]}><Text style={styles.initialsText}>DR</Text></View>
-              <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                {t?.home?.session2Details || '45 min • Audio'}
-              </Text>
-            </View>
+            {!!audioSub?.active && (() => {
+              const startMs = nextAudio ? new Date(`${nextAudio.date}T${nextAudio.startTime}:00`).getTime() : 0;
+              const endMs = nextAudio ? new Date(`${nextAudio.date}T${nextAudio.endTime}:00`).getTime() : 0;
+              const canJoin = !!nextAudio && Date.now() >= startMs - 10 * 60000 && Date.now() <= endMs;
+              return (
+                <TouchableOpacity
+                  style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                  onPress={() => navigation.navigate('VoiceRoomScreen', { tab: 'official' })}
+                  activeOpacity={0.85}
+                >
+                  <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+                    <Text style={{ fontSize: 22 }}>🎙️</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Audio Classes</Text>
+                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]} numberOfLines={2}>
+                      {nextAudio
+                        ? `${nextAudio.title} · ${nextAudio.date} · ${nextAudio.startTime}`
+                        : `Live group classes with ${audioSub.teacherName}`}
+                    </Text>
+                  </View>
+                  <TouchableOpacity
+                    activeOpacity={0.85}
+                    disabled={audioJoining}
+                    onPress={canJoin ? joinNextAudio : () => navigation.navigate('VoiceRoomScreen', { tab: 'official' })}
+                    style={[homePill, { backgroundColor: canJoin ? '#10B981' : colors.primary }]}
+                  >
+                    {audioJoining ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
+                    ) : (
+                      <Text style={[homePillText, { color: '#FFFFFF' }]}>{canJoin ? 'Join' : 'View'}</Text>
+                    )}
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              );
+            })()}
           </View>
-        </ScrollView>
+        )}
 
-        {/* 6. FROM THE COMMUNITY */}
+
+        {/* My booked sessions + Join: students see their next 1-1 session here */}
+        {!isTeacher && myBookings.length > 0 && (() => {
+          const next = myBookings[0];
+          const startMs = new Date(`${next.date}T${next.startTime}:00+05:30`).getTime();
+          const live = startMs - Date.now() <= 10 * 60000;
+          return (
+            <TouchableOpacity
+              style={[
+                styles.upcomingSessionCard,
+                homeActionCard,
+                { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+              ]}
+              onPress={() => navigation.navigate('UpcomingSessionsListScreen')}
+              activeOpacity={0.85}
+            >
+              <View style={[homeIconCircle, { backgroundColor: '#10B98122' }]}>
+                <Text style={{ fontSize: 22 }}>🎥</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
+                  {myBookings.length > 1 ? `My sessions (${myBookings.length})` : 'My session'}
+                </Text>
+                <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                  {next.teacherName} · {next.date} · {next.startTime} - {next.endTime}
+                </Text>
+              </View>
+              <View style={[homePill, { backgroundColor: live ? '#10B981' : colors.primary }]}>
+                <Text style={[homePillText, { color: '#FFFFFF' }]}>{live ? 'Join' : 'View'}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })()}
+
+        {/* Rate your sessions: only while the student has finished sessions without a review */}
+        {reviewCount > 0 && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+            ]}
+            onPress={() => navigation.navigate('RateSessionsScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+              <Text style={{ fontSize: 22 }}>⭐</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Rate your sessions</Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                {reviewCount === 1 ? '1 session is waiting for your review' : `${reviewCount} sessions are waiting for your review`}
+              </Text>
+            </View>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+
+        {/* Teacher Dashboard: only approved teachers (an admin adds their email in the Admin Panel) */}
+        {!!myTeacher && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+            ]}
+            onPress={() => navigation.navigate('TeacherDashboardScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+              <Text style={{ fontSize: 22 }}>🧑‍🏫</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Teacher Dashboard</Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                Your slots, sessions and profile
+              </Text>
+            </View>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+
+        {/* Admin Panel: teacher access, plan prices, demo class price (admins only) */}
+        {isPanelAdmin && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+            ]}
+            onPress={() => navigation.navigate('AdminPanelScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+              <Text style={{ fontSize: 22 }}>🛠️</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Admin Panel</Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                Teacher access, plan prices and demo class price
+              </Text>
+            </View>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+
+        {/* 🌟 6. UNIQUE ULTRA-PREMIUM 'FROM THE COMMUNITY' CARD */}
         <View style={styles.sectionHeaderContainer}>
           <Text style={[styles.sectionHeadingMarginless, { color: colors.textPrimary }]}>
             {t?.home?.fromCommunity || 'From the Community'}
@@ -1218,7 +1735,7 @@ export default function HomeScreen() {
 
       </ScrollView>
 
-      {/* ─── 🎙️ UPGRADED PREMIUM TODAY'S CHALLENGE MODAL ─── */}
+      {/* ─── 🎙️ CHALLENGE CARD MODAL (SEND RESPONSE & PRIVACY LAYER) ─── */}
       <Modal
         visible={isChallengeModalVisible}
         animationType="fade"
@@ -1232,15 +1749,13 @@ export default function HomeScreen() {
         >
           <TouchableOpacity 
             activeOpacity={1}
-            style={[styles.challengeModalCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
+            style={[styles.challengeModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
             onPress={(e) => e.stopPropagation()}
           >
             
             <View style={styles.challengeModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.modalHeaderIconBadge}>
-                  <Award size={20} color="#F59E0B" />
-                </View>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Award size={22} color="#F59E0B" />
                 <Text style={[styles.challengeModalMainTitle, { color: colors.textPrimary }]}>Daily Speaking Challenge</Text>
               </View>
               <TouchableOpacity onPress={closeChallengeModal} style={styles.closeRoundBtn}>
@@ -1249,12 +1764,13 @@ export default function HomeScreen() {
             </View>
 
             <ScrollView showsVerticalScrollIndicator={false}>
-              <View style={[styles.challengeTopicBox, { backgroundColor: colors.primary + '12', borderColor: colors.primary + '35' }]}>
-                <Text style={[styles.challengeTopicTextBold, { color: colors.textPrimary }]}>
+              {/* Daily Topic Box with Vibrant Bold Accent */}
+              <View style={[styles.challengeTopicBox, { backgroundColor: colors.primary + '14', borderColor: colors.primary + '33' }]}>
+                <Text style={[styles.challengeTopicTextBold, { color: colors.primary }]}>
                   "{dailyTopicData?.title}"
                 </Text>
                 <Text style={[styles.challengeTopicSub, { color: colors.textSecondary }]}>
-                  {dailyTopicData?.subtitle} • Record your voice response. Secure & private.
+                  {dailyTopicData?.subtitle} • Record your answer. Only you & admin have access to this audio.
                 </Text>
 
                 {isAdmin && (
@@ -1268,6 +1784,7 @@ export default function HomeScreen() {
                 )}
               </View>
 
+              {/* ⏱️ REAL-TIME RECORDING BANNER */}
               {isRecordingAudio && (
                 <View style={styles.liveListeningBanner}>
                   <View style={[styles.liveAudioWaveDot, isPausedAudio && { backgroundColor: '#F59E0B' }]} />
@@ -1278,6 +1795,7 @@ export default function HomeScreen() {
                 </View>
               )}
 
+              {/* 🎧 SECTION 1: FRESH LOCAL RECORDING DRAFT (BEFORE SENDING) */}
               {localRecordedAudioUri && (
                 <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: '#10B981' }]}>
                   <View style={styles.previewAudioRow}>
@@ -1298,6 +1816,7 @@ export default function HomeScreen() {
                 </View>
               )}
 
+              {/* 🎧 SECTION 2: SAVED USER AUDIO (PERSISTENT & PRIVATE TO THIS STUDENT) */}
               {!isAdmin && savedUserRecording && (
                 <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.primary + '55', marginTop: 6 }]}>
                   <View style={styles.previewAudioRow}>
@@ -1318,6 +1837,7 @@ export default function HomeScreen() {
                 </View>
               )}
 
+              {/* 👑 SECTION 3: ADMIN ACCESS TO ALL USER RECORDINGS */}
               {isAdmin && (
                 <View style={styles.adminSubmissionsContainer}>
                   <Text style={[styles.adminSubmissionsHeading, { color: colors.textPrimary }]}>
@@ -1347,6 +1867,7 @@ export default function HomeScreen() {
                 </View>
               )}
 
+              {/* 🎙️ RECORDING CONTROL ACTIONS */}
               <View style={styles.micActionContainer}>
                 {!localRecordedAudioUri && (
                   <Animated.View style={{ transform: [{ scale: micPulseAnim }] }}>
@@ -1367,6 +1888,7 @@ export default function HomeScreen() {
                   </Animated.View>
                 )}
 
+                {/* PAUSE / RESUME / COMPLETE / RESET CONTROLS */}
                 {isRecordingAudio && (
                   <View style={styles.speechControlRow}>
                     {!isPausedAudio ? (
@@ -1402,6 +1924,7 @@ export default function HomeScreen() {
                 </Text>
               </View>
 
+              {/* 📤 SEND RESPONSE BUTTON */}
               <TouchableOpacity 
                 style={[
                   styles.sendResponseBtn, 
@@ -1428,7 +1951,7 @@ export default function HomeScreen() {
         </TouchableOpacity>
       </Modal>
 
-      {/* ─── ✏️ UPGRADED PREMIUM ADMIN EDIT TOPIC MODAL ─── */}
+      {/* ─── ✏️ ADMIN EDIT TOPIC & DURATION MODAL (OUTSIDE TAP TO CLOSE) ─── */}
       <Modal
         visible={isAdminEditTopicModal}
         animationType="fade"
@@ -1442,20 +1965,10 @@ export default function HomeScreen() {
         >
           <TouchableOpacity 
             activeOpacity={1}
-            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
             onPress={(e) => e.stopPropagation()}
           >
-            <View style={styles.challengeModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 10 }}>
-                <View style={styles.modalHeaderIconBadge}>
-                  <Edit3 size={18} color="#8B5CF6" />
-                </View>
-                <Text style={[styles.adminEditTitle, { color: colors.textPrimary }]}>Admin: Update Daily Challenge</Text>
-              </View>
-              <TouchableOpacity onPress={() => setIsAdminEditTopicModal(false)} style={styles.closeRoundBtn}>
-                <X size={18} color="#94A3B8" strokeWidth={2.5} />
-              </TouchableOpacity>
-            </View>
+            <Text style={[styles.adminEditTitle, { color: colors.textPrimary }]}>Admin: Update Daily Challenge</Text>
             
             <Text style={[styles.inputFieldLabel, { color: colors.textSecondary }]}>Challenge Topic / Prompt</Text>
             <TextInput 
@@ -1585,7 +2098,7 @@ export default function HomeScreen() {
                 const isCurrentDayHeader = index === todayIndex;
                 return (
                   <View 
-                    key={index} 
+                    key={index}
                     style={[
                       styles.dayHeaderCell,
                       isCurrentDayHeader && styles.todayHeaderCellCircle
@@ -1644,6 +2157,7 @@ export default function HomeScreen() {
                   <Text style={styles.statLabel}>Longest streak</Text>
                   <Text style={styles.statValue}>{longestStreak} days</Text>
                 </View>
+                <ChevronRight size={18} color="#94A3B8" strokeWidth={2.5} />
               </View>
 
               <View style={styles.statDivider} />
@@ -1654,56 +2168,13 @@ export default function HomeScreen() {
                   <Text style={styles.statLabel}>Best streak</Text>
                   <Text style={styles.statValue}>{bestStreak} days</Text>
                 </View>
-                <TouchableOpacity 
-                  style={styles.viewStatsAction} 
-                  activeOpacity={0.7}
-                  onPress={() => showCustomPopup('Coming Soon! 🚀', 'Detailed streak statistics and analytics will be available soon.', 'info')}
-                >
+                <TouchableOpacity style={styles.viewStatsAction}>
                   <Text style={styles.viewStatsActionText}>📊 View stats</Text>
                   <ChevronRight size={16} color="#C084FC" strokeWidth={2.5} />
                 </TouchableOpacity>
               </View>
             </View>
 
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
-
-      {/* 🌟 CUSTOM PREMIUM POPUP MODAL (REPLACES NATIVE ALERT) */}
-      <Modal
-        visible={customPopup.visible}
-        animationType="fade"
-        transparent={true}
-        onRequestClose={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
-      >
-        <TouchableOpacity 
-          style={styles.customPopupOverlay} 
-          activeOpacity={1}
-          onPress={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
-        >
-          <TouchableOpacity 
-            activeOpacity={1}
-            style={[styles.customPopupCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border }]}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={[styles.customPopupIconBox, { backgroundColor: customPopup.type === 'success' ? 'rgba(16, 185, 129, 0.18)' : 'rgba(139, 92, 246, 0.18)' }]}>
-              {customPopup.type === 'success' ? (
-                <CheckCircle2 size={32} color="#10B981" strokeWidth={2.5} />
-              ) : (
-                <BarChart3 size={30} color="#8B5CF6" strokeWidth={2.5} />
-              )}
-            </View>
-
-            <Text style={[styles.customPopupTitle, { color: colors.textPrimary }]}>{customPopup.title}</Text>
-            <Text style={[styles.customPopupMessage, { color: colors.textSecondary }]}>{customPopup.message}</Text>
-
-            <TouchableOpacity 
-              style={[styles.customPopupBtn, { backgroundColor: customPopup.type === 'success' ? '#10B981' : colors.primary }]}
-              onPress={() => setCustomPopup(prev => ({ ...prev, visible: false }))}
-              activeOpacity={0.85}
-            >
-              <Text style={styles.customPopupBtnText}>Okay</Text>
-            </TouchableOpacity>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -1759,7 +2230,7 @@ const styles = StyleSheet.create({
   
   streakCardContainer: { 
     width: (SCREEN_WIDTH - 55) * 0.52, 
-    height: 156, 
+    height: 156,
     borderRadius: 24, 
     overflow: 'hidden',
     position: 'relative',
@@ -1826,6 +2297,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginTop: 6
   },
+  /* 🌟 FIXED: OVAL PILL SHAPE */
   dayColumn: {
     alignItems: 'center',
     paddingHorizontal: 6,
@@ -1920,6 +2392,7 @@ const styles = StyleSheet.create({
   heroJoinButton: { backgroundColor: '#FFFFFF', paddingHorizontal: 16, paddingVertical: 8, borderRadius: 16 },
   heroJoinBtnText: { fontWeight: '900', fontSize: 12 },
 
+  /* 🌟 UNIQUE CHALLENGE GLOW CARD STYLES */
   uniqueChallengeOuter: {
     marginHorizontal: 20,
     marginTop: 10,
@@ -2055,7 +2528,7 @@ const styles = StyleSheet.create({
   sectionHeaderContainer: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', paddingHorizontal: 20, marginTop: 22 },
   sectionHeadingMarginless: { fontSize: 19, fontWeight: '900', letterSpacing: -0.2 },
   seeAllText: { fontSize: 13.5, fontWeight: '800' },
-  horizontalScrollWrapper: { paddingLeft: 20, marginTop: 12 },
+  horizontalScrollWrapper: { paddingLeft: 20, paddingRight: 4, marginTop: 12 },
   upcomingSessionCard: { width: SCREEN_WIDTH * 0.68, marginRight: 16, padding: 18, borderRadius: 26, borderWidth: 1.5 },
   sessionHeaderPill: { alignSelf: 'flex-start', paddingHorizontal: 10, paddingVertical: 4, borderRadius: 10 },
   sessionTimeText: { fontSize: 11.5, fontWeight: '900' },
@@ -2402,40 +2875,26 @@ const styles = StyleSheet.create({
     fontWeight: '900',
   },
 
-  /* ─── 🎙️ UPGRADED PREMIUM TODAY'S CHALLENGE MODAL STYLES ─── */
+  /* ─── 🎙️ TODAY'S CHALLENGE MODAL STYLES ─── */
   challengeModalCard: {
-    width: Math.min(SCREEN_WIDTH * 0.94, 400),
-    borderRadius: 32,
-    padding: 24,
+    width: Math.min(SCREEN_WIDTH * 0.92, 390),
+    borderRadius: 28,
+    padding: 22,
     borderWidth: 1.5,
-    maxHeight: '88%',
-    elevation: 25,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.5,
-    shadowRadius: 22,
+    maxHeight: '85%',
   },
   challengeModalHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginBottom: 16,
-    paddingBottom: 12,
+    paddingBottom: 10,
     borderBottomWidth: 1,
-    borderColor: 'rgba(148, 163, 184, 0.18)',
-  },
-  modalHeaderIconBadge: {
-    width: 38,
-    height: 38,
-    borderRadius: 12,
-    backgroundColor: 'rgba(245, 158, 11, 0.15)',
-    justifyContent: 'center',
-    alignItems: 'center',
+    borderColor: 'rgba(148, 163, 184, 0.2)',
   },
   challengeModalMainTitle: {
     fontSize: 18,
     fontWeight: '900',
-    letterSpacing: -0.2,
   },
   closeRoundBtn: {
     width: 32,
@@ -2446,28 +2905,28 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   challengeTopicBox: {
-    padding: 16,
-    borderRadius: 20,
+    padding: 14,
+    borderRadius: 18,
     borderWidth: 1.5,
-    marginBottom: 16,
+    marginBottom: 14,
   },
   challengeTopicTextBold: {
-    fontSize: 17,
+    fontSize: 16.5,
     fontWeight: '900',
-    lineHeight: 24,
+    lineHeight: 23,
     letterSpacing: -0.2,
   },
   challengeTopicSub: {
     fontSize: 12,
     fontWeight: '600',
-    marginTop: 8,
-    lineHeight: 18,
+    marginTop: 6,
+    lineHeight: 17,
   },
   adminEditTopicTrigger: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: 6,
-    marginTop: 12,
+    marginTop: 10,
     alignSelf: 'flex-start',
     backgroundColor: 'rgba(139, 92, 246, 0.2)',
     paddingHorizontal: 10,
@@ -2485,10 +2944,10 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     gap: 8,
     backgroundColor: 'rgba(239, 68, 68, 0.15)',
-    paddingVertical: 9,
+    paddingVertical: 8,
     paddingHorizontal: 12,
-    borderRadius: 16,
-    marginBottom: 12,
+    borderRadius: 14,
+    marginBottom: 10,
   },
   liveAudioWaveDot: {
     width: 8,
@@ -2503,7 +2962,7 @@ const styles = StyleSheet.create({
   },
   audioStatusCard: {
     minHeight: 85,
-    borderRadius: 20,
+    borderRadius: 18,
     borderWidth: 1.5,
     padding: 14,
     marginBottom: 12,
@@ -2554,7 +3013,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     padding: 10,
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1,
     marginBottom: 8,
   },
@@ -2576,12 +3035,12 @@ const styles = StyleSheet.create({
   },
   micActionContainer: {
     alignItems: 'center',
-    marginVertical: 12,
+    marginVertical: 10,
   },
   micBigButton: {
-    width: 72,
-    height: 72,
-    borderRadius: 36,
+    width: 68,
+    height: 68,
+    borderRadius: 34,
     justifyContent: 'center',
     alignItems: 'center',
     elevation: 8,
@@ -2593,7 +3052,7 @@ const styles = StyleSheet.create({
   micStatusLabel: {
     fontSize: 12,
     fontWeight: '700',
-    marginTop: 10,
+    marginTop: 8,
     textAlign: 'center',
   },
   speechControlRow: {
@@ -2601,7 +3060,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     gap: 10,
-    marginTop: 12,
+    marginTop: 10,
   },
   pauseSpeechBtn: {
     flexDirection: 'row',
@@ -2611,7 +3070,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(245, 158, 11, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 14,
+    borderRadius: 12,
   },
   pauseSpeechBtnText: {
     color: '#F59E0B',
@@ -2626,7 +3085,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(16, 185, 129, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 14,
+    borderRadius: 12,
   },
   resumeSpeechBtnText: {
     color: '#10B981',
@@ -2641,7 +3100,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(239, 68, 68, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 14,
+    borderRadius: 12,
   },
   stopSpeechBtnText: {
     color: '#EF4444',
@@ -2656,7 +3115,7 @@ const styles = StyleSheet.create({
     borderColor: 'rgba(148, 163, 184, 0.45)',
     paddingHorizontal: 14,
     paddingVertical: 8,
-    borderRadius: 14,
+    borderRadius: 12,
   },
   resetSpeechBtnText: {
     color: '#64748B',
@@ -2667,156 +3126,87 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: 14,
-    borderRadius: 18,
-    marginTop: 12,
+    paddingVertical: 13,
+    borderRadius: 16,
+    marginTop: 10,
     marginBottom: 6,
-    elevation: 4,
   },
   sendResponseBtnText: {
     color: '#FFFFFF',
-    fontSize: 15,
+    fontSize: 14.5,
     fontWeight: '900',
   },
 
-  /* ─── ✏️ UPGRADED PREMIUM ADMIN EDIT TOPIC MODAL STYLES ─── */
+  /* ─── ✏️ ADMIN EDIT TOPIC MODAL STYLES ─── */
   adminEditCard: {
-    width: Math.min(SCREEN_WIDTH * 0.94, 390),
-    borderRadius: 32,
-    padding: 24,
+    width: Math.min(SCREEN_WIDTH * 0.9, 360),
+    borderRadius: 24,
+    padding: 20,
     borderWidth: 1.5,
-    elevation: 25,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 12 },
-    shadowOpacity: 0.5,
-    shadowRadius: 22,
   },
   adminEditTitle: {
-    fontSize: 18,
+    fontSize: 17,
     fontWeight: '900',
-    letterSpacing: -0.2,
+    marginBottom: 14,
   },
   inputFieldLabel: {
     fontSize: 12,
     fontWeight: '700',
-    marginBottom: 6,
-    marginTop: 8,
+    marginBottom: 4,
+    marginTop: 6,
   },
   adminInput: {
-    borderRadius: 16,
+    borderRadius: 14,
     borderWidth: 1.5,
-    paddingHorizontal: 14,
-    paddingVertical: 12,
-    fontSize: 14,
-    marginBottom: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    fontSize: 13.5,
+    marginBottom: 8,
   },
   durationSelectorRow: {
     flexDirection: 'row',
     gap: 8,
-    marginVertical: 8,
+    marginVertical: 6,
   },
   durationChip: {
     flex: 1,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingVertical: 8,
+    borderRadius: 10,
     borderWidth: 1.5,
     alignItems: 'center',
     justifyContent: 'center',
   },
   durationChipText: {
-    fontSize: 12.5,
-    fontWeight: '800',
+    fontSize: 12,
+    fontWeight: '700',
   },
   adminActionRow: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 18,
+    gap: 10,
+    marginTop: 14,
   },
   adminCancelBtn: {
     flex: 1,
-    paddingVertical: 13,
-    borderRadius: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
   },
   adminCancelBtnText: {
-    fontSize: 13.5,
+    fontSize: 13,
     fontWeight: '800',
   },
   adminSaveBtn: {
     flex: 1.2,
     backgroundColor: '#8B5CF6',
-    paddingVertical: 13,
-    borderRadius: 16,
+    paddingVertical: 11,
+    borderRadius: 12,
     alignItems: 'center',
     justifyContent: 'center',
-    elevation: 4,
   },
   adminSaveBtnText: {
     color: '#FFFFFF',
-    fontSize: 13.5,
+    fontSize: 13,
     fontWeight: '900',
-  },
-
-  /* 🌟 CUSTOM PREMIUM POPUP STYLES */
-  customPopupOverlay: {
-    flex: 1,
-    backgroundColor: 'rgba(5, 5, 15, 0.85)',
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  customPopupCard: {
-    width: '100%',
-    maxWidth: 340,
-    borderRadius: 28,
-    padding: 24,
-    alignItems: 'center',
-    borderWidth: 1.5,
-    elevation: 30,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.45,
-    shadowRadius: 20,
-  },
-  customPopupIconBox: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginBottom: 16,
-  },
-  customPopupTitle: {
-    fontSize: 20,
-    fontWeight: '900',
-    textAlign: 'center',
-    letterSpacing: -0.3,
-    marginBottom: 8,
-  },
-  customPopupMessage: {
-    fontSize: 13.5,
-    fontWeight: '600',
-    textAlign: 'center',
-    lineHeight: 20,
-    marginBottom: 20,
-  },
-  customPopupBtn: {
-    width: '100%',
-    paddingVertical: 13,
-    borderRadius: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-    elevation: 4,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.2,
-    shadowRadius: 4,
-  },
-  customPopupBtnText: {
-    color: '#FFFFFF',
-    fontSize: 15,
-    fontWeight: '900',
-    letterSpacing: 0.3,
   },
 });
