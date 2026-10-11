@@ -23,6 +23,7 @@ import {
   getAllAvailableSlots,
   bookAndPaySession,
   joinVideoSession,
+  cancelBooking,
   localDateKey,
   type OpenSlot,
 } from './sessionService';
@@ -78,10 +79,6 @@ export default function UpcomingSessionsListScreen() {
       setIsTeacher(isHost);
       setSessions(list);
 
-      if (!isHost) {
-        const slots = await getAllAvailableSlots();
-        setAvailableSlots(slots);
-      }
     } catch (err) {
       console.error('UpcomingSessionsListScreen: load error', err);
     } finally {
@@ -95,12 +92,42 @@ export default function UpcomingSessionsListScreen() {
     return unsub;
   }, [navigation, loadSessions]);
 
+  // Plan sessions can be cancelled up to 2 hours before the start (the server enforces this too)
+  const canCancel = (session: Booking) => {
+    if (isTeacher || session.kind !== 'subscription') return false;
+    const start = new Date(`${session.date}T${session.startTime}:00`).getTime();
+    return start - Date.now() >= 2 * 60 * 60 * 1000;
+  };
+
+  const handleCancel = (session: Booking) => {
+    Alert.alert(
+      'Cancel this session?',
+      'The session will be returned to your plan and the slot will be released.',
+      [
+        { text: 'Keep it', style: 'cancel' },
+        {
+          text: 'Cancel session',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await cancelBooking(session.id);
+              Alert.alert('Session Cancelled', 'The session has been returned to your plan.');
+              loadSessions();
+            } catch (err: any) {
+              Alert.alert('Could Not Cancel', err?.message || 'The session could not be cancelled. Please try again.');
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const handleJoin = async (session: Booking) => {
     if (joiningId) return;
     if (!isSessionJoinable(session)) {
       Alert.alert(
         'Not yet',
-        `This session ${session.date} ${session.startTime} It will start at [time]. The 'Join' button will become active 10 minutes before the session begins.`
+        `This session starts on ${session.date} at ${session.startTime}. The Join button becomes active 10 minutes before the start time.`
       );
       return;
     }
@@ -113,9 +140,10 @@ export default function UpcomingSessionsListScreen() {
         otherPersonName,
         bookingId,
       });
-    } catch (err) {
-      console.error('UpcomingSessionsListScreen: join error', err);
-      Alert.alert('Error', 'Could not join the session. Try again..');
+    } catch (err: any) {
+      console.error('UpcomingSessionsListScreen: join error', err?.code, err?.message, err);
+      // Server ka asli message (jaise "Session abhi shuru nahi hua") dikhao
+      Alert.alert('Error', err?.message || 'Could not join the session. Please try again.');
     } finally {
       setJoiningId(null);
     }
@@ -138,20 +166,20 @@ export default function UpcomingSessionsListScreen() {
     if (err?.message === 'CANCELLED') return;
 
     if (err?.code === 'PENDING' || err?.code === 'REFUND') {
-      Alert.alert(err.code === 'REFUND' ? 'Refund will be processed': 'Payment is being confirmed.');
+      Alert.alert(err.code === 'REFUND' ? 'Refund Pending' : 'Payment Being Confirmed', err.message);
       loadSessions();
       return;
     }
 
     if (err?.message?.includes('already-exists') || err?.code === 'already-exists') {
       setPayingSlot(null);
-      Alert.alert('The slot has been booked', 'Someone else has already booked this slot. Try another slot.');
+      Alert.alert('Slot Already Booked', 'Someone else has just booked this slot. Please choose another slot.');
       getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
       return;
     }
 
     console.error('UpcomingSessionsListScreen: payment error', err);
-    Alert.alert('Payment fail', err?.message || 'The payment could not be processed. Please try again.');
+    Alert.alert('Payment Failed', err?.message || 'The payment could not be completed. Please try again.');
   };
 
   return (
@@ -167,9 +195,9 @@ export default function UpcomingSessionsListScreen() {
           <ChevronLeft color={colors.textPrimary} size={22} />
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
-          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Book 1-1 Session</Text>
+          <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Upcoming Sessions</Text>
           <Text style={[styles.headerSubtitle, { color: colors.textSecondary }]}>
-            {isTeacher ? 'Your teaching schedule' : 'Your sessions and available slots.'}
+            {isTeacher ? 'Your teaching schedule' : 'Your booked sessions'}
           </Text>
         </View>
       </View>
@@ -178,13 +206,13 @@ export default function UpcomingSessionsListScreen() {
         <View style={{ paddingVertical: 40, alignItems: 'center' }}>
           <ActivityIndicator color={colors.primary} />
         </View>
-      ) : sessions.length === 0 && availableSlots.length === 0 ? (
+      ) : sessions.length === 0 ? (
         <View style={styles.emptyWrap}>
           <Calendar color={colors.textSecondary} size={32} style={{ marginBottom: 10 }} />
           <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
             {isTeacher
-              ? 'There are no upcoming sessions scheduled at the moment.'
-              : 'There are currently no sessions or open slots available.'}
+              ? 'No upcoming sessions are scheduled.'
+              : 'No upcoming sessions yet. Book a trial class or choose a plan to get started.'}
           </Text>
         </View>
       ) : (
@@ -216,8 +244,14 @@ export default function UpcomingSessionsListScreen() {
                         1:1 with {displayName}
                       </Text>
                       <Text style={[styles.sessionSub, { color: colors.textSecondary }]}>
-                        {session.startTime} - {session.endTime} · ₹{session.price}
+                        {session.startTime} - {session.endTime}
+                        {session.kind === 'demo' ? ' · Demo class' : session.kind === 'subscription' ? ' · Included in your plan' : ` · ₹${session.price}`}
                       </Text>
+                      {canCancel(session) && (
+                        <TouchableOpacity onPress={() => handleCancel(session)} hitSlop={8} style={{ marginTop: 6 }}>
+                          <Text style={{ color: '#DC2626', fontSize: 12.5, fontWeight: '700' }}>Cancel session</Text>
+                        </TouchableOpacity>
+                      )}
                     </View>
                     {isJoiningThis ? (
                       <ActivityIndicator color={colors.primary} />
@@ -229,48 +263,6 @@ export default function UpcomingSessionsListScreen() {
                   </TouchableOpacity>
                 );
               })}
-            </>
-          )}
-
-          {/* ── SECTION 2: AVAILABLE SLOTS (open, BOOK karne ke liye) ──
-              Sirf students ko dikhta hai — teachers/admin slots BANATE
-              hain "Manage Session Slots" se, khud book nahi karte. */}
-          {!isTeacher && (
-            <>
-              <Text style={[styles.sectionLabel, { color: colors.textPrimary, marginTop: sessions.length > 0 ? 22 : 0 }]}>
-                Available Slots
-              </Text>
-              {availableSlots.length === 0 ? (
-                <Text style={[styles.emptyText, { color: colors.textSecondary, textAlign: 'left', marginBottom: 20 }]}>
-                  There are no open slots available right now. Check back later!
-                </Text>
-              ) : (
-                availableSlots.map((slot) => {
-                  return (
-                    <TouchableOpacity
-                      key={slot.id}
-                      style={[styles.sessionCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}
-                      onPress={() => handleBookSlot(slot)}
-                      activeOpacity={0.85}
-                    >
-                      <View style={{ flex: 1 }}>
-                        <Text style={[styles.sessionDate, { color: '#F59E0B' }]}>
-                          📅 {slot.date === localDateKey() ? 'Today' : slot.date}, {slot.startTime}
-                        </Text>
-                        <Text style={[styles.sessionTitle, { color: colors.textPrimary }]}>
-                          1:1 with {slot.teacherName}
-                        </Text>
-                        <Text style={[styles.sessionSub, { color: colors.textSecondary }]}>
-                          {slot.startTime} - {slot.endTime} · ₹{slotPrice(slot)}
-                        </Text>
-                      </View>
-                      <Text style={{ fontSize: 12, fontWeight: '700', color: colors.primary }}>
-                        Book Now →
-                      </Text>
-                    </TouchableOpacity>
-                  );
-                })
-              )}
             </>
           )}
 
@@ -290,7 +282,7 @@ export default function UpcomingSessionsListScreen() {
             setPayingSlot(null);
             loadSessions();
           }}
-          successMessage="Your session has been booked. It will now appear in 'My Sessions'."
+          successMessage="Your session has been booked. It will now appear under My Sessions."
           successRows={[
             { label: 'Teacher', value: payingSlot.teacherName },
             { label: 'Time', value: `${payingSlot.date}, ${payingSlot.startTime} - ${payingSlot.endTime}` },

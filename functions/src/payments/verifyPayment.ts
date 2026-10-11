@@ -10,6 +10,8 @@ const REFUND_MESSAGES: Record<string, string> = {
     'This booking has already been paid for. This extra payment will be refunded.',
   booking_missing:
     'We received your payment, but not the booking. The money will be refunded.',
+  already_active:
+    'Your plan for this mode is already active, so this extra payment will be refunded.',
 };
 
 /**

@@ -22,8 +22,19 @@ import {
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
+import functions from '@react-native-firebase/functions';
 import { useFocusEffect } from '@react-navigation/native';
 import { useCallSession } from './CallSessionProvider';
+import {
+  getAudioSessionsForTeacher,
+  getMyAudioBookingIds,
+  bookAudioSession,
+  getMyTeacherProfile,
+  createAudioSession,
+  type AudioSession,
+} from '../../sessions/sessionService';
+import { launchAudioRoom } from '../../sessions/audioRoomLauncher';
+import { getMySubscriptions } from '../../payments/paymentService';
 
 import {
   ChevronLeft,
@@ -40,64 +51,7 @@ import { useTheme } from '../../../hooks/useTheme';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const STATUSBAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 0);
-const TOKEN_SERVER_BASE_URL = 'https://livekit-token-server-2uvb.onrender.com';
 const LIVEKIT_FALLBACK_URL = 'wss://eccapp-4hmra95b.livekit.cloud';
-
-// ─── RESILIENT FETCH FOR TOKEN SERVER ───
-// `TOKEN_SERVER_BASE_URL` Render.com ke FREE tier pe hosted hai. Free tier
-// services 15 min inactivity ke baad SO JAATE hain — pehli request unhe
-// "wake up" karti hai jisme 30-60s tak lag sakte hain. React Native ka
-// plain `fetch()` is slow cold-start ke dauraan aksar TLS handshake poora
-// hone se pehle hi "TypeError: Network request failed" throw kar deta hai
-// (koi built-in timeout/retry nahi hota) — Create Room error isi wajah se
-// aa raha tha.
-//
-// Ye helper 2 cheezein karta hai:
-//   1. AbortController se ek explicit timeout deta hai (taaki fetch hamesha
-//      ke liye hang na ho aur ek clear error mile),
-//   2. Pehla attempt fail hone par (jo cold-start me common hai) THODA RUK
-//      KAR ek dobara attempt karta hai — dusre attempt tak server usually
-//      jaag chuka hota hai.
-const fetchWithTimeoutRetry = async (
-  url: string,
-  { timeoutMs = 15000, retries = 1, retryDelayMs = 3000 }: {
-    timeoutMs?: number;
-    retries?: number;
-    retryDelayMs?: number;
-  } = {}
-): Promise<Response> => {
-  let lastError: any;
-
-  for (let attempt = 0; attempt <= retries; attempt++) {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
-
-    try {
-      const response = await fetch(url, { signal: controller.signal });
-      clearTimeout(timeoutId);
-      return response;
-    } catch (err: any) {
-      clearTimeout(timeoutId);
-      lastError = err;
-
-      const isLastAttempt = attempt === retries;
-      if (isLastAttempt) break;
-
-      // Render free-tier cold start ke liye rukiye phir retry kariye.
-      await new Promise(resolve => setTimeout(resolve, retryDelayMs));
-    }
-  }
-
-  // Dono attempts fail ho gaye — ek clear, user-samajhne-laayak error do.
-  if (lastError?.name === 'AbortError') {
-    throw new Error(
-      'The token server is currently waking up or is slow (free hosting). Please try again in a little while.'
-    );
-  }
-  throw new Error(
-    'Network request failed — Check your internet connection, or the token server might be down.'
-  );
-};
 
 export const ILLUSTRATED_AVATARS = [
   { id: 'm1', gender: 'Male', label: 'Boy 1', url: 'https://api.dicebear.com/7.x/adventurer/png?seed=Oliver&backgroundColor=ffd5dc' },
@@ -139,7 +93,10 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const t = themeHook?.t;
   const currentLang = themeHook?.currentLang || 'en';
 
-  const [activeTab, setActiveTab] = useState<'public' | 'official'>('public');
+  // route.params.tab = 'official' opens the Class Rooms tab directly (Home "Join Group Class" card)
+  const [activeTab, setActiveTab] = useState<'public' | 'official'>(
+    route?.params?.tab === 'official' ? 'official' : 'public'
+  );
   const [highlightedRoomId, setHighlightedRoomId] = useState<string | null>(null);
 
   const pagerRef = useRef<ScrollView>(null);
@@ -193,7 +150,186 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   // state changes; using it as this screen's root `key` forces a full
   // unmount+remount whenever that happens, which recreates the native
   // view tree from scratch and clears any such residue.
-  const { remountSignal } = useCallSession();
+  const { remountSignal, startCall } = useCallSession();
+
+  // ─── GROUP AUDIO CLASSES (shown at the top of the Class Rooms tab) ───
+  // Student: classes of the teacher linked to their Audio plan. Teacher: their own classes.
+  const [audioSessions, setAudioSessions] = useState<AudioSession[]>([]);
+  const [audioBooked, setAudioBooked] = useState<Set<string>>(new Set());
+  const [audioRole, setAudioRole] = useState<'student' | 'teacher' | 'none'>('none');
+  const [audioPlanActive, setAudioPlanActive] = useState<boolean>(true);
+  const [audioBusyId, setAudioBusyId] = useState<string | null>(null);
+
+  // Teacher: create a group audio class from this screen
+  const [classModalOpen, setClassModalOpen] = useState(false);
+  const [classTitle, setClassTitle] = useState('');
+  const [classDesc, setClassDesc] = useState('');
+  const [classDayOffset, setClassDayOffset] = useState(0);
+  const [classHour, setClassHour] = useState('18');
+  const [classMin, setClassMin] = useState('00');
+  const [classDuration, setClassDuration] = useState(60);
+  const [classSeats, setClassSeats] = useState('10');
+  const [classSaving, setClassSaving] = useState(false);
+
+  const pad2 = (n: number) => (n < 10 ? `0${n}` : `${n}`);
+  const classDays = Array.from({ length: 14 }, (_, i) => {
+    const d = new Date();
+    d.setDate(d.getDate() + i);
+    return d;
+  });
+  const dayKey = (d: Date) => `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`;
+
+  const submitClass = async () => {
+    if (classSaving) return;
+    const h = parseInt(classHour, 10);
+    const m = parseInt(classMin === '' ? '0' : classMin, 10);
+    const seats = Number(classSeats);
+    if (!classTitle.trim()) {
+      Alert.alert('Title Required', 'Please enter a title for the class.');
+      return;
+    }
+    if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
+      Alert.alert('Invalid time', 'Enter hour 0-23 and minutes 0-59 (24-hour format).');
+      return;
+    }
+    if (!Number.isInteger(seats) || seats < 1 || seats > 200) {
+      Alert.alert('Invalid Seats', 'Maximum participants must be between 1 and 200.');
+      return;
+    }
+    setClassSaving(true);
+    try {
+      await createAudioSession({
+        title: classTitle.trim(),
+        description: classDesc.trim(),
+        date: dayKey(classDays[classDayOffset]),
+        startTime: `${pad2(h)}:${pad2(m)}`,
+        durationMins: classDuration,
+        maxParticipants: seats,
+      });
+      setClassModalOpen(false);
+      setClassTitle('');
+      setClassDesc('');
+      await loadAudioClasses();
+      Alert.alert('Class Created', 'Students with your Audio plan can now book a seat.');
+    } catch (e: any) {
+      Alert.alert('Could Not Create', e?.message || 'Please try again.');
+    } finally {
+      setClassSaving(false);
+    }
+  };
+
+  const loadAudioClasses = async () => {
+    try {
+      const teacher = await getMyTeacherProfile().catch(() => null);
+      if (teacher) {
+        setAudioRole('teacher');
+        setAudioPlanActive(true);
+        setAudioSessions(await getAudioSessionsForTeacher(teacher.id));
+        return;
+      }
+      const subs = await getMySubscriptions();
+      if (subs.audio?.active && subs.audio.teacherId) {
+        setAudioRole('student');
+        setAudioPlanActive(true);
+        const list = await getAudioSessionsForTeacher(subs.audio.teacherId);
+        setAudioSessions(list);
+        setAudioBooked(await getMyAudioBookingIds(list.map((x) => x.id)));
+      } else {
+        setAudioRole('student');
+        setAudioPlanActive(false);
+        setAudioSessions([]);
+      }
+    } catch (e) {
+      console.log('VoiceRoomScreen: audio classes load error', e);
+    }
+  };
+  useFocusEffect(
+    React.useCallback(() => {
+      loadAudioClasses();
+    }, [])
+  );
+
+  const handleAudioAction = async (session: AudioSession) => {
+    if (audioBusyId) return;
+    setAudioBusyId(session.id);
+    try {
+      if (audioRole === 'student' && !audioBooked.has(session.id)) {
+        await bookAudioSession(session.id);
+        await loadAudioClasses();
+        Alert.alert('Seat booked', 'Your seat is booked. Come back here to join when the class starts.');
+      } else {
+        await launchAudioRoom(startCall, session);
+      }
+    } catch (e: any) {
+      Alert.alert('Group Class', e?.message || 'Something went wrong. Please try again.');
+    } finally {
+      setAudioBusyId(null);
+    }
+  };
+
+  const renderAudioClasses = () => (
+    <View style={{ marginBottom: 6 }}>
+      <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary, marginTop: 6, marginBottom: 8 }}>
+        Group Audio Classes
+      </Text>
+      {audioRole === 'student' && !audioPlanActive ? (
+        <TouchableOpacity
+          activeOpacity={0.85}
+          onPress={() => navigation.navigate('ProgramFlowScreen', { mode: 'audio' })}
+          style={[styles.roomCardGlow, { backgroundColor: colors.bgCard, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0' }]}
+        >
+          <Text style={{ color: colors.textPrimary, fontWeight: '800', fontSize: 14 }}>Join group audio classes</Text>
+          <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 3 }}>
+            Get an Audio plan to book seats in live group classes. Tap to see plans.
+          </Text>
+        </TouchableOpacity>
+      ) : audioSessions.length === 0 ? (
+        <Text style={{ color: colors.textSecondary, fontSize: 12, marginBottom: 6 }}>
+          No group audio class is scheduled right now.
+        </Text>
+      ) : (
+        audioSessions.map((s) => {
+          const isHost = audioRole === 'teacher';
+          const booked = audioBooked.has(s.id);
+          const full = !isHost && !booked && s.bookedCount >= s.maxParticipants;
+          const label = isHost ? 'Join as host' : booked ? 'Join' : full ? 'Full' : 'Book seat';
+          return (
+            <View
+              key={s.id}
+              style={[styles.roomCardGlow, { backgroundColor: colors.bgCard, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0' }]}
+            >
+              <Text style={{ color: colors.textPrimary, fontWeight: '800', fontSize: 15 }} numberOfLines={1}>{s.title}</Text>
+              <Text style={{ color: colors.textSecondary, fontSize: 12, marginTop: 3 }}>
+                {s.teacherName} · {s.date} · {s.startTime} - {s.endTime}
+              </Text>
+              <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between', marginTop: 10 }}>
+                <Text style={{ color: colors.textSecondary, fontSize: 12 }}>
+                  {s.bookedCount}/{s.maxParticipants} seats booked
+                </Text>
+                <TouchableOpacity
+                  disabled={full || audioBusyId === s.id}
+                  onPress={() => handleAudioAction(s)}
+                  activeOpacity={0.85}
+                  style={{ backgroundColor: full ? '#94A3B8' : '#0284C7', borderRadius: 18, paddingHorizontal: 16, paddingVertical: 8 }}
+                >
+                  {audioBusyId === s.id ? (
+                    <ActivityIndicator size="small" color="#FFFFFF" />
+                  ) : (
+                    <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 12.5 }}>{label}</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          );
+        })
+      )}
+      {roomDataListHasOfficial && (
+        <Text style={{ fontSize: 15, fontWeight: '800', color: colors.textPrimary, marginTop: 14, marginBottom: 8 }}>
+          Live Class Rooms
+        </Text>
+      )}
+    </View>
+  );
   const isDarkMode = themeHook?.isDarkMode || false;
 
   const colors = isDarkMode
@@ -243,19 +379,33 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
 
     let isMounted = true;
     const checkAdminRights = async () => {
-      try {
-        const userEmail = currentUser.email?.toLowerCase().trim();
-        const [adminSnap, subAdminSnap] = await Promise.all([
-          firestore().collection('admins').where('email', '==', userEmail).get(),
-          firestore().collection('sub_admins').where('email', '==', userEmail).get(),
-        ]);
+      const rawEmail = (currentUser.email || '').trim();
+      const emails = Array.from(new Set([rawEmail.toLowerCase(), rawEmail])).filter(Boolean);
 
-        if (isMounted) {
-          setIsAdminOrSubAdmin(!adminSnap.empty || !subAdminSnap.empty);
+      // Each list is checked on its own: if one list cannot be read (for example a
+      // Firestore rule is missing), the other one still decides. Before, a failure in
+      // `sub_admins` also made real admins look like normal users, so "Create Room"
+      // for Class Rooms did not appear.
+      const isInList = async (collection: string) => {
+        try {
+          const snap = await firestore()
+            .collection(collection)
+            .where('email', 'in', emails)
+            .limit(1)
+            .get();
+          return !snap.empty;
+        } catch (error) {
+          console.error(`Error checking ${collection}:`, error);
+          return false;
         }
-      } catch (error) {
-        console.error('Error checking admin rights:', error);
-        if (isMounted) setIsAdminOrSubAdmin(false);
+      };
+
+      try {
+        const [isAdminUser, isSubAdminUser] = await Promise.all([
+          isInList('admins'),
+          isInList('sub_admins'),
+        ]);
+        if (isMounted) setIsAdminOrSubAdmin(isAdminUser || isSubAdminUser);
       } finally {
         if (isMounted) setCheckingRole(false);
       }
@@ -340,6 +490,11 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   };
 
   const openCreateModal = () => {
+    if (activeTab === 'official' && audioRole === 'teacher') {
+      // Teachers create their group audio class from here
+      setClassModalOpen(true);
+      return;
+    }
     if (activeTab === 'official' && !isAdminOrSubAdmin) {
       Alert.alert('Restricted', 'Only Admins & Sub-Admins can create Class Rooms.');
       return;
@@ -440,23 +595,42 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       const participantName =
         currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
 
-      const url = `${TOKEN_SERVER_BASE_URL}/getToken?roomName=${encodeURIComponent(
-        pendingJoinRoom.livekitRoomId
-      )}&participantName=${encodeURIComponent(participantName)}`;
-
-      const response = await fetchWithTimeoutRetry(url);
-      const responseText = await response.text();
-
+      // One Cloud Function gives the token for BOTH room types. The server checks:
+      //  - Study Room (public): login is enough.
+      //  - Class Room (official): active Audio plan (or admin / sub-admin / creator).
       let data: any;
       try {
-        data = JSON.parse(responseText);
-      } catch (parseError) {
-        throw new Error('Server returned invalid response format.');
+        const res: any = await functions().httpsCallable('getLiveKitToken')({
+          roomName: pendingJoinRoom.livekitRoomId,
+          participantName,
+        });
+        data = { token: res.data?.token, serverUrl: LIVEKIT_FALLBACK_URL };
+      } catch (e: any) {
+        const code = e?.code || '';
+        if (
+          pendingJoinRoom.type === 'official' &&
+          (code === 'functions/permission-denied' || code === 'permission-denied')
+        ) {
+          setIsJoiningPending(false);
+          Alert.alert(
+            'Audio Plan Required',
+            'Group classes are included in the Audio Mode plan. Choose a plan to join.',
+            [
+              { text: 'Not now', style: 'cancel' },
+              {
+                text: 'View Plans',
+                onPress: () => navigation.navigate('ProgramFlowScreen', { mode: 'audio' }),
+              },
+            ]
+          );
+          return;
+        }
+        if (code === 'functions/not-found' || code === 'not-found') {
+          throw new Error('This room is no longer available.');
+        }
+        throw new Error('Could not connect to the room. Please check your internet and try again.');
       }
-
-      if (!response.ok || !data.token) {
-        throw new Error(data?.error || 'Failed to fetch token');
-      }
+      if (!data.token) throw new Error('Failed to get the room token.');
 
       const targetScreen = pendingJoinRoom.type === 'official' ? 'ClassRoomScreen' : 'StudyRoomScreen';
       setIsJoiningPending(false);
@@ -472,19 +646,21 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     } catch (error: any) {
       setIsJoiningPending(false);
       console.error('Join Room Error:', error);
-      Alert.alert('Error', error.message || 'Unable to join room. Check token server.');
+      Alert.alert('Error', error.message || 'Unable to join the room.');
     }
   };
 
   const publicRooms = rooms.filter(r => r.type === 'public' || !r.type);
   const officialRooms = rooms.filter(r => r.type === 'official');
-  const canCreateInCurrentTab = activeTab === 'public' || (activeTab === 'official' && isAdminOrSubAdmin);
+  const roomDataListHasOfficial = officialRooms.length > 0;
+  const canCreateInCurrentTab = activeTab === 'public' || (activeTab === 'official' && (isAdminOrSubAdmin || audioRole === 'teacher'));
 
   const renderRoomList = (roomDataList: VoiceRoom[], isOfficialTab: boolean) => (
     <View style={{ width: SCREEN_WIDTH, paddingHorizontal: 16 }}>
       <FlatList
         data={roomDataList}
         keyExtractor={item => item.id}
+        ListHeaderComponent={isOfficialTab ? renderAudioClasses() : null}
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => {
@@ -585,6 +761,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
           );
         }}
         ListEmptyComponent={
+          isOfficialTab && audioSessions.length > 0 ? null : (
           <View style={styles.emptyContainer}>
             <Text style={[styles.emptyText, { color: colors.textSecondary }]}>
               {isOfficialTab
@@ -592,6 +769,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 : 'No study group is active. Create the first room!'}
             </Text>
           </View>
+          )
         }
       />
     </View>
@@ -750,7 +928,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 activeOpacity={0.85}
               >
                 <Plus size={15} color="#FFFFFF" strokeWidth={3} />
-                <Text style={styles.glowingCreateBtnText}>Create Room</Text>
+                <Text style={styles.glowingCreateBtnText}>{activeTab === 'official' && audioRole === 'teacher' && !isAdminOrSubAdmin ? 'Create Class' : 'Create Room'}</Text>
               </TouchableOpacity>
             </Animated.View>
           )}
@@ -782,6 +960,117 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
             {/* Page 1: Class Rooms */}
             {renderRoomList(officialRooms, true)}
           </ScrollView>
+        )}
+
+        {/* ─── CREATE GROUP AUDIO CLASS (teachers) ─── */}
+        {classModalOpen && (
+          <View style={styles.customModalOverlay}>
+            <Pressable style={styles.overlayBackground} onPress={() => setClassModalOpen(false)} />
+            <View style={[styles.customModalCard, { backgroundColor: isDarkMode ? '#0F172A' : '#FFFFFF', maxHeight: '88%' }]}>
+              <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
+                <Text style={[styles.modalTitle, { color: colors.textPrimary }]}>Create Group Audio Class</Text>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Title</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  placeholder="e.g. Speaking practice: daily life"
+                  placeholderTextColor="#64748B"
+                  value={classTitle}
+                  onChangeText={setClassTitle}
+                  maxLength={80}
+                />
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Description (optional)</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  placeholder="What will students do in this class?"
+                  placeholderTextColor="#64748B"
+                  value={classDesc}
+                  onChangeText={setClassDesc}
+                  maxLength={500}
+                />
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Date</Text>
+                <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginBottom: 8 }}>
+                  {classDays.map((d, i) => {
+                    const active = i === classDayOffset;
+                    return (
+                      <TouchableOpacity
+                        key={i}
+                        onPress={() => setClassDayOffset(i)}
+                        style={{ width: 52, paddingVertical: 8, marginRight: 8, borderRadius: 12, alignItems: 'center', backgroundColor: active ? '#0284C7' : (isDarkMode ? '#1E293B' : '#F1F5F9') }}
+                      >
+                        <Text style={{ fontSize: 11, fontWeight: '700', color: active ? '#FFF' : colors.textSecondary }}>
+                          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'][d.getDay()]}
+                        </Text>
+                        <Text style={{ fontSize: 16, fontWeight: '800', color: active ? '#FFF' : colors.textPrimary }}>{d.getDate()}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Start time (24-hour, India time)</Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginBottom: 8 }}>
+                  <TextInput
+                    style={[styles.input, { width: 70, textAlign: 'center', marginBottom: 0, color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                    value={classHour}
+                    onChangeText={(t) => setClassHour(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    placeholder="HH"
+                    placeholderTextColor="#64748B"
+                  />
+                  <Text style={{ color: colors.textSecondary, fontWeight: '800' }}>:</Text>
+                  <TextInput
+                    style={[styles.input, { width: 70, textAlign: 'center', marginBottom: 0, color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                    value={classMin}
+                    onChangeText={(t) => setClassMin(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                    keyboardType="number-pad"
+                    maxLength={2}
+                    placeholder="MM"
+                    placeholderTextColor="#64748B"
+                  />
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Duration</Text>
+                <View style={{ flexDirection: 'row', flexWrap: 'wrap', gap: 8, marginBottom: 8 }}>
+                  {[30, 45, 60, 90].map((dur) => {
+                    const active = dur === classDuration;
+                    return (
+                      <TouchableOpacity
+                        key={dur}
+                        onPress={() => setClassDuration(dur)}
+                        style={{ paddingHorizontal: 14, paddingVertical: 8, borderRadius: 12, backgroundColor: active ? '#0284C7' : (isDarkMode ? '#1E293B' : '#F1F5F9') }}
+                      >
+                        <Text style={{ fontWeight: '700', color: active ? '#FFF' : colors.textPrimary }}>{dur} min</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Maximum students</Text>
+                <TextInput
+                  style={[styles.input, { color: colors.textPrimary, borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.3)' : '#CBD5E1', backgroundColor: isDarkMode ? '#1E293B' : '#F8FAFC' }]}
+                  value={classSeats}
+                  onChangeText={(t) => setClassSeats(t.replace(/[^0-9]/g, ''))}
+                  keyboardType="number-pad"
+                  maxLength={3}
+                />
+
+                <TouchableOpacity
+                  onPress={submitClass}
+                  disabled={classSaving}
+                  activeOpacity={0.85}
+                  style={{ backgroundColor: '#0284C7', borderRadius: 14, paddingVertical: 13, alignItems: 'center', marginTop: 6 }}
+                >
+                  {classSaving ? <ActivityIndicator color="#FFFFFF" /> : <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 14 }}>Create class</Text>}
+                </TouchableOpacity>
+                <TouchableOpacity onPress={() => setClassModalOpen(false)} style={{ alignItems: 'center', paddingVertical: 12 }}>
+                  <Text style={{ color: colors.textSecondary, fontWeight: '700' }}>Cancel</Text>
+                </TouchableOpacity>
+              </ScrollView>
+            </View>
+          </View>
         )}
 
         {/* ─── CREATE ROOM DETAILS MODAL ─── */}

@@ -39,6 +39,7 @@ import {
   ChevronDown,
 } from 'lucide-react-native';
 import { useCallSession } from '../home/screens/CallSessionProvider';
+import { useTheme } from '../../hooks/useTheme';
 
 const DEFAULT_AVATAR =
   'https://api.dicebear.com/7.x/avataaars/svg?seed=Guest';
@@ -125,6 +126,10 @@ export const VideoSessionView = ({
   otherPersonAvatarUrl,
   userAvatarUrl,
 }: any) => {
+  // Accent colour follows the app theme chosen in Settings
+  const themeContext = useTheme() as any;
+  const accent: string = themeContext?.theme?.colors?.primary || '#2563EB';
+
   const { localParticipant, isMicrophoneEnabled, isCameraEnabled, isScreenShareEnabled } =
     useLocalParticipant() as any;
   const remoteParticipants = useRemoteParticipants();
@@ -237,7 +242,7 @@ export const VideoSessionView = ({
       setDraft('');
     } catch (e) {
       console.log('chat send error:', e);
-      Alert.alert('Error', 'The message could not be sent.');
+      Alert.alert('Error', 'Could not send the message.');
     }
   };
 
@@ -276,7 +281,7 @@ export const VideoSessionView = ({
       console.log('screen share error:', e);
       Alert.alert(
         'Screen share',
-        'Screen sharing could not be started. Grant permission and try again.'
+        'Could not start screen sharing. Please allow the permission and try again.'
       );
     }
   };
@@ -327,7 +332,7 @@ export const VideoSessionView = ({
           ) : (
             <View style={styles.avatarFallback}>
               <ScreenShare color="#38BDF8" size={44} />
-              <Text style={styles.waitingText}>You are sharing your screen.</Text>
+              <Text style={styles.waitingText}>You are sharing your screen</Text>
               <TouchableOpacity style={styles.stopShareBtn} onPress={toggleScreenShare}>
                 <Text style={styles.stopShareText}>Stop sharing</Text>
               </TouchableOpacity>
@@ -470,7 +475,7 @@ export const VideoSessionView = ({
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.controlBtn, emojiOpen && styles.controlBtnActive]}
+          style={[styles.controlBtn, emojiOpen && { backgroundColor: accent }]}
           onPress={() => setEmojiOpen((v) => !v)}
           activeOpacity={0.8}
         >
@@ -478,7 +483,7 @@ export const VideoSessionView = ({
         </TouchableOpacity>
 
         <TouchableOpacity
-          style={[styles.controlBtn, isScreenShareEnabled && styles.controlBtnActive]}
+          style={[styles.controlBtn, isScreenShareEnabled && { backgroundColor: accent }]}
           onPress={toggleScreenShare}
           activeOpacity={0.8}
         >
@@ -513,7 +518,7 @@ export const VideoSessionView = ({
             )}
             {messages.map((m) => (
               <View key={m.id} style={[styles.bubbleRow, m.mine && { justifyContent: 'flex-end' }]}>
-                <View style={[styles.bubble, m.mine ? styles.bubbleMine : styles.bubbleOther]}>
+                <View style={[styles.bubble, m.mine ? [styles.bubbleMine, { backgroundColor: accent }] : styles.bubbleOther]}>
                   {!m.mine && <Text style={styles.bubbleName}>{otherPersonName || 'Participant'}</Text>}
                   <Text style={styles.bubbleText}>{m.text}</Text>
                 </View>
@@ -525,7 +530,7 @@ export const VideoSessionView = ({
             <TextInput
               value={draft}
               onChangeText={setDraft}
-              placeholder="Message likho..."
+              placeholder="Type a message..."
               placeholderTextColor="#64748B"
               style={styles.chatInput}
               onSubmitEditing={sendChat}
@@ -534,7 +539,7 @@ export const VideoSessionView = ({
             />
             <TouchableOpacity
               onPress={sendChat}
-              style={[styles.sendBtn, !draft.trim() && { opacity: 0.4 }]}
+              style={[styles.sendBtn, { backgroundColor: accent }, !draft.trim() && { opacity: 0.4 }]}
               disabled={!draft.trim()}
             >
               <Send color="#FFF" size={18} />

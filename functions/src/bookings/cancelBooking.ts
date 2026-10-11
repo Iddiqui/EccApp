@@ -4,36 +4,28 @@ import * as admin from 'firebase-admin';
 /**
  * cancelBooking
  * -------------
- * Do cases me client isko call karega:
- *  1. Payment cancel/fail ho gaya (createBooking ke baad, verifyPayment se
- *     pehle) — slot ko wapas free karna hai, warna wo hamesha ke liye
- *     "booked" dikhta rahega bina kisi actual booking ke.
- *  2. User ne apni CONFIRMED booking cancel ki (refund policy alag se
- *     handle karni hogi, abhi sirf slot free karna + status update).
+ * The client calls this in these cases:
+ *  1. Payment was cancelled / failed (after createBooking, before verifyPayment):
+ *     the slot goes back to free.
+ *  2. 🆕 A student cancels a CONFIRMED plan session (kind 'subscription') at least
+ *     CANCEL_BEFORE_MIN minutes before it starts: the slot is freed AND the session is
+ *     returned to the plan (remainingSessions +1, usedSessions -1).
  *
- * Sirf apni khud ki booking cancel ki ja sakti hai (ownership check).
+ * Paid (non-plan) confirmed bookings and demo classes still cannot be cancelled here:
+ * there is no refund flow yet.
  *
- * 🎯 FIX (25 Sep 2026): pehle yahan `teachers` collection use ho rahi thi,
- * jab ke actual collection naam `session_teachers` hai (createBooking.ts
- * aur AdminSlotCreationScreen.tsx dono me isi naam se slots save/read hote
- * hain). Is mismatch ki wajah se slot ka document kabhi milta hi nahi tha
- * (`NOT_FOUND` error logs me), aur payment cancel/fail hone par slot
- * hamesha "booked" hi reh jaata tha — kabhi free nahi hota tha.
+ * Only your own booking can be cancelled (ownership check).
  */
+const CANCEL_BEFORE_MIN = 120; // plan sessions can be cancelled up to 2 hours before the start
+
 export const cancelBooking = functions.https.onCall(async (request: any) => {
   if (!request.auth) {
-    throw new functions.https.HttpsError(
-      'unauthenticated',
-      'Login is required.'
-    );
+    throw new functions.https.HttpsError('unauthenticated', 'Login is required.');
   }
 
   const { bookingId } = request.data || {};
   if (!bookingId) {
-    throw new functions.https.HttpsError(
-      'invalid-argument',
-      'Booking is required.'
-    );
+    throw new functions.https.HttpsError('invalid-argument', 'Booking is required.');
   }
 
   const uid = request.auth.uid;
@@ -51,38 +43,63 @@ export const cancelBooking = functions.https.onCall(async (request: any) => {
       const booking = bookingSnap.data()!;
 
       if (booking.studentId !== uid) {
-        throw new functions.https.HttpsError(
-          'permission-denied',
-          'This booking is not yours.'
-        );
+        throw new functions.https.HttpsError('permission-denied', 'This booking is not yours.');
       }
 
       if (booking.status === 'cancelled') {
-        return; // already cancelled — idempotent, dobara kuch nahi karna
+        return; // already cancelled: idempotent
       }
 
-      // 💳 Paid (confirmed) booking yahan se cancel nahi hogi. Refund flow abhi
-      // bana nahi hai, aur bina refund ke slot free kar dene se student ka paisa
-      // bhi jaata aur slot bhi kisi aur ko mil jaata. Tab tak support se hi hoga.
-      if (booking.status === 'confirmed') {
+      const isPlanSession = booking.status === 'confirmed' && booking.kind === 'subscription';
+
+      if (booking.status === 'confirmed' && !isPlanSession) {
         throw new functions.https.HttpsError(
           'failed-precondition',
           'A confirmed session cannot be cancelled via the app. Please contact support.'
         );
       }
 
-      // Slot ko wapas free karo — seedha slotId se reference karte hain
-      if (booking.teacherId && booking.slotId) {
-        const slotRef = db
-          .collection('session_teachers')
-          .doc(booking.teacherId)
-          .collection('slots')
-          .doc(booking.slotId);
+      if (isPlanSession) {
+        const startMs = new Date(`${booking.date}T${booking.startTime}:00+05:30`).getTime();
+        if (!isNaN(startMs) && startMs - Date.now() < CANCEL_BEFORE_MIN * 60 * 1000) {
+          throw new functions.https.HttpsError(
+            'failed-precondition',
+            'Sessions can be cancelled up to 2 hours before the start time.'
+          );
+        }
+      }
 
+      // ── READS first ──
+      const slotRef =
+        booking.teacherId && booking.slotId
+          ? db.collection('session_teachers').doc(booking.teacherId).collection('slots').doc(booking.slotId)
+          : null;
+      const slotSnap = slotRef ? await tx.get(slotRef) : null;
+
+      const subRef =
+        isPlanSession && booking.subscriptionId
+          ? db.collection('subscriptions').doc(booking.subscriptionId)
+          : null;
+      const subSnap = subRef ? await tx.get(subRef) : null;
+
+      // ── WRITES ──
+      if (slotRef && slotSnap && slotSnap.exists) {
         tx.update(slotRef, { isBooked: false });
       }
 
-      tx.update(bookingRef, { status: 'cancelled' });
+      if (subRef && subSnap && subSnap.exists) {
+        // Give the session back to the plan
+        tx.update(subRef, {
+          remainingSessions: admin.firestore.FieldValue.increment(1),
+          usedSessions: admin.firestore.FieldValue.increment(-1),
+          updatedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+      }
+
+      tx.update(bookingRef, {
+        status: 'cancelled',
+        cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
     });
 
     return { success: true };
@@ -91,9 +108,6 @@ export const cancelBooking = functions.https.onCall(async (request: any) => {
       throw err;
     }
     console.error('cancelBooking error:', err);
-    throw new functions.https.HttpsError(
-      'internal',
-      'The booking could not be cancelled.'
-    );
+    throw new functions.https.HttpsError('internal', 'The booking could not be cancelled.');
   }
 });

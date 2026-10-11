@@ -23,7 +23,6 @@ import {
   ScrollView,
   useWindowDimensions,
   KeyboardAvoidingView,
-  Linking,
   PanResponder,
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
@@ -61,50 +60,10 @@ import {
   UserCheck,
   Monitor,
   ChevronDown,
-  Paperclip,
   FileText,
-  Image as ImageIconLucide,
-  Video as VideoFileIconLucide,
-  Mic2,
-  Play,
-  Pause,
-  Download,
 } from 'lucide-react-native';
 
 registerGlobals();
-
-// ─── OPTIONAL NATIVE MODULES (Attachments / Voice notes) ───
-// In kaafi native modules ko hum yaha "soft" require kar rahe hain, taaki agar
-// project me abhi install nahi hain to app crash na ho — sirf attachment ka
-// button tab tak disabled/alert dikhayega jab tak in packages ko install na
-// kiya jaaye:
-//   npm install react-native-image-picker react-native-document-picker react-native-audio-recorder-player
-// (Android/iOS dono ke liye pod install / permissions add karna hoga.)
-let ImagePickerLib: any = null;
-let DocumentPickerLib: any = null;
-let AudioRecorderPlayerLib: any = null;
-try {
-  ImagePickerLib = require('react-native-image-picker');
-} catch (e) {
-  ImagePickerLib = null;
-}
-try {
-  // Old `react-native-document-picker` uses deprecated RN-internal APIs
-  // (GuardedResultAsyncTask) that were removed in newer React Native
-  // versions and break the Android build. The community-maintained fork
-  // below is compatible with current RN/Gradle/AGP versions.
-  //   npm uninstall react-native-document-picker
-  //   npm install @react-native-documents/picker
-  DocumentPickerLib = require('@react-native-documents/picker');
-} catch (e) {
-  DocumentPickerLib = null;
-}
-try {
-  const RNAudioModule = require('react-native-audio-recorder-player');
-  AudioRecorderPlayerLib = RNAudioModule.default || RNAudioModule;
-} catch (e) {
-  AudioRecorderPlayerLib = null;
-}
 
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const STATUSBAR_SAFE_HEIGHT =
@@ -384,95 +343,6 @@ const ClassTrackTile = ({
   );
 };
 
-// Separate player instance (independent of the recorder used to CREATE
-// voice notes) so a voice-note can be played back while another one is
-// mid-recording without the two instances stepping on each other.
-const sharedAudioPlayer: any = AudioRecorderPlayerLib
-  ? new AudioRecorderPlayerLib()
-  : null;
-
-// ─── CHAT ATTACHMENT RENDERER (image / video / file / voice-note) ───
-const ChatAttachmentBubble = ({ attachment }: { attachment: ChatAttachment }) => {
-  const [isPlaying, setIsPlaying] = useState(false);
-
-  const openAttachment = () => {
-    if (attachment.url) {
-      Linking.openURL(attachment.url).catch(() => {});
-    }
-  };
-
-  const toggleAudioPlayback = async () => {
-    if (!sharedAudioPlayer) {
-      Alert.alert(
-        'Setup Required',
-        'Voice notes play karne ke liye pehle install karein:\nnpm install react-native-audio-recorder-player'
-      );
-      return;
-    }
-    try {
-      if (isPlaying) {
-        await sharedAudioPlayer.stopPlayer();
-        setIsPlaying(false);
-      } else {
-        await sharedAudioPlayer.startPlayer(attachment.url);
-        setIsPlaying(true);
-        sharedAudioPlayer.addPlayBackListener((e: any) => {
-          if (e.currentPosition >= e.duration) {
-            sharedAudioPlayer.stopPlayer();
-            setIsPlaying(false);
-          }
-        });
-      }
-    } catch (e) {
-      console.log('Audio playback error:', e);
-      setIsPlaying(false);
-    }
-  };
-
-  if (attachment.type === 'image') {
-    return (
-      <TouchableOpacity onPress={openAttachment} activeOpacity={0.85}>
-        <Image source={{ uri: attachment.url }} style={styles.attachmentImagePreview} resizeMode="cover" />
-      </TouchableOpacity>
-    );
-  }
-
-  if (attachment.type === 'video') {
-    return (
-      <TouchableOpacity style={styles.attachmentVideoPreview} onPress={openAttachment} activeOpacity={0.85}>
-        <Play color="#FFF" size={26} />
-        <Text style={styles.attachmentFileLabel} numberOfLines={1}>
-          {attachment.name || 'Video'}
-        </Text>
-      </TouchableOpacity>
-    );
-  }
-
-  if (attachment.type === 'audio') {
-    return (
-      <TouchableOpacity style={styles.attachmentAudioRow} onPress={toggleAudioPlayback} activeOpacity={0.8}>
-        <View style={styles.attachmentAudioPlayBtn}>
-          {isPlaying ? <Pause color="#FFF" size={14} /> : <Play color="#FFF" size={14} />}
-        </View>
-        <Text style={styles.attachmentFileLabel}>
-          Voice note{attachment.durationMs ? ` · ${Math.round(attachment.durationMs / 1000)}s` : ''}
-        </Text>
-      </TouchableOpacity>
-    );
-  }
-
-  // Generic file / PDF
-  return (
-    <TouchableOpacity style={styles.attachmentFileRow} onPress={openAttachment} activeOpacity={0.85}>
-      <FileText color="#38BDF8" size={20} />
-      <Text style={styles.attachmentFileLabel} numberOfLines={1}>
-        {attachment.name || 'Document'}
-      </Text>
-      <Download color="#94A3B8" size={16} />
-    </TouchableOpacity>
-  );
-};
-
 // ─── MAIN VIEW ───
 export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId, userAvatarUrl }: any) => {
   const room = useRoomContext();
@@ -529,14 +399,6 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   const [floatingEmojis, setFloatingEmojis] = useState<
     { id: string; emoji: string; startX: number }[]
   >([]);
-
-  const [isAttachSheetVisible, setIsAttachSheetVisible] = useState(false);
-  const [isRecordingAudio, setIsRecordingAudio] = useState(false);
-  const [recordSeconds, setRecordSeconds] = useState(0);
-  const recordTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const audioRecorderRef = useRef<any>(
-    AudioRecorderPlayerLib ? new AudioRecorderPlayerLib() : null
-  );
 
   const [incomingRequest, setIncomingRequest] = useState<PermissionRequest | null>(null);
   const [selectedDuration, setSelectedDuration] = useState<number>(30);
@@ -687,7 +549,6 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 isLocal: false,
                 time: data.time || '',
                 createdAt: data.createdAt,
-                attachment: data.attachment || undefined,
               });
             });
             setChatMessages((prev) => {
@@ -988,9 +849,9 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     }
   };
 
-  const handleSendMessage = async (attachment?: ChatAttachment) => {
+  const handleSendMessage = async () => {
     const text = messageInput.trim();
-    if (!text && !attachment) return;
+    if (!text) return;
     if (!roomId) return;
     setMessageInput('');
 
@@ -1016,7 +877,6 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
           senderId: currentUser?.uid || localParticipant?.identity || myIdentity,
           text,
           time: formattedTime,
-          attachment: attachment || null,
           createdAt: firestore.FieldValue.serverTimestamp(),
         });
     } catch (e) {
@@ -1024,166 +884,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     }
   };
 
-  // ─── 📎 ATTACHMENTS: Image / Video / File(PDF) ───
-  // NOTE: Ye functions sirf DEVICE se file uthate hain (local uri). Real app
-  // me tumhe is uri ko apne server/Firebase Storage pe upload karke wahan se
-  // mila hua public `downloadUrl` yaha `url` field me daalna hoga, taaki
-  // doosre participants bhi wo file dekh/download kar sakein — abhi ke liye
-  // hum local uri hi attach kar rahe hain taaki UI turant kaam kare.
-  const ensureImagePickerAvailable = () => {
-    if (!ImagePickerLib) {
-      Alert.alert(
-        'Setup Required',
-        'Install first for attachments.:\nnpm install react-native-image-picker'
-      );
-      return false;
-    }
-    return true;
-  };
-
-  const ensureDocumentPickerAvailable = () => {
-    if (!DocumentPickerLib) {
-      Alert.alert(
-        'Setup Required',
-        'Install first to attach a file/PDF.:\nnpm install react-native-document-picker'
-      );
-      return false;
-    }
-    return true;
-  };
-
-  const handlePickImage = async () => {
-    setIsAttachSheetVisible(false);
-    if (!ensureImagePickerAvailable()) return;
-    try {
-      const result = await ImagePickerLib.launchImageLibrary({
-        mediaType: 'photo',
-        quality: 0.8,
-      });
-      if (result.didCancel || !result.assets?.length) return;
-      const asset = result.assets[0];
-      await handleSendMessage({
-        type: 'image',
-        url: asset.uri,
-        name: asset.fileName || 'photo.jpg',
-        mimeType: asset.type,
-      });
-    } catch (e) {
-      console.log('Image pick error:', e);
-    }
-  };
-
-  const handlePickVideo = async () => {
-    setIsAttachSheetVisible(false);
-    if (!ensureImagePickerAvailable()) return;
-    try {
-      const result = await ImagePickerLib.launchImageLibrary({
-        mediaType: 'video',
-        quality: 0.8,
-      });
-      if (result.didCancel || !result.assets?.length) return;
-      const asset = result.assets[0];
-      await handleSendMessage({
-        type: 'video',
-        url: asset.uri,
-        name: asset.fileName || 'video.mp4',
-        mimeType: asset.type,
-      });
-    } catch (e) {
-      console.log('Video pick error:', e);
-    }
-  };
-
-  const handlePickDocument = async () => {
-    setIsAttachSheetVisible(false);
-    if (!ensureDocumentPickerAvailable()) return;
-    try {
-      // @react-native-documents/picker's `pick()` returns an ARRAY of
-      // results (even for a single-file pick), unlike the old package's
-      // `pickSingle()` which returned one object directly.
-      const results = await DocumentPickerLib.pick({
-        type: [DocumentPickerLib.types.pdf, DocumentPickerLib.types.allFiles],
-      });
-      const result = results?.[0];
-      if (!result) return;
-      await handleSendMessage({
-        type: 'file',
-        url: result.uri,
-        name: result.name || 'document.pdf',
-        mimeType: result.type,
-      });
-    } catch (e: any) {
-      const isCancelled =
-        DocumentPickerLib?.isErrorWithCode &&
-        DocumentPickerLib.isErrorWithCode(e) &&
-        e.code === DocumentPickerLib.errorCodes?.OPERATION_CANCELED;
-      if (isCancelled) return;
-      console.log('Document pick error:', e);
-    }
-  };
-
-  // ─── 🎙️ VOICE / AUDIO MESSAGE ───
-  const ensureAudioRecorderAvailable = () => {
-    if (!AudioRecorderPlayerLib || !audioRecorderRef.current) {
-      Alert.alert(
-        'Setup Required',
-        'Audio message bhejne ke liye pehle install karein:\nnpm install react-native-audio-recorder-player'
-      );
-      return false;
-    }
-    return true;
-  };
-
-  const startAudioRecording = async () => {
-    if (!ensureAudioRecorderAvailable()) return;
-    try {
-      if (Platform.OS === 'android') {
-        await PermissionsAndroid.request(
-          PermissionsAndroid.PERMISSIONS.RECORD_AUDIO
-        );
-      }
-      await audioRecorderRef.current.startRecorder();
-      setIsRecordingAudio(true);
-      setRecordSeconds(0);
-      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-      recordTimerRef.current = setInterval(() => {
-        setRecordSeconds((prev) => prev + 1);
-      }, 1000);
-    } catch (e) {
-      console.log('Start recording error:', e);
-    }
-  };
-
-  const stopAudioRecordingAndSend = async () => {
-    if (!audioRecorderRef.current) return;
-    try {
-      const filePath = await audioRecorderRef.current.stopRecorder();
-      if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-      const durationMs = recordSeconds * 1000;
-      setIsRecordingAudio(false);
-      setRecordSeconds(0);
-      await handleSendMessage({
-        type: 'audio',
-        url: filePath,
-        name: 'voice-note.m4a',
-        durationMs,
-      });
-    } catch (e) {
-      console.log('Stop recording error:', e);
-      setIsRecordingAudio(false);
-    }
-  };
-
-  const cancelAudioRecording = async () => {
-    try {
-      if (audioRecorderRef.current) {
-        await audioRecorderRef.current.stopRecorder();
-      }
-    } catch (e) {}
-    if (recordTimerRef.current) clearInterval(recordTimerRef.current);
-    setIsRecordingAudio(false);
-    setRecordSeconds(0);
-  };
+  // Photo / video / file sharing in chat has been removed (text, emoji and voice notes only).
 
   const toggleHandRaise = async () => {
     const currentStatus = !handRaisedUsers[myIdentity];
@@ -1814,9 +1515,6 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                           {isMe ? 'You' : item.sender}
                         </Text>
 
-                        {item.attachment && (
-                          <ChatAttachmentBubble attachment={item.attachment} />
-                        )}
 
                         {!!item.text && <Text style={styles.chatText}>{item.text}</Text>}
                         <Text style={styles.chatTime}>{item.time}</Text>
@@ -1831,30 +1529,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 }
               />
 
-              {isRecordingAudio ? (
-                <View style={styles.recordingRow}>
-                  <View style={styles.recordingDot} />
-                  <Text style={styles.recordingTimeText}>
-                    Recording… {String(Math.floor(recordSeconds / 60)).padStart(2, '0')}:
-                    {String(recordSeconds % 60).padStart(2, '0')}
-                  </Text>
-                  <TouchableOpacity style={styles.recordingCancelBtn} onPress={cancelAudioRecording}>
-                    <X color="#F87171" size={16} />
-                  </TouchableOpacity>
-                  <TouchableOpacity style={styles.recordingSendBtn} onPress={stopAudioRecordingAndSend}>
-                    <Send color="#FFF" size={16} />
-                  </TouchableOpacity>
-                </View>
-              ) : (
                 <View style={styles.chatInputRow}>
-                  <TouchableOpacity
-                    style={styles.attachBtn}
-                    onPress={() => setIsAttachSheetVisible(true)}
-                    hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
-                  >
-                    <Paperclip color="#94A3B8" size={20} />
-                  </TouchableOpacity>
-
                   <TextInput
                     style={styles.chatInput}
                     placeholder="Type a message..."
@@ -1865,62 +1540,16 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                     multiline
                   />
 
-                  {messageInput.trim().length > 0 ? (
-                    <TouchableOpacity style={styles.sendBtn} onPress={() => handleSendMessage()}>
-                      <Send color="#FFF" size={18} />
-                    </TouchableOpacity>
-                  ) : (
-                    <TouchableOpacity style={styles.sendBtn} onPress={startAudioRecording}>
-                      <Mic2 color="#FFF" size={18} />
-                    </TouchableOpacity>
-                  )}
+                  <TouchableOpacity
+                    style={[styles.sendBtn, messageInput.trim().length === 0 && { opacity: 0.45 }]}
+                    onPress={() => handleSendMessage()}
+                    disabled={messageInput.trim().length === 0}
+                  >
+                    <Send color="#FFF" size={18} />
+                  </TouchableOpacity>
                 </View>
-              )}
             </View>
           </KeyboardAvoidingView>
-        </Modal>
-
-        {/* ─── 📎 ATTACHMENT SHEET ─── */}
-        <Modal
-          visible={isAttachSheetVisible}
-          transparent
-          animationType="fade"
-          onRequestClose={() => setIsAttachSheetVisible(false)}
-        >
-          <View style={styles.chatCenterBackdrop}>
-            <TouchableWithoutFeedback onPress={() => setIsAttachSheetVisible(false)}>
-              <View style={StyleSheet.absoluteFill} />
-            </TouchableWithoutFeedback>
-            <View style={[styles.attachSheetCard, { width: isTablet ? 380 : winWidth * 0.86 }]}>
-              <Text style={styles.attachSheetTitle}>Share attachment</Text>
-              <View style={styles.attachOptionsRow}>
-                <TouchableOpacity style={styles.attachOption} onPress={handlePickImage} activeOpacity={0.8}>
-                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(56,189,248,0.15)' }]}>
-                    <ImageIconLucide color="#38BDF8" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Photo</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.attachOption} onPress={handlePickVideo} activeOpacity={0.8}>
-                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(167,139,250,0.15)' }]}>
-                    <VideoFileIconLucide color="#A78BFA" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>Video</Text>
-                </TouchableOpacity>
-
-                <TouchableOpacity style={styles.attachOption} onPress={handlePickDocument} activeOpacity={0.8}>
-                  <View style={[styles.attachOptionIcon, { backgroundColor: 'rgba(52,211,153,0.15)' }]}>
-                    <FileText color="#34D399" size={22} />
-                  </View>
-                  <Text style={styles.attachOptionLabel}>File / PDF</Text>
-                </TouchableOpacity>
-              </View>
-
-              <TouchableOpacity style={styles.attachCancelBtn} onPress={() => setIsAttachSheetVisible(false)}>
-                <Text style={styles.attachCancelText}>Cancel</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
         </Modal>
 
         {/* ─── IN-ROOM AVATAR PICKER MODAL ─── */}
@@ -2319,12 +1948,7 @@ export default function ClassRoomScreen({ route, navigation }: any) {
           // Subscription active nahi hai — Subscribe karne ke liye bhejo.
           // `returnTo` ke through, payment successful hone ke baad
           // SubscriptionScreen seedha isी Class Room me wapas bhej dega.
-          navigation.replace('SubscriptionScreen', {
-            returnTo: {
-              screen: 'ClassRoomScreen',
-              params: { serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl },
-            },
-          });
+          navigation.replace('ProgramFlowScreen', { mode: 'audio' });
           return;
         }
       } catch (err) {

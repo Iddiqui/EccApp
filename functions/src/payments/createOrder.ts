@@ -2,6 +2,12 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { computePricing } from './pricing';
 import type { PricingBreakdown } from './pricing';
+import {
+  loadProgramPlan,
+  loadApprovedTeacher,
+  assertNoActiveProgram,
+  computeProgramPricing,
+} from './programPlans';
 // razorpay npm package doesn't ship official TS types, isliye require() use kar rahe
 // hain taaki TypeScript compile me dikkat na aaye.
 // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -13,14 +19,15 @@ const Razorpay = require('razorpay');
 /**
  * createOrder
  * ------------
- * Client se aata hai: { type, planId?, couponCode?, bookingId? }
- * Client ka `amount` ab KAHIN use nahi hota (pehle hota tha, aur usse koi bhi
- * ₹1 me subscription/session khareed sakta tha).
+ * Client se aata hai: { type, planId?, couponCode?, bookingId?, teacherId? }
+ * Client ka `amount` KAHIN use nahi hota.
  *
- *  - type 'subscription': price PLANS (pricing.ts) + coupon se server nikalta hai.
- *  - type 'one_to_one'  : bookingId zaroori. Price bookings/{bookingId}.price se
- *    aata hai (jo createBooking ne teacher.pricePerSession se server pe likha).
- *    Booking student ki apni honi chahiye aur status 'pending_payment' hona chahiye.
+ *  - type 'subscription': Voice/ClassRoom plan. Price PLANS (pricing.ts) + coupon.
+ *  - type 'one_to_one'  : bookingId zaroori. Price bookings/{bookingId}.price se.
+ *  - type 'program'     : 🆕 Video/Audio plan. planId (subscriptionPlans doc) +
+ *    teacherId zaroori. Price Firestore plan doc + coupon se server nikalta hai.
+ *    Teacher approved + us mode ka hona chahiye, aur us mode ka plan pehle se
+ *    active nahi hona chahiye.
  */
 export const createOrder = functions.https.onCall(
   { secrets: ['RAZORPAY_KEY_ID', 'RAZORPAY_KEY_SECRET'] },
@@ -28,38 +35,59 @@ export const createOrder = functions.https.onCall(
     if (!request.auth) {
       throw new functions.https.HttpsError(
         'unauthenticated',
-        'Login is required for payment.'
+        'Please log in to make a payment.'
       );
     }
 
     const uid: string = request.auth.uid;
-    const { type, planId, couponCode, bookingId } = request.data || {};
+    const { type, planId, couponCode, bookingId, teacherId } = request.data || {};
 
-    if (type !== 'subscription' && type !== 'one_to_one') {
+    if (type !== 'subscription' && type !== 'one_to_one' && type !== 'program') {
       throw new functions.https.HttpsError(
         'invalid-argument',
-        "The type can only be 'subscription' or 'one-to-one'."
+        "type must be 'subscription', 'one_to_one' or 'program'."
       );
     }
 
     let amountPaise: number;
     let pricing: PricingBreakdown | null = null;
+    // program payment ke saath save hota hai, taaki baad me plan ki price/structure
+    // badle to bhi jo user ne kharida wahi activate ho.
+    let programSnapshot: Record<string, any> | null = null;
 
     if (type === 'subscription') {
       pricing = await computePricing(planId, couponCode);
       amountPaise = pricing.payablePaise;
+    } else if (type === 'program') {
+      const plan = await loadProgramPlan(planId);
+      const teacher = await loadApprovedTeacher(teacherId, plan.mode);
+      await assertNoActiveProgram(uid, plan.mode);
+      pricing = await computeProgramPricing(plan, couponCode);
+      amountPaise = pricing.payablePaise;
+      programSnapshot = {
+        mode: plan.mode,
+        planName: pricing.planName,
+        durationMonths: plan.durationMonths,
+        durationLabel: plan.durationLabel,
+        sessions: plan.sessions,
+        sessionMins: plan.sessionMins,
+        teacherId: teacher.id,
+        teacherName: teacher.name,
+        teacherEmail: teacher.email,
+        teacherPhotoUrl: teacher.photoUrl,
+      };
     } else {
       if (!bookingId || typeof bookingId !== 'string') {
-        throw new functions.https.HttpsError('invalid-argument', 'Booking is required.');
+        throw new functions.https.HttpsError('invalid-argument', 'bookingId is required.');
       }
       const bookingSnap = await admin.firestore().collection('bookings').doc(bookingId).get();
       if (!bookingSnap.exists) {
-        throw new functions.https.HttpsError('not-found', 'Did not get a booking.');
+        throw new functions.https.HttpsError('not-found', 'Booking not found.');
       }
       const booking = bookingSnap.data()!;
 
       if (booking.studentId !== uid) {
-        throw new functions.https.HttpsError('permission-denied', 'This booking is not yours.');
+        throw new functions.https.HttpsError('permission-denied', 'This booking does not belong to you.');
       }
       if (booking.status !== 'pending_payment') {
         throw new functions.https.HttpsError(
@@ -91,6 +119,7 @@ export const createOrder = functions.https.onCall(
           type,
           planId: planId || '',
           bookingId: bookingId || '',
+          teacherId: programSnapshot?.teacherId || '',
           couponCode: pricing?.couponCode ?? '',
         },
       });
@@ -99,8 +128,10 @@ export const createOrder = functions.https.onCall(
         paymentId: order.id,
         userId: uid,
         type,
-        planId: type === 'subscription' ? planId : null,
+        planId: type === 'subscription' || type === 'program' ? planId : null,
         bookingId: type === 'one_to_one' ? bookingId : null,
+        teacherId: programSnapshot?.teacherId ?? null,
+        programSnapshot,
         couponCode: pricing?.couponCode ?? null,
         pricing,
         amount: amountPaise / 100,
@@ -123,7 +154,7 @@ export const createOrder = functions.https.onCall(
       console.error('createOrder error:', err);
       throw new functions.https.HttpsError(
         'internal',
-        'The payment order could not be created. Please try again.'
+        'Could not create the payment order. Please try again.'
       );
     }
   }

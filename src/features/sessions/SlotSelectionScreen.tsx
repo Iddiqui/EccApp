@@ -41,9 +41,7 @@ function toDateKey(d: Date) {
 
 function formatTimeLabel(time: string) {
   const [h, m] = time.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${pad(m)} ${period}`;
+  return `${pad(h)}:${pad(m)}`;
 }
 
 function buildNextDays(count: number) {
@@ -127,7 +125,7 @@ export default function SlotSelectionScreen() {
 
     if (err?.code === 'PENDING' || err?.code === 'REFUND') {
       // Paisa kat gaya — service ka message hi dikhao (slot free nahi kiya gaya)
-      Alert.alert(err.code === 'REFUND' ? 'A refund will be issued.' : 'The payment is being confirmed.', err.message);
+      Alert.alert(err.code === 'REFUND' ? 'Refund Pending' : 'Payment Being Confirmed', err.message);
       setSelectedSlot(null);
       refreshSlots();
       return;
@@ -138,13 +136,13 @@ export default function SlotSelectionScreen() {
       setPayOpen(false);
       setSelectedSlot(null);
       refreshSlots();
-      Alert.alert('The slot has been booked.', 'Someone else has already booked this slot. Try another slot..');
+      Alert.alert('Slot Already Booked', 'Someone else has just booked this slot. Please choose another slot.');
       return;
     }
 
     // Payment fail hui (paisa nahi kata) — modal method screen par wapas aa chuka hai
     console.error('SlotSelectionScreen: payment error', err);
-    Alert.alert('Payment fail', err?.message || 'The payment could not be processed. Please try again.');
+    Alert.alert('Payment Failed', err?.message || 'The payment could not be completed. Please try again.');
   };
 
   if (!teacher) {
@@ -273,7 +271,7 @@ export default function SlotSelectionScreen() {
             setPayOpen(false);
             navigation.popToTop();
           }}
-          successMessage="Your session has been booked. It will appear under 'Upcoming Sessions' on the home screen."
+          successMessage="Your session has been booked. It will appear under Upcoming Sessions on the Home screen."
           successRows={[
             { label: 'Teacher', value: teacher.name },
             {

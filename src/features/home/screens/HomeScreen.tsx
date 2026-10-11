@@ -51,8 +51,20 @@ import {
   getAllAvailableSlots,
   bookAndPaySession,
   joinVideoSession,
+  getDemoConfig,
+  checkIsAdmin,
+  getMyTeacherProfile,
+  getAudioSessionsForTeacher,
+  getMyAudioBookingIds,
+  type AudioSession,
   type OpenSlot,
+  type DemoConfig,
 } from '../../sessions/sessionService';
+import { getSessionsToReview } from '../../sessions/reviewService';
+import { useCallSession } from './CallSessionProvider';
+import { launchAudioRoom } from '../../sessions/audioRoomLauncher';
+import { getMySubscriptions } from '../../payments/paymentService';
+import type { ProgramAccess } from '../../payments/paymentTypes';
 import type { Booking } from '../../sessions/sessionTypes';
 
 // Sound module for playback
@@ -207,6 +219,24 @@ const MONTH_NAMES = [
   'July', 'August', 'September', 'October', 'November', 'December'
 ];
 
+// Shared look of the Home "trial" and "plan" cards
+const homeActionCard = {
+  width: '100%' as const,
+  marginRight: 0,
+  flexDirection: 'row' as const,
+  alignItems: 'center' as const,
+  gap: 12,
+};
+const homeIconCircle = {
+  width: 48,
+  height: 48,
+  borderRadius: 24,
+  alignItems: 'center' as const,
+  justifyContent: 'center' as const,
+};
+const homePill = { borderRadius: 22, paddingHorizontal: 14, paddingVertical: 10 };
+const homePillText = { fontSize: 13, fontWeight: '800' as const };
+
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
 
@@ -222,6 +252,154 @@ export default function HomeScreen() {
   // Session Slots" se slots BANANA hai, khud book karna nahi).
   const [availableSlots, setAvailableSlots] = useState<OpenSlot[]>([]);
   const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
+
+  // 🆕 Demo class card: shown only while demo classes are on and this student has not used theirs.
+  const [demoCfg, setDemoCfg] = useState<DemoConfig | null>(null);
+  // Role flags: Admin Panel is for admins; Teacher Dashboard is for approved teachers
+  const [isPanelAdmin, setIsPanelAdmin] = useState(false);
+  // Finished sessions this student has not rated yet (card shows only when > 0)
+  const [reviewCount, setReviewCount] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    const loadReviews = () => {
+      getSessionsToReview()
+        .then((list) => alive && setReviewCount(list.length))
+        .catch(() => {});
+    };
+    loadReviews();
+    const unsub = navigation.addListener('focus', loadReviews);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [navigation]);
+  // Live public Study Room for the hero card: the public room with the most people in it right now.
+  // Shows real data only; when nobody is live the card invites the student to start a room.
+  const [liveRoom, setLiveRoom] = useState<any | null>(null);
+  useEffect(() => {
+    const unsub = firestore()
+      .collection('voice_rooms')
+      .where('type', '==', 'public')
+      .onSnapshot(
+        (snap) => {
+          const rooms = snap.docs
+            .map((d) => ({ id: d.id, ...(d.data() as any) }))
+            .filter((r) => (r.totalParticipants || 0) > 0)
+            .sort((a, b) => (b.totalParticipants || 0) - (a.totalParticipants || 0));
+          setLiveRoom(rooms[0] || null);
+        },
+        () => setLiveRoom(null)
+      );
+    return () => unsub();
+  }, []);
+  // The student's booked (confirmed) upcoming sessions: drives the "My sessions / Join" card.
+  const [myBookings, setMyBookings] = useState<Booking[]>([]);
+  useEffect(() => {
+    let alive = true;
+    const loadBookings = () => {
+      getMyUpcomingSessionsAsStudent()
+        .then((list) => {
+          if (!alive) return;
+          // Drop sessions that ended more than 30 minutes ago (today's earlier sessions)
+          const now = Date.now();
+          setMyBookings(
+            list.filter((b) => new Date(`${b.date}T${b.endTime}:00+05:30`).getTime() + 30 * 60000 > now)
+          );
+        })
+        .catch(() => {});
+    };
+    loadBookings();
+    const unsub = navigation.addListener('focus', loadBookings);
+    const timer = setInterval(loadBookings, 60000);
+    return () => {
+      alive = false;
+      unsub();
+      clearInterval(timer);
+    };
+  }, [navigation]);
+  // Next group audio class this student has booked a seat in (drives the Join button on the Audio card)
+  const { startCall } = useCallSession();
+  const [nextAudio, setNextAudio] = useState<AudioSession | null>(null);
+  const [audioJoining, setAudioJoining] = useState(false);
+  const [audioTick, setAudioTick] = useState(0);
+  useEffect(() => {
+    const timer = setInterval(() => setAudioTick((x) => x + 1), 30000);
+    return () => clearInterval(timer);
+  }, []);
+  useEffect(() => {
+    let alive = true;
+    const teacherId = audioSub?.active ? audioSub.teacherId : null;
+    if (!teacherId) {
+      setNextAudio(null);
+      return;
+    }
+    getAudioSessionsForTeacher(teacherId)
+      .then(async (list) => {
+        const booked = await getMyAudioBookingIds(list.map((x) => x.id));
+        if (!alive) return;
+        setNextAudio(list.find((x) => booked.has(x.id)) || null);
+      })
+      .catch(() => {});
+    return () => {
+      alive = false;
+    };
+  }, [audioSub, audioTick]);
+  const joinNextAudio = async () => {
+    if (!nextAudio || audioJoining) return;
+    setAudioJoining(true);
+    try {
+      await launchAudioRoom(startCall, nextAudio);
+    } catch (e: any) {
+      Alert.alert('Group Class', e?.message || 'Could not join the class. Please try again.');
+    } finally {
+      setAudioJoining(false);
+    }
+  };
+  const [myTeacher, setMyTeacher] = useState<any | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const loadRoles = () => {
+      Promise.all([checkIsAdmin(), getMyTeacherProfile()])
+        .then(([a, t]) => {
+          if (!alive) return;
+          setIsPanelAdmin(a);
+          setMyTeacher(t);
+        })
+        .catch(() => {});
+    };
+    loadRoles();
+    const unsub = navigation.addListener('focus', loadRoles);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [navigation]);
+
+  // Video plan status (drives the plan card: "Choose your plan" vs "Book a Session")
+  const [videoSub, setVideoSub] = useState<ProgramAccess | null>(null);
+  const [audioSub, setAudioSub] = useState<ProgramAccess | null>(null);
+  useEffect(() => {
+    if (isTeacher) return;
+    let alive = true;
+    const loadDemo = () => {
+      getDemoConfig()
+        .then((cfg) => alive && setDemoCfg(cfg))
+        .catch(() => {});
+      getMySubscriptions()
+        .then((subs) => {
+          if (!alive) return;
+          setVideoSub(subs.video);
+          setAudioSub(subs.audio);
+        })
+        .catch(() => {});
+    };
+    loadDemo();
+    const unsub = navigation.addListener('focus', loadDemo);
+    return () => {
+      alive = false;
+      unsub();
+    };
+  }, [isTeacher, navigation]);
 
   useEffect(() => {
     let isMounted = true;
@@ -926,7 +1104,7 @@ export default function HomeScreen() {
   const rawFirstName = rawFullDisplayName.split(' ')[0];
   const userFirstNameInHindi = toHindiName(rawFirstName, currentLang);
   const avatarInitials = rawFirstName.charAt(0).toUpperCase();
-  const profilePhotoUrl = currentUser?.photoURL;
+  const profilePhotoUrl = typeof userData?.photoURL === 'string' ? userData.photoURL : currentUser?.photoURL;
 
   const greetingText = t?.home?.[greetingKey] || 
     (greetingKey === 'goodMorning' ? 'Good morning,' : greetingKey === 'goodAfternoon' ? 'Good afternoon,' : 'Good evening,');
@@ -1171,33 +1349,46 @@ export default function HomeScreen() {
             
             <View style={styles.liveHeroCardContent}>
               <View style={styles.liveBadge}>
-                <View style={styles.liveBadgeDot} />
-                <Text style={styles.liveBadgeText}>{t?.home?.liveNow || 'LIVE NOW'}</Text>
+                <View style={[styles.liveBadgeDot, !liveRoom && { backgroundColor: '#94A3B8' }]} />
+                <Text style={styles.liveBadgeText}>{liveRoom ? (t?.home?.liveNow || 'LIVE NOW') : 'NO LIVE ROOM'}</Text>
               </View>
 
-              <Text style={styles.heroCardTitle}>
-                {t?.home?.morningTalk || 'Morning Small Talk'} 👋
+              <Text style={styles.heroCardTitle} numberOfLines={1}>
+                {liveRoom ? liveRoom.title : 'Start a public room'} 👋
               </Text>
-              <Text style={styles.heroCardDesc}>
-                {t?.home?.casualConv || 'Great conversations start your day'}
+              <Text style={styles.heroCardDesc} numberOfLines={2}>
+                {liveRoom
+                  ? `Hosted by ${liveRoom.hostName || 'a member'}`
+                  : 'No room is live right now. Be the first to start one!'}
               </Text>
 
               <View style={styles.heroFooterRow}>
                 <View style={styles.heroAvatarStack}>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#3B82F6', marginLeft: 0 }]}><Text style={styles.stackAvatarText}>AK</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#F59E0B' }]}><Text style={styles.stackAvatarText}>YT</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#60A5FA' }]}><Text style={styles.stackAvatarText}>OF</Text></View>
-                  <View style={[styles.stackAvatar, { backgroundColor: '#A78BFA' }]}><Text style={styles.stackAvatarText}>DR</Text></View>
-                  <View style={[styles.stackAvatarCount]}><Text style={styles.stackAvatarCountText}>+24</Text></View>
+                  {liveRoom && (
+                    <>
+                      <View style={[styles.stackAvatar, { backgroundColor: '#3B82F6', marginLeft: 0 }]}>
+                        <Text style={styles.stackAvatarText}>
+                          {String(liveRoom.hostName || 'H').trim().slice(0, 2).toUpperCase()}
+                        </Text>
+                      </View>
+                      {(liveRoom.totalParticipants || 0) > 1 && (
+                        <View style={[styles.stackAvatarCount]}>
+                          <Text style={styles.stackAvatarCountText}>+{(liveRoom.totalParticipants || 1) - 1}</Text>
+                        </View>
+                      )}
+                    </>
+                  )}
                 </View>
 
                 <TouchableOpacity 
                   style={styles.heroJoinButton} 
                   activeOpacity={0.88}
-                  onPress={() => navigation.navigate('VoiceRooms')}
+                  onPress={() =>
+                    navigation.navigate('VoiceRoomScreen', liveRoom ? { tab: 'public', roomId: liveRoom.id } : { tab: 'public' })
+                  }
                 >
                   <Text style={[styles.heroJoinBtnText, { color: '#6366F1' }]}>
-                    {t?.home?.joinRoom || 'Join room →'}
+                    {liveRoom ? (t?.home?.joinRoom || 'Join room →') : 'Start room →'}
                   </Text>
                 </TouchableOpacity>
               </View>
@@ -1268,196 +1459,207 @@ export default function HomeScreen() {
           </View>
         </TouchableOpacity>
 
-        {/* 5. UPCOMING SESSIONS (1-to-1) */}
-        <View style={styles.sectionHeaderContainer}>
-          <Text style={[styles.sectionHeadingMarginless, { color: colors.textPrimary }]}>
-            {t?.home?.upcomingSessions || 'Book 1-1 Session'}
-          </Text>
-          <TouchableOpacity onPress={() => navigation.navigate('UpcomingSessionsListScreen')} activeOpacity={0.7}>
-            <Text style={[styles.seeAllText, { color: colors.primary }]}>
-              {t?.home?.seeAll || 'See all'}
-            </Text>
-          </TouchableOpacity>
-        </View>
+        {/* 🆕 TRIAL + PLAN CARDS (students only): the demo class and the subscription are separate cards.
+            Demo card shows only while demo classes are on and this student has not used theirs. */}
+        {!isTeacher && (
+          <View style={{ paddingHorizontal: 20, marginBottom: 18, gap: 12 }}>
+            {demoCfg?.isActive && !demoCfg.alreadyUsed && (
+              <TouchableOpacity
+                style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                onPress={() => navigation.navigate('DemoClassScreen')}
+                activeOpacity={0.85}
+              >
+                <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+                  <Text style={{ fontSize: 22 }}>🎥</Text>
+                </View>
+                <View style={{ flex: 1 }}>
+                  <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Book 1-on-1 Trial</Text>
+                  <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                    Try a 30-minute class with a tutor
+                  </Text>
+                </View>
+                <View style={[homePill, { backgroundColor: colors.primary }]}>
+                  <Text style={[homePillText, { color: '#FFFFFF' }]}>
+                    {demoCfg.price === 0 ? 'Book Now · Free' : `Book Now @${demoCfg.price}`}
+                  </Text>
+                </View>
+              </TouchableOpacity>
+            )}
 
-        {sessionsLoading ? (
-          <View style={{ paddingVertical: 20, alignItems: 'center' }}>
-            <ActivityIndicator size="small" color={colors.primary} />
-          </View>
-        ) : upcomingSessions.length === 0 && availableSlots.length === 0 ? (
-          <TouchableOpacity
-            style={[
-              styles.upcomingSessionCard,
-              {
-                backgroundColor: cardBg,
-                borderColor: activeGlowBorder,
-                width: SCREEN_WIDTH - 40,
-                // 🎯 FIX: upcomingSessionCard has marginRight:16 built in (for
-                // spacing between cards inside the horizontal ScrollView
-                // below). This box isn't in that ScrollView — it's a single
-                // standalone box — so that leftover marginRight was pushing
-                // it off-center, giving it a wider gap on the right than the
-                // left. Zeroing it out AND explicitly adding a matching
-                // marginLeft (since this box, unlike the ScrollView cards,
-                // has no parent paddingLeft giving it a left inset)
-                // restores equal left/right gaps.
-                marginRight: 0,
-                marginLeft: 20,
-              },
-            ]}
-            onPress={() => !isTeacher && navigation.navigate('OneToOneSessionsScreen')}
-            activeOpacity={isTeacher ? 1 : 0.8}
-            disabled={isTeacher}
-          >
-            <Text style={[styles.sessionDescText, { color: colors.textSecondary, textAlign: 'center' }]}>
-              {isTeacher
-                ? 'Abhi koi upcoming session scheduled nahi hai.'
-                : 'Abhi koi open slot available nahi hai. Baad me dobara check karo!'}
-            </Text>
-          </TouchableOpacity>
-        ) : (
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.horizontalScrollWrapper}>
-            {/* 🆕 COMBINED CARD LIST: pehle meri APNI confirmed sessions
-                (Join karne ke liye), fir un-booked OPEN SLOTS (Book karne
-                ke liye) — dono milakar top 3 dikhte hain. Isse Home card
-                par EK HI jagah dono kaam ho jaate hain: jo already book
-                kiya hai use join karna, aur naya open slot seedha book
-                karna. "See all" (UpcomingSessionsListScreen) par dono ki
-                POORI list alag-alag sections me dikhti hai. */}
-            {upcomingSessions.slice(0, 3).map((session) => {
-              const joinable = isSessionJoinable(session);
-              const isJoiningThis = joiningSessionId === session.id;
-              const displayName = isTeacher ? 'Student' : session.teacherName;
-              const initials = displayName
-                .split(' ')
-                .map((w) => w[0])
-                .join('')
-                .slice(0, 2)
-                .toUpperCase();
-
+            {(() => {
+              // Active Video plan with sessions left -> "Book a Session"; otherwise -> "Choose your plan"
+              const hasSessions = !!videoSub?.active && (videoSub.remainingSessions ?? 0) > 0;
+              const usedUp = videoSub?.reason === 'no_sessions_left';
+              const title = hasSessions ? 'Book a Session' : usedUp ? 'All sessions used' : 'Choose your plan';
+              const subtitle = hasSessions
+                ? `${videoSub!.remainingSessions} of ${videoSub!.totalSessions} sessions left with ${videoSub!.teacherName}`
+                : usedUp
+                ? 'You can buy a new plan after your current plan expires'
+                : 'Practice with experts';
+              const cta = hasSessions ? 'Book Now' : usedUp ? 'My plan' : 'Subscribe';
               return (
                 <TouchableOpacity
-                  key={`booking-${session.id}`}
-                  style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
-                  onPress={() => handleJoinSession(session)}
+                  style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                  onPress={() =>
+                    hasSessions
+                      ? navigation.navigate('BookSessionScreen')
+                      : navigation.navigate('ProgramFlowScreen', usedUp ? { mode: 'video' } : undefined)
+                  }
                   activeOpacity={0.85}
-                  disabled={isJoiningThis}
                 >
-                  <View style={[styles.sessionHeaderPill, { backgroundColor: colors.primary + '18' }]}>
-                    <Text style={[styles.sessionTimeText, { color: colors.primary }]}>
-                      📅 {session.date === new Date().toISOString().split('T')[0] ? 'Today' : session.date}, {session.startTime}
-                    </Text>
+                  <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+                    <Text style={{ fontSize: 22 }}>{hasSessions ? '📅' : '👑'}</Text>
                   </View>
-                  <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-                    1:1 with {displayName}
-                  </Text>
-                  <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-                    ₹{session.price} session
-                  </Text>
-                  <View style={styles.sessionFooterRow}>
-                    <View style={[styles.sessionInitialsCircle, { backgroundColor: '#22C55E' }]}>
-                      <Text style={styles.initialsText}>{initials}</Text>
-                    </View>
-                    <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                      {session.startTime} - {session.endTime} • Video
-                    </Text>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>{title}</Text>
+                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>{subtitle}</Text>
                   </View>
-                  {isJoiningThis ? (
-                    <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
-                  ) : (
-                    <Text
-                      style={{
-                        marginTop: 8,
-                        fontSize: 12,
-                        fontWeight: '700',
-                        color: joinable ? '#22C55E' : colors.textSecondary,
-                      }}
-                    >
-                      {joinable ? '● Join Now' : 'Not started yet'}
-                    </Text>
-                  )}
+                  <View style={[homePill, { backgroundColor: hasSessions ? colors.primary : colors.primary + '1A' }]}>
+                    <Text style={[homePillText, { color: hasSessions ? '#FFFFFF' : colors.primary }]}>{cta}</Text>
+                  </View>
                 </TouchableOpacity>
               );
-            })}
+            })()}
 
-            {!isTeacher &&
-              availableSlots.slice(0, Math.max(0, 3 - upcomingSessions.length)).map((slot) => {
-                const isBookingThis = bookingSlotId === slot.id;
-                const initials = slot.teacherName
-                  .split(' ')
-                  .map((w) => w[0])
-                  .join('')
-                  .slice(0, 2)
-                  .toUpperCase();
-
-                return (
+            {!!audioSub?.active && (() => {
+              const startMs = nextAudio ? new Date(`${nextAudio.date}T${nextAudio.startTime}:00`).getTime() : 0;
+              const endMs = nextAudio ? new Date(`${nextAudio.date}T${nextAudio.endTime}:00`).getTime() : 0;
+              const canJoin = !!nextAudio && Date.now() >= startMs - 10 * 60000 && Date.now() <= endMs;
+              return (
+                <TouchableOpacity
+                  style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+                  onPress={() => navigation.navigate('VoiceRoomScreen', { tab: 'official' })}
+                  activeOpacity={0.85}
+                >
+                  <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+                    <Text style={{ fontSize: 22 }}>🎙️</Text>
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Audio Classes</Text>
+                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]} numberOfLines={2}>
+                      {nextAudio
+                        ? `${nextAudio.title} · ${nextAudio.date} · ${nextAudio.startTime}`
+                        : `Live group classes with ${audioSub.teacherName}`}
+                    </Text>
+                  </View>
                   <TouchableOpacity
-                    key={`slot-${slot.id}`}
-                    style={[styles.upcomingSessionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
-                    onPress={() => handleBookSlot(slot)}
                     activeOpacity={0.85}
-                    disabled={isBookingThis}
+                    disabled={audioJoining}
+                    onPress={canJoin ? joinNextAudio : () => navigation.navigate('VoiceRoomScreen', { tab: 'official' })}
+                    style={[homePill, { backgroundColor: canJoin ? '#10B981' : colors.primary }]}
                   >
-                    <View style={[styles.sessionHeaderPill, { backgroundColor: '#F59E0B18' }]}>
-                      <Text style={[styles.sessionTimeText, { color: '#F59E0B' }]}>
-                        📅 {slot.date === new Date().toISOString().split('T')[0] ? 'Today' : slot.date}, {slot.startTime}
-                      </Text>
-                    </View>
-                    <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-                      1:1 with {slot.teacherName}
-                    </Text>
-                    <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-                      ₹{slot.teacherPricePerSession} session
-                    </Text>
-                    <View style={styles.sessionFooterRow}>
-                      <View style={[styles.sessionInitialsCircle, { backgroundColor: colors.primary }]}>
-                        <Text style={styles.initialsText}>{initials}</Text>
-                      </View>
-                      <Text style={[styles.sessionDurationText, { color: colors.textSecondary }]}>
-                        {slot.startTime} - {slot.endTime} • Video
-                      </Text>
-                    </View>
-                    {isBookingThis ? (
-                      <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 8 }} />
+                    {audioJoining ? (
+                      <ActivityIndicator size="small" color="#FFFFFF" />
                     ) : (
-                      <Text style={{ marginTop: 8, fontSize: 12, fontWeight: '700', color: colors.primary }}>
-                        Book Now →
-                      </Text>
+                      <Text style={[homePillText, { color: '#FFFFFF' }]}>{canJoin ? 'Join' : 'View'}</Text>
                     )}
                   </TouchableOpacity>
-                );
-              })}
-          </ScrollView>
+                </TouchableOpacity>
+              );
+            })()}
+          </View>
         )}
 
-        {/* 🎯 NEW: Admin/Teacher-only entry point to create session slots.
-            Sirf tab dikhta hai jab checkIsHost() (admins collection ka email
-            match) true return kare — students ko ye kabhi nahi dikhega. */}
-        {isTeacher && (
+
+        {/* My booked sessions + Join: students see their next 1-1 session here */}
+        {!isTeacher && myBookings.length > 0 && (() => {
+          const next = myBookings[0];
+          const startMs = new Date(`${next.date}T${next.startTime}:00+05:30`).getTime();
+          const live = startMs - Date.now() <= 10 * 60000;
+          return (
+            <TouchableOpacity
+              style={[
+                styles.upcomingSessionCard,
+                homeActionCard,
+                { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+              ]}
+              onPress={() => navigation.navigate('UpcomingSessionsListScreen')}
+              activeOpacity={0.85}
+            >
+              <View style={[homeIconCircle, { backgroundColor: '#10B98122' }]}>
+                <Text style={{ fontSize: 22 }}>🎥</Text>
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
+                  {myBookings.length > 1 ? `My sessions (${myBookings.length})` : 'My session'}
+                </Text>
+                <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                  {next.teacherName} · {next.date} · {next.startTime} - {next.endTime}
+                </Text>
+              </View>
+              <View style={[homePill, { backgroundColor: live ? '#10B981' : colors.primary }]}>
+                <Text style={[homePillText, { color: '#FFFFFF' }]}>{live ? 'Join' : 'View'}</Text>
+              </View>
+            </TouchableOpacity>
+          );
+        })()}
+
+        {/* Rate your sessions: only while the student has finished sessions without a review */}
+        {reviewCount > 0 && (
           <TouchableOpacity
             style={[
               styles.upcomingSessionCard,
-              {
-                backgroundColor: cardBg,
-                borderColor: activeGlowBorder,
-                width: SCREEN_WIDTH - 40,
-                marginRight: 0,
-                marginLeft: 20, // same left/right-gap fix as the empty-state box above
-                marginTop: 12,
-                flexDirection: 'row',
-                alignItems: 'center',
-                justifyContent: 'space-between',
-              },
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
             ]}
-            onPress={() => navigation.navigate('AdminSlotCreationScreen')}
+            onPress={() => navigation.navigate('RateSessionsScreen')}
             activeOpacity={0.85}
           >
+            <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+              <Text style={{ fontSize: 22 }}>⭐</Text>
+            </View>
             <View style={{ flex: 1 }}>
-              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>
-                🗓️ Manage Session Slots
-              </Text>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Rate your sessions</Text>
               <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
-                Naye 1-to-1 session slots add karo
+                {reviewCount === 1 ? '1 session is waiting for your review' : `${reviewCount} sessions are waiting for your review`}
+              </Text>
+            </View>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+
+        {/* Teacher Dashboard: only approved teachers (an admin adds their email in the Admin Panel) */}
+        {!!myTeacher && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+            ]}
+            onPress={() => navigation.navigate('TeacherDashboardScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
+              <Text style={{ fontSize: 22 }}>🧑‍🏫</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Teacher Dashboard</Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                Your slots, sessions and profile
+              </Text>
+            </View>
+            <ChevronRight size={20} color={colors.primary} />
+          </TouchableOpacity>
+        )}
+
+        {/* Admin Panel: teacher access, plan prices, demo class price (admins only) */}
+        {isPanelAdmin && (
+          <TouchableOpacity
+            style={[
+              styles.upcomingSessionCard,
+              homeActionCard,
+              { backgroundColor: cardBg, borderColor: activeGlowBorder, marginLeft: 20, width: SCREEN_WIDTH - 40, marginTop: 12 },
+            ]}
+            onPress={() => navigation.navigate('AdminPanelScreen')}
+            activeOpacity={0.85}
+          >
+            <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
+              <Text style={{ fontSize: 22 }}>🛠️</Text>
+            </View>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Admin Panel</Text>
+              <Text style={[styles.sessionDescText, { color: colors.textSecondary }]}>
+                Teacher access, plan prices and demo class price
               </Text>
             </View>
             <ChevronRight size={20} color={colors.primary} />

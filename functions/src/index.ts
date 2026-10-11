@@ -1,7 +1,7 @@
 import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { AccessToken } from 'livekit-server-sdk';
-import { getAccessStatus } from './payments/checkAccess';
+import { getAccessStatus, getProgramAccess } from './payments/checkAccess';
 
 admin.initializeApp();
 
@@ -27,11 +27,24 @@ async function isHostEmail(email?: string): Promise<boolean> {
   return !snap.empty;
 }
 
+// Sub-admins can also host official Class Rooms (same list the app reads).
+async function isSubAdminEmail(email?: string): Promise<boolean> {
+  if (!email) return false;
+  const snap = await admin
+    .firestore()
+    .collection('sub_admins')
+    .where('email', '==', email)
+    .limit(1)
+    .get();
+  return !snap.empty;
+}
+
 /**
  * Room join ka server-side check.
  *  - `session_<bookingId>` (1 to 1): sirf usi booking ka student ya teacher,
  *    aur booking 'confirmed' honi chahiye (yaani payment ho chuka).
  *  - CLASS_ROOM_PREFIXES wale rooms: active subscription (ya host).
+ *  - `room_<id>` (Study / Class Rooms): see below.
  *  - Baaki rooms: pehle jaisa, koi extra check nahi.
  */
 async function assertCanJoinRoom(request: any, roomName: string) {
@@ -42,7 +55,7 @@ async function assertCanJoinRoom(request: any, roomName: string) {
     const bookingId = roomName.slice('session_'.length);
     const snap = await admin.firestore().collection('bookings').doc(bookingId).get();
     if (!snap.exists) {
-      throw new functions.https.HttpsError('not-found', 'Session nahi mila.');
+      throw new functions.https.HttpsError('not-found', 'Session not found.');
     }
     const booking = snap.data()!;
 
@@ -53,12 +66,42 @@ async function assertCanJoinRoom(request: any, roomName: string) {
       booking.teacherEmail.toLowerCase() === email.toLowerCase();
 
     if (!isStudent && !isTeacher) {
-      throw new functions.https.HttpsError('permission-denied', 'Ye session aapka nahi hai.');
+      throw new functions.https.HttpsError('permission-denied', 'This session does not belong to you.');
     }
     if (booking.status !== 'confirmed') {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'Ye session confirmed nahi hai (payment pending ya cancelled).'
+        'This session is not confirmed (payment is pending or the booking was cancelled).'
+      );
+    }
+    return;
+  }
+
+  // Voice rooms made in the app: livekit room name is `room_<voice_rooms doc id>`.
+  //  - 'public' (Study Room): any logged-in user can join. Max 10 people is enforced by the app.
+  //  - 'official' (Class Room): needs an active Audio plan (or the old Class Room plan),
+  //    unless the user is an admin / sub-admin / the creator of the room.
+  if (roomName.startsWith('room_')) {
+    const roomId = roomName.slice('room_'.length);
+    const snap = await admin.firestore().collection('voice_rooms').doc(roomId).get();
+    if (!snap.exists) {
+      throw new functions.https.HttpsError('not-found', 'This room is no longer available.');
+    }
+    const room = snap.data()!;
+    if (room.type !== 'official') return; // public study room: login is enough
+
+    if (room.createdBy === uid) return;
+    if (await isHostEmail(email)) return;
+    if (await isSubAdminEmail(email)) return;
+
+    const [audio, legacy] = await Promise.all([
+      getProgramAccess(uid, 'audio'),
+      getAccessStatus(uid),
+    ]);
+    if (!audio.active && !legacy.hasAccess) {
+      throw new functions.https.HttpsError(
+        'permission-denied',
+        'An active Audio plan is required to join this Class Room.'
       );
     }
     return;
@@ -70,7 +113,7 @@ async function assertCanJoinRoom(request: any, roomName: string) {
     if (!access.hasAccess) {
       throw new functions.https.HttpsError(
         'permission-denied',
-        'Class Room join karne ke liye active subscription chahiye.'
+        'An active subscription is required to join this Class Room.'
       );
     }
   }
@@ -122,9 +165,24 @@ export { createOrder } from './payments/createOrder';
 export { verifyPayment } from './payments/verifyPayment';
 export { getPlans, previewPricing } from './payments/previewPricing';
 export { razorpayWebhook } from './payments/razorpayWebhook';
-export { checkClassRoomAccess } from './payments/checkAccess';
+export { checkClassRoomAccess, getMySubscriptions } from './payments/checkAccess';
+// Video / Audio subscription plans (Firestore `subscriptionPlans`)
+export {
+  getProgramPlans,
+  previewProgramPricing,
+  seedProgramPlans,
+} from './payments/programPlans';
 export { createBooking } from './bookings/createBooking';
 export { cancelBooking } from './bookings/cancelBooking';
+export { submitReview } from './bookings/reviews';
+export { createSubscriptionBooking } from './bookings/subscriptionBooking';
+export {
+  createAudioSession,
+  cancelAudioSession,
+  bookAudioSession,
+  cancelAudioBooking,
+  getAudioSessionToken,
+} from './audio/audioSessions';
 export { getSessionToken } from './bookings/getSessionToken';
 
 export { releaseExpiredBookings } from './bookings/releaseExpiredBookings';
@@ -134,3 +192,8 @@ export {
   sendSessionReminders,
   sendStreakReminders,
 } from './notifications/notificationTriggers';
+export { getDemoConfig, createDemoBooking } from './bookings/demoClass';
+export {
+  adminSetDemoConfig, adminUpdatePlanPrice,
+  adminUpsertTeacher, adminSetTeacherActive, adminDeleteTeacher,
+} from './admin/adminTools';

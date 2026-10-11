@@ -1,23 +1,44 @@
 // src/payments/PaymentFlowScreens.tsx
 // Steps 4, 5, 6 of the ECC payment mockup (no coupon, no QR).
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View, Text, TouchableOpacity, StyleSheet, ActivityIndicator, ScrollView, Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import type { PayMethod } from './paymentTypes';
+import { useTheme } from '../../hooks/useTheme';
 
-const C = {
-  blue: '#2563EB',
-  navy: '#0B1B3F',
-  bg: '#F5F7FB',
-  card: '#FFFFFF',
-  border: '#E3E8F2',
-  text: '#0F172A',
-  sub: '#64748B',
-  green: '#16A34A',
-  greenBg: '#F0FBF4',
+type Palette = {
+  blue: string; // accent: follows the app theme (Settings > theme), never hard-coded
+  navy: string;
+  bg: string;
+  card: string;
+  border: string;
+  text: string;
+  sub: string;
+  green: string;
+  greenBg: string;
 };
+
+function usePalette(): Palette {
+  const themeContext = useTheme() as any;
+  const isDark = themeContext?.isDarkMode ?? false;
+  const c = themeContext?.theme?.colors;
+  return useMemo(
+    () => ({
+      blue: c?.primary || '#2563EB',
+      navy: '#0B1B3F',
+      bg: c?.bgLight || (isDark ? '#090D16' : '#F5F7FB'),
+      card: c?.bgCard || (isDark ? '#131B2E' : '#FFFFFF'),
+      border: c?.border || (isDark ? '#1E293B' : '#E3E8F2'),
+      text: c?.textPrimary || (isDark ? '#F8FAFC' : '#0F172A'),
+      sub: c?.textSecondary || (isDark ? '#94A3B8' : '#64748B'),
+      green: '#16A34A',
+      greenBg: isDark ? '#0E2A1B' : '#F0FBF4',
+    }),
+    [c, isDark]
+  );
+}
 
 const METHODS: { id: PayMethod; title: string; sub: string; icon: string; tag?: string }[] = [
   { id: 'upi', title: 'UPI', sub: 'Pay using any UPI app', icon: '⚡', tag: 'Recommended' },
@@ -40,6 +61,8 @@ export function PaymentMethodScreen({
   onBack?: () => void;
   busy?: boolean;
 }) {
+  const C = usePalette();
+  const s = useMemo(() => makeStyles(C), [C]);
   const [selected, setSelected] = useState<PayMethod>('upi');
 
   return (
@@ -116,6 +139,8 @@ export function ProcessingScreen({
   amountRupees: number;
   orderId?: string;
 }) {
+  const C = usePalette();
+  const s = useMemo(() => makeStyles(C), [C]);
   return (
     <View style={[s.screen, { backgroundColor: C.navy, alignItems: 'center', justifyContent: 'center', padding: 24 }]}>
       <Text style={{ fontSize: 64 }}>🛡️</Text>
@@ -158,6 +183,8 @@ export function PaymentSuccessScreen({
   secondaryLabel?: string;
   onSecondary?: () => void;
 }) {
+  const C = usePalette();
+  const s = useMemo(() => makeStyles(C), [C]);
   return (
     <View style={[s.screen, { backgroundColor: C.greenBg, padding: 24, justifyContent: 'center' }]}>
       <View style={s.okCircle}>
@@ -222,6 +249,8 @@ export function PaymentFlowModal({
   successRows: { label: string; value: string }[];
   primaryLabel?: string;
 }) {
+  const C = usePalette();
+  const s = useMemo(() => makeStyles(C), [C]);
   const [stage, setStage] = useState<'method' | 'processing' | 'success'>('method');
 
   useEffect(() => {
@@ -269,7 +298,7 @@ export function PaymentFlowModal({
   );
 }
 
-const s = StyleSheet.create({
+const makeStyles = (C: Palette) => StyleSheet.create({
   screen: { flex: 1, backgroundColor: C.bg },
   back: { fontSize: 24, color: C.text, marginBottom: 8 },
   h1: { fontSize: 24, fontWeight: '700', color: C.text },
@@ -279,7 +308,7 @@ const s = StyleSheet.create({
     backgroundColor: C.card, borderRadius: 14, padding: 16,
     borderWidth: 1.5, borderColor: C.border,
   },
-  methodActive: { borderColor: C.blue, backgroundColor: '#F3F7FF' },
+  methodActive: { borderColor: C.blue, backgroundColor: C.blue + '14' },
   radio: {
     width: 22, height: 22, borderRadius: 11, borderWidth: 2, borderColor: '#B6C0D4',
     alignItems: 'center', justifyContent: 'center',
@@ -301,7 +330,7 @@ const s = StyleSheet.create({
   note: { textAlign: 'center', color: C.sub, fontSize: 12, marginTop: 10 },
   secBtn: {
     marginTop: 12, borderRadius: 14, paddingVertical: 14, alignItems: 'center',
-    backgroundColor: '#fff', borderWidth: 1, borderColor: C.border,
+    backgroundColor: C.card, borderWidth: 1, borderColor: C.border,
   },
   secText: { color: C.text, fontSize: 15, fontWeight: '600' },
 

@@ -14,6 +14,7 @@ import {
 // doesn't add a top inset on Android.
 import { SafeAreaView } from 'react-native-safe-area-context';
 import firestore from '@react-native-firebase/firestore';
+import auth from '@react-native-firebase/auth';
 import {
   ChevronLeft,
   User,
@@ -45,7 +46,7 @@ import type { Teacher, TimeSlot } from './sessionTypes';
 // me zaroori hai (naye teachers add hote rahenge, koi bhi email bhool
 // sakta hai).
 // ─────────────────────────────────────────────────────────────────────────
-const START_HOUR = 8; // 8:00 AM (first available start time)
+const START_HOUR = 6; // 06:00 (first available start time)
 const END_HOUR = 21; // 9:00 PM (last start time before this)
 
 function pad(n: number) {
@@ -66,9 +67,7 @@ function addMinutesToTime(time: string, minutes: number) {
 
 function formatTimeLabel(time: string) {
   const [h, m] = time.split(':').map(Number);
-  const period = h >= 12 ? 'PM' : 'AM';
-  const h12 = h % 12 === 0 ? 12 : h % 12;
-  return `${h12}:${pad(m)} ${period}`;
+  return `${pad(h)}:${pad(m)}`;
 }
 
 function buildNextDays(count: number) {
@@ -116,7 +115,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
   const [saving, setSaving] = useState(false);
 
   // 🆕 Slot price (rupees) — admin har batch ke liye set karta hai.
-  // Teacher select karne par teacher.pricePerSession se pre-fill hota hai.
+  // Koi default nahi: har batch ke liye price khud daalni padti hai.
   const [priceInput, setPriceInput] = useState('');
 
   // 🆕 Inline teacher-email add/edit state
@@ -166,6 +165,21 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
     }
   }, [teachers, selectedTeacher]);
 
+  // 🆕 Agar login hua user khud ek teacher hai (email session_teachers me match),
+  // to wahi teacher apne aap select ho jata hai aur lock rehta hai: teacher sirf
+  // apne slots aur apni price set kar sakta hai. Admin (jo kisi teacher ka email
+  // nahi hai) pehle jaise kisi bhi teacher ko chun sakta hai.
+  const myEmail = (auth().currentUser?.email || '').toLowerCase();
+  const ownTeacher = useMemo(
+    () => (myEmail ? teachers.find(t => (t.email || '').toLowerCase() === myEmail) || null : null),
+    [teachers, myEmail]
+  );
+  useEffect(() => {
+    if (ownTeacher && selectedTeacher?.id !== ownTeacher.id) {
+      setSelectedTeacher(ownTeacher);
+    }
+  }, [ownTeacher, selectedTeacher?.id]);
+
   // ── Fetch existing slots for selected teacher + date ──
   useEffect(() => {
     if (!selectedTeacher) {
@@ -205,12 +219,36 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
   useEffect(() => {
     setEditingEmail(false);
     setEmailInput('');
-    // 🆕 naye teacher ke liye price default = uski pricePerSession
-    setPriceInput(selectedTeacher ? String(selectedTeacher.pricePerSession || 500) : '');
+    // 🆕 Price ka koi default nahi: teacher / admin har baar khud price daalta hai
+    setPriceInput('');
   }, [selectedTeacher?.id]);
 
   const duration = selectedTeacher?.sessionDurationMins ?? 30;
-  const startTimeOptions = useMemo(() => buildStartTimeOptions(duration), [duration]);
+  // Custom start times (24-hour, any minute) added by the admin on top of the 30-minute presets
+  const [customHour, setCustomHour] = useState('');
+  const [customMin, setCustomMin] = useState('');
+  const [customTimes, setCustomTimes] = useState<string[]>([]);
+  const startTimeOptions = useMemo(
+    () => Array.from(new Set([...buildStartTimeOptions(duration), ...customTimes])).sort(),
+    [duration, customTimes]
+  );
+  const addCustomTime = () => {
+    const h = parseInt(customHour, 10);
+    const m = parseInt(customMin === '' ? '0' : customMin, 10);
+    if (isNaN(h) || h < 0 || h > 23 || isNaN(m) || m < 0 || m > 59) {
+      Alert.alert('Invalid time', 'Enter hour 0-23 and minutes 0-59 (24-hour format).');
+      return;
+    }
+    const t = `${pad(h)}:${pad(m)}`;
+    if (h * 60 + m + duration > 24 * 60) {
+      Alert.alert('Invalid time', `A ${duration}-minute session must finish before midnight.`);
+      return;
+    }
+    setCustomTimes(prev => (prev.includes(t) ? prev : [...prev, t]));
+    setSelectedStartTimes(prev => new Set(prev).add(t));
+    setCustomHour('');
+    setCustomMin('');
+  };
   const bookedOrExistingStarts = useMemo(
     () => new Set(existingSlots.map(s => s.startTime)),
     [existingSlots]
@@ -232,6 +270,16 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
     return teachers.filter(t => t.name.toLowerCase().includes(q));
   }, [teachers, teacherSearch]);
 
+  // Admin ko teacher card par price nahi dikhti (price slot banate waqt set hoti hai).
+  // Specialization teacher khud bharega; purana default 'General' bhi chhupa hua hai.
+  const teacherSubtitle = (t: Teacher, withSession = false) => {
+    const parts: string[] = [];
+    const spec = (t.specialization || '').trim();
+    if (spec && spec.toLowerCase() !== 'general') parts.push(spec);
+    parts.push(`${t.sessionDurationMins} min${withSession ? '/session' : ''}`);
+    return parts.join(' · ');
+  };
+
   // ── Quick Add Teacher Function ──
   const handleQuickAddTeacher = async () => {
     const trimmedName = teacherSearch.trim();
@@ -240,7 +288,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
       const docRef = await firestore().collection('session_teachers').add({
         name: trimmedName,
         email: '',
-        specialization: 'General',
+        specialization: '', // teacher khud apni specialization daalega
         pricePerSession: 500,
         sessionDurationMins: 30,
         createdAt: firestore.FieldValue.serverTimestamp(),
@@ -250,17 +298,17 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
         id: docRef.id,
         name: trimmedName,
         email: '',
-        specialization: 'General',
+        specialization: '', // teacher khud apni specialization daalega
         pricePerSession: 500,
         sessionDurationMins: 30,
       };
 
       setSelectedTeacher(newTeacher);
       setTeacherSearch('');
-      Alert.alert('Success', 'The teacher has been added! Now, it is mandatory to enter the teacher email below; otherwise, the slots will not be saved.');
+      Alert.alert('Success', 'Teacher added! Enter the teacher email below. Slots cannot be saved without it.');
     } catch (err) {
       console.error('AdminSlotCreationScreen: quick add teacher error', err);
-      Alert.alert('Error', 'The teacher could not be added.');
+      Alert.alert('Error', 'Could not add the teacher.');
     }
   };
 
@@ -273,7 +321,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
     const isValidEmail = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed);
 
     if (!isValidEmail) {
-      Alert.alert('Invalid Email', 'Enter a valid email address (e.g., teacher@example.com).');
+      Alert.alert('Invalid Email', 'Please enter a valid email address (for example, teacher@example.com).');
       return;
     }
 
@@ -286,10 +334,10 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
 
       setSelectedTeacher({ ...selectedTeacher, email: trimmed });
       setEditingEmail(false);
-      Alert.alert('Done', 'The teacher email has been updated. This teacher can now be booked.');
+      Alert.alert('Done', 'Teacher email updated. This teacher can now be booked.');
     } catch (err) {
       console.error('AdminSlotCreationScreen: save email error', err);
-      Alert.alert('Error', 'The email could not be saved. Try again.');
+      Alert.alert('Error', 'Could not save the email. Please try again.');
     } finally {
       setSavingEmail(false);
     }
@@ -297,22 +345,22 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
 
   const handleAddSlots = useCallback(async () => {
     if (!selectedTeacher) {
-      Alert.alert('Choose a teacher', 'First, select a teacher.');
+      Alert.alert('Select a Teacher', 'Please select a teacher first.');
       return;
     }
     // 🆕 Teacher email mandatory: bina email ke booking/teacher-side sessions kaam nahi karte
     if (!selectedTeacher.email) {
-      Alert.alert('Email is required.', 'First, save this teacher email; then, you will be able to add slots.');
+      Alert.alert('Email Required', 'Please save the teacher email before adding slots.');
       return;
     }
     if (selectedStartTimes.size === 0) {
-      Alert.alert('Select time', 'Select at least a start time.');
+      Alert.alert('Select a Time', 'Please select at least one start time.');
       return;
     }
     // 🆕 Price validation: sirf whole rupees, minimum ₹1
     const price = Number(priceInput);
-    if (!Number.isInteger(price) || price < 1) {
-      Alert.alert('The price is incorrect', 'Enter the slot price in whole rupees (minimum ₹1).');
+    if (!Number.isInteger(price) || price < 1 || price > 100000) {
+      Alert.alert('Invalid Price', 'Enter the price in whole rupees (between ₹1 and ₹1,00,000).');
       return;
     }
     setSaving(true);
@@ -340,10 +388,10 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
 
       await batch.commit();
       setSelectedStartTimes(new Set());
-      Alert.alert('Ho gaya', `${selectedStartTimes.size} slot(s) add ho gaye.`);
+      Alert.alert('Done', `${selectedStartTimes.size} slot(s) added.`);
     } catch (err) {
       console.error('AdminSlotCreationScreen: add slots error', err);
-      Alert.alert('Error', 'Slots could not be saved. Try again.');
+      Alert.alert('Error', 'Could not save the slots. Please try again.');
     } finally {
       setSaving(false);
     }
@@ -352,11 +400,11 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
   const handleDeleteSlot = useCallback(
     (slot: TimeSlot) => {
       if (slot.isBooked) {
-        Alert.alert('Cannot be done', 'This slot is already booked; it cannot be deleted.');
+        Alert.alert('Not Allowed', 'This slot is already booked and cannot be deleted.');
         return;
       }
       if (!selectedTeacher) return;
-      Alert.alert('Delete slot?', `${formatTimeLabel(slot.startTime)} - ${formatTimeLabel(slot.endTime)}`, [
+      Alert.alert('Delete this slot?', `${formatTimeLabel(slot.startTime)} - ${formatTimeLabel(slot.endTime)}`, [
         { text: 'Cancel', style: 'cancel' },
         {
           text: 'Delete',
@@ -371,7 +419,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
                 .delete();
             } catch (err) {
               console.error('AdminSlotCreationScreen: delete slot error', err);
-              Alert.alert('Error', 'The slot could not be deleted..');
+              Alert.alert('Error', 'Could not delete the slot.');
             }
           },
         },
@@ -395,7 +443,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
         </TouchableOpacity>
         <View style={{ flex: 1 }}>
           <Text style={styles.headerTitle}>Add Session Slots</Text>
-          <Text style={styles.headerSubtitle}>Create available time slots for the teacher.</Text>
+          <Text style={styles.headerSubtitle}>Create available time slots for a teacher</Text>
         </View>
       </View>
 
@@ -409,7 +457,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
               <TextInput
                 value={teacherSearch}
                 onChangeText={setTeacherSearch}
-                placeholder="Teacher search or add..."
+                placeholder="Search or add a teacher..."
                 placeholderTextColor="#64748B"
                 style={styles.searchInput}
               />
@@ -448,7 +496,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
                       <View style={{ flex: 1 }}>
                         <Text style={styles.teacherName}>{t.name}</Text>
                         <Text style={styles.teacherSubject}>
-                          {t.specialization || 'No specialization set'} · ₹{t.pricePerSession} · {t.sessionDurationMins} min
+                          {teacherSubtitle(t)}
                         </Text>
                       </View>
                       {!t.email && (
@@ -464,8 +512,10 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
           <>
             <TouchableOpacity
               style={[styles.card, styles.selectedTeacherCard]}
-              onPress={() => setSelectedTeacher(null)}
-              activeOpacity={0.75}
+              onPress={() => {
+                if (!ownTeacher) setSelectedTeacher(null);
+              }}
+              activeOpacity={ownTeacher ? 1 : 0.75}
             >
               <View style={styles.teacherAvatar}>
                 <User color="#38BDF8" size={18} />
@@ -473,11 +523,10 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
               <View style={{ flex: 1 }}>
                 <Text style={styles.teacherName}>{selectedTeacher.name}</Text>
                 <Text style={styles.teacherSubject}>
-                  {selectedTeacher.specialization || 'No specialization set'} · ₹
-                  {selectedTeacher.pricePerSession} · {selectedTeacher.sessionDurationMins} min/session
+                  {teacherSubtitle(selectedTeacher, true)}
                 </Text>
               </View>
-              <Text style={styles.changeLink}>Change</Text>
+              {!ownTeacher && <Text style={styles.changeLink}>Change</Text>}
             </TouchableOpacity>
 
             {/* 🆕 EMAIL SECTION — teen states: editing / missing (warning) / set (display+edit) */}
@@ -485,11 +534,11 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
               <View style={styles.emailEditBox}>
                 <Text style={{ color: !selectedTeacher.email ? '#F59E0B' : '#94A3B8', fontSize: 12.5, fontWeight: '700', marginBottom: 8 }}>
                   {!selectedTeacher.email
-                    ? '⚠️ Teacher Email (Required) — Slots will be saved only after the email is saved.'
+                    ? '⚠️ Teacher email is required. Slots can be saved only after the email is saved.'
                     : 'Teacher Email'}
                 </Text>
                 <Text style={{ color: '#64748B', fontSize: 11.5, marginBottom: 8 }}>
-                  The teacher will log in using this email to view their sessions.
+                  The teacher will log in with this email to see their sessions.
                 </Text>
                 <View style={styles.emailInputRow}>
                   <Mail color="#64748B" size={16} />
@@ -586,7 +635,7 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
             <View style={styles.durationNoteRow}>
               <Clock color="#64748B" size={13} />
               <Text style={styles.durationNoteText}>
-                Every slot {duration}It will be made from ({selectedTeacher.name} fixed session duration)
+                Each slot will be {duration} min ({selectedTeacher.name}'s fixed session duration)
               </Text>
             </View>
             <View style={styles.timeGrid}>
@@ -620,14 +669,46 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
               })}
             </View>
 
+            {/* Custom time (24-hour) */}
+            <Text style={{ color: '#64748B', fontSize: 11.5, marginTop: 10, marginBottom: 6 }}>
+              Need a different time? Enter it in 24-hour format (e.g. 14 : 20).
+            </Text>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <TextInput
+                value={customHour}
+                onChangeText={t => setCustomHour(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                placeholder="HH"
+                placeholderTextColor="#64748B"
+                keyboardType="number-pad"
+                maxLength={2}
+                style={[styles.emailInput, { flex: 0, width: 64, textAlign: 'center', borderWidth: 1, borderColor: '#334155', borderRadius: 10, paddingVertical: 8 }]}
+              />
+              <Text style={{ color: '#94A3B8', fontWeight: '800' }}>:</Text>
+              <TextInput
+                value={customMin}
+                onChangeText={t => setCustomMin(t.replace(/[^0-9]/g, '').slice(0, 2))}
+                placeholder="MM"
+                placeholderTextColor="#64748B"
+                keyboardType="number-pad"
+                maxLength={2}
+                style={[styles.emailInput, { flex: 0, width: 64, textAlign: 'center', borderWidth: 1, borderColor: '#334155', borderRadius: 10, paddingVertical: 8 }]}
+              />
+              <TouchableOpacity style={[styles.timeChip, styles.timeChipActive]} onPress={addCustomTime} activeOpacity={0.8}>
+                <Text style={[styles.timeChipText, styles.timeChipTextActive]}>Add time</Text>
+              </TouchableOpacity>
+            </View>
+
             {/* 🆕 SLOT PRICE — is batch ke saare slots ki price */}
-            <Text style={styles.sectionLabel}>4. Price per slot (₹)</Text>
+            <Text style={styles.sectionLabel}>4. Session price (₹)</Text>
+            <Text style={{ color: '#64748B', fontSize: 11.5, marginBottom: 8 }}>
+              The price you enter here is what students see in the slot list and at payment (₹1 to ₹1,00,000).
+            </Text>
             <View style={styles.emailInputRow}>
               <Text style={{ color: '#94A3B8', fontSize: 15, fontWeight: '700' }}>₹</Text>
               <TextInput
                 value={priceInput}
                 onChangeText={t => setPriceInput(t.replace(/[^0-9]/g, ''))}
-                placeholder="500"
+                placeholder="Enter price, e.g. 300"
                 placeholderTextColor="#64748B"
                 style={styles.emailInput}
                 keyboardType="number-pad"
@@ -638,10 +719,10 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
             <TouchableOpacity
               style={[
                 styles.saveBtn,
-                (saving || selectedStartTimes.size === 0 || !selectedTeacher.email) && styles.saveBtnDisabled,
+                (saving || selectedStartTimes.size === 0 || !selectedTeacher.email || !priceInput) && styles.saveBtnDisabled,
               ]}
               onPress={handleAddSlots}
-              disabled={saving || selectedStartTimes.size === 0 || !selectedTeacher.email}
+              disabled={saving || selectedStartTimes.size === 0 || !selectedTeacher.email || !priceInput}
               activeOpacity={0.85}
             >
               {saving ? (
@@ -651,7 +732,9 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
                   <Plus color="#0B1220" size={18} />
                   <Text style={styles.saveBtnText}>
                     {!selectedTeacher.email
-                      ? 'Pehle teacher email save karo'
+                      ? 'Save the teacher email first'
+                      : !priceInput
+                      ? 'Enter the price first'
                       : selectedStartTimes.size > 0
                       ? `Add ${selectedStartTimes.size} Slot${selectedStartTimes.size > 1 ? 's' : ''}`
                       : 'Add Slots'}
@@ -664,14 +747,14 @@ export default function AdminSlotCreationScreen({ navigation }: any) {
             <View style={styles.sectionLabelRow}>
               <CalendarIcon color="#94A3B8" size={14} />
               <Text style={[styles.sectionLabel, { marginLeft: 6 }]}>
-                Already added — {DAY_LABELS[selectedDate.getDay()]}, {selectedDate.getDate()}{' '}
+                Already added: {DAY_LABELS[selectedDate.getDay()]}, {selectedDate.getDate()}{' '}
                 {MONTH_LABELS[selectedDate.getMonth()]}
               </Text>
             </View>
             {loadingSlots ? (
               <ActivityIndicator color="#38BDF8" style={{ marginVertical: 16 }} />
             ) : existingSlots.length === 0 ? (
-              <Text style={styles.emptyText}>There are no slots available for this date yet.</Text>
+              <Text style={styles.emptyText}>No slots have been added for this date yet.</Text>
             ) : (
               <View style={styles.card}>
                 {existingSlots.map((slot, idx) => (

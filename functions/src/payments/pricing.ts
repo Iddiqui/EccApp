@@ -3,10 +3,9 @@ import * as admin from 'firebase-admin';
 
 /**
  * ═══════════════════════════════════════════════════════════════════
- *  PLANS: subscription ki price ka EK hi sach yahin hai.
- *  Price / plan badalna ho to SIRF yahin badlo. App ki SubscriptionScreen
- *  ye list `getPlans` function se fetch karti hai, isliye screen aur
- *  actual charge kabhi alag nahi ho sakte.
+ *  PLANS: Voice/ClassRoom subscription ki price ka EK hi sach yahin hai.
+ *  (Video/Audio program plans alag hain: Firestore `subscriptionPlans`
+ *   collection, programPlans.ts dekho.)
  * ═══════════════════════════════════════════════════════════════════
  */
 export interface Plan {
@@ -77,16 +76,15 @@ export interface PricingBreakdown {
  *  { type: 'flat' | 'percent', value: number, active: boolean,
  *    maxDiscount?: number, expiresAt?: Timestamp, usageLimit?: number,
  *    usedCount: number, planIds?: string[] }
+ *
+ * 🆕 Coupon ka logic ab alag function me hai, taaki Voice plans (computePricing)
+ * aur Video/Audio program plans (programPlans.ts) dono wahi use karein.
  */
-export async function computePricing(
-  planId: unknown,
+export async function resolveCoupon(
+  planId: string,
+  price: number,
   couponCode?: unknown
-): Promise<PricingBreakdown> {
-  if (typeof planId !== 'string' || !PLANS[planId]) {
-    throw new functions.https.HttpsError('invalid-argument', 'The plan is not valid.');
-  }
-  const plan = PLANS[planId];
-
+): Promise<{ couponDiscount: number; appliedCode: string | null }> {
   let couponDiscount = 0;
   let appliedCode: string | null = null;
 
@@ -108,14 +106,27 @@ export async function computePricing(
       throw new functions.https.HttpsError('failed-precondition', 'This coupon does not apply to this plan.');
 
     couponDiscount =
-      c.type === 'percent' ? Math.floor((plan.price * c.value) / 100) : c.value;
+      c.type === 'percent' ? Math.floor((price * c.value) / 100) : c.value;
     if (c.maxDiscount) couponDiscount = Math.min(couponDiscount, c.maxDiscount);
     // Razorpay ka minimum order ₹1 hai
-    couponDiscount = Math.max(0, Math.min(couponDiscount, plan.price - 1));
+    couponDiscount = Math.max(0, Math.min(couponDiscount, price - 1));
     appliedCode = code;
   }
 
-  const afterCoupon = plan.price - couponDiscount;
+  return { couponDiscount, appliedCode };
+}
+
+/** GST + total ka hisaab. Voice aur program plans dono isi se breakdown banate hain. */
+export function buildBreakdown(args: {
+  planId: string;
+  planName: string;
+  mrp: number;
+  price: number;
+  couponDiscount: number;
+  appliedCode: string | null;
+}): PricingBreakdown {
+  const { planId, planName, mrp, price, couponDiscount, appliedCode } = args;
+  const afterCoupon = price - couponDiscount;
   const gst = PRICES_INCLUDE_GST
     ? round2(afterCoupon - afterCoupon / (1 + GST_RATE))
     : round2(afterCoupon * GST_RATE);
@@ -123,9 +134,9 @@ export async function computePricing(
 
   return {
     planId,
-    planName: plan.name,
-    mrp: plan.mrp,
-    planDiscount: plan.mrp - plan.price,
+    planName,
+    mrp,
+    planDiscount: mrp - price,
     couponCode: appliedCode,
     couponDiscount,
     gst,
@@ -133,4 +144,25 @@ export async function computePricing(
     total,
     payablePaise: Math.round(total * 100),
   };
+}
+
+export async function computePricing(
+  planId: unknown,
+  couponCode?: unknown
+): Promise<PricingBreakdown> {
+  if (typeof planId !== 'string' || !PLANS[planId]) {
+    throw new functions.https.HttpsError('invalid-argument', 'The plan is not valid.');
+  }
+  const plan = PLANS[planId];
+
+  const { couponDiscount, appliedCode } = await resolveCoupon(planId, plan.price, couponCode);
+
+  return buildBreakdown({
+    planId,
+    planName: plan.name,
+    mrp: plan.mrp,
+    price: plan.price,
+    couponDiscount,
+    appliedCode,
+  });
 }

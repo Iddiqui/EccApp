@@ -7,6 +7,7 @@ export interface ActivationResult {
   expiresAt?: number; // epoch millis (sirf subscription)
   needsRefund?: boolean;
   refundReason?: string;
+  program?: Record<string, any>; // 🆕 Video/Audio plan ka summary (success screen ke liye)
 }
 
 /**
@@ -45,6 +46,102 @@ export async function activatePayment(
         expiresAt: pay.expiresAt?.toMillis?.(),
         needsRefund: !!pay.needsRefund,
         refundReason: pay.refundReason,
+        program: pay.programSummary,
+      };
+    }
+
+    // ═════════ PROGRAM (Video / Audio plan) ═════════
+    if (pay.type === 'program') {
+      const snap = pay.programSnapshot;
+      if (!snap?.mode || !snap?.durationMonths) {
+        throw new Error(`Program payment ${orderId} has no plan snapshot`);
+      }
+
+      const subRef = db.collection('subscriptions').doc(`${pay.userId}_${snap.mode}`);
+      const subSnap = await tx.get(subRef);
+      const cur = subSnap.data();
+      const stillActive =
+        cur?.status === 'active' && (cur.expiresAt?.toMillis?.() ?? 0) > Date.now();
+
+      // Do tabs me do baar pay ho gaya: doosra payment refund hoga
+      if (stillActive) {
+        tx.update(payRef, {
+          status: 'paid',
+          gatewayPaymentId,
+          verifiedAt: FieldValue.serverTimestamp(),
+          needsRefund: true,
+          refundReason: 'already_active',
+        });
+        return {
+          type: pay.type,
+          alreadyProcessed: false,
+          needsRefund: true,
+          refundReason: 'already_active',
+        };
+      }
+
+      const start = new Date();
+      const end = new Date(start);
+      end.setMonth(end.getMonth() + snap.durationMonths);
+      const hasSessions = typeof snap.sessions === 'number';
+
+      const programSummary = {
+        mode: snap.mode,
+        planName: snap.planName,
+        durationLabel: snap.durationLabel,
+        sessions: snap.sessions ?? null,
+        sessionMins: snap.sessionMins ?? null,
+        teacherName: snap.teacherName,
+        startAt: start.getTime(),
+        expiresAt: end.getTime(),
+        remainingSessions: hasSessions ? snap.sessions : null,
+      };
+
+      tx.update(payRef, {
+        status: 'paid',
+        gatewayPaymentId,
+        verifiedAt: FieldValue.serverTimestamp(),
+        expiresAt: Timestamp.fromDate(end),
+        programSummary,
+      });
+
+      // subscriptions/{uid}_{mode}: SIRF server likhta hai (rules me client write band).
+      tx.set(subRef, {
+        userId: pay.userId,
+        mode: snap.mode,
+        status: 'active',
+        planId: pay.planId,
+        planName: snap.planName,
+        durationMonths: snap.durationMonths,
+        durationLabel: snap.durationLabel,
+        sessionMins: snap.sessionMins ?? null,
+        totalSessions: snap.sessions ?? null,
+        usedSessions: hasSessions ? 0 : null,
+        remainingSessions: hasSessions ? snap.sessions : null,
+        teacherId: snap.teacherId,
+        teacherName: snap.teacherName,
+        teacherEmail: snap.teacherEmail,
+        teacherPhotoUrl: snap.teacherPhotoUrl ?? null,
+        startAt: Timestamp.fromDate(start),
+        expiresAt: Timestamp.fromDate(end),
+        orderId,
+        paymentId: gatewayPaymentId,
+        amountPaid: pay.amount,
+        createdAt: FieldValue.serverTimestamp(),
+        updatedAt: FieldValue.serverTimestamp(),
+      });
+
+      if (pay.couponCode) {
+        tx.update(db.collection('coupons').doc(pay.couponCode), {
+          usedCount: FieldValue.increment(1),
+        });
+      }
+
+      return {
+        type: pay.type,
+        alreadyProcessed: false,
+        expiresAt: end.getTime(),
+        program: programSummary,
       };
     }
 
@@ -101,7 +198,7 @@ export async function activatePayment(
     const slotRef =
       booking?.teacherId && booking?.slotId
         ? db
-            .collection('teachers')
+            .collection('session_teachers') // 🆕 FIX: pehle 'teachers' tha, slots yahan nahi hain
             .doc(booking.teacherId)
             .collection('slots')
             .doc(booking.slotId)

@@ -28,38 +28,12 @@ import {
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import { useTheme } from '../../../hooks/useTheme';
+import ProfilePhoto from './ProfilePhoto';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 const STATUS_BAR_HEIGHT = StatusBar.currentHeight || (Platform.OS === 'ios' ? 44 : 24);
 
 const IMG_PROFILE_BG = require('../../../assets/profile.png');
-
-// ─── ENGLISH NAME TO HINDI CONVERTER HELPER ───
-const toHindiName = (nameStr: string = '', lang: string = 'en') => {
-  if (lang !== 'hi' || !nameStr) return nameStr;
-
-  const nameMap: Record<string, string> = {
-    'Saad Siddiqui': 'साद सिद्दीकी',
-    'Saad': 'साद',
-    'Saad Sidd': 'साद सिद्द',
-    'Jitendra Kumar': 'जितेन्द्र कुमार',
-    'Aman Sharma': 'अमन शर्मा',
-    'Sneha Patel': 'स्नेहा पटेल',
-    'Rohit Verma': 'रोहित वर्मा',
-    'ECC Learner': 'ईसीसी यूजर',
-    'User': 'यूजर',
-  };
-
-  if (nameMap[nameStr.trim()]) {
-    return nameMap[nameStr.trim()];
-  }
-
-  let res = nameStr;
-  res = res.replace(/Saad/gi, 'साद');
-  res = res.replace(/Siddiqui/gi, 'सिद्दीकी');
-  res = res.replace(/User/gi, 'यूजर');
-  return res;
-};
 
 // ─── MASTER BADGES MAPPING ───
 const ALL_AVAILABLE_BADGES: {
@@ -89,8 +63,6 @@ const ALL_AVAILABLE_BADGES: {
 export default function ProfileScreen({ navigation }: any) {
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? true;
-  const t = themeContext?.t;
-  const currentLang = themeContext?.currentLang || 'en';
 
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -100,14 +72,12 @@ export default function ProfileScreen({ navigation }: any) {
   // Sign Out Handler
   const handleLogout = () => {
     Alert.alert(
-      t?.profile?.signOut || 'Sign Out',
-      currentLang === 'hi'
-        ? 'क्या आप वाकई अपने अकाउंट से लॉग आउट करना चाहते हैं?'
-        : 'Are you sure you want to log out from your account?',
+      'Sign Out',
+      'Are you sure you want to log out from your account?',
       [
-        { text: currentLang === 'hi' ? 'रद्द करें' : 'Cancel', style: 'cancel' },
+        { text: 'Cancel', style: 'cancel' },
         {
-          text: t?.profile?.signOut || 'Sign Out',
+          text: 'Sign Out',
           style: 'destructive',
           onPress: async () => {
             try {
@@ -173,9 +143,7 @@ export default function ProfileScreen({ navigation }: any) {
   }
 
   const rawName = userData?.fullName || userData?.name || currentUser?.displayName || 'Saad Sidd';
-  const profilePhotoUrl = userData?.photoURL || currentUser?.photoURL;
-  const displayName = toHindiName(rawName, currentLang);
-  const avatarInitials = rawName.substring(0, 2).toUpperCase();
+  const displayName = rawName;
 
   const liveProgressData = [
     { label: 'Pronunciation', value: userData?.pronunciation || '0%', icon: <Volume2 size={16} color="#A855F7" />, iconBg: isDarkMode ? '#2E1065' : '#F3E8FF', barColor: '#A855F7' },
@@ -229,23 +197,23 @@ export default function ProfileScreen({ navigation }: any) {
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContainer}
       >
-        {/* ─── AVATAR WITH NEON CIRCULAR RING (WITHOUT PENCIL) ─── */}
+        {/* ─── AVATAR WITH NEON CIRCULAR RING (tap to change photo) ─── */}
         <View style={styles.profileMetaWrapper}>
           <View style={[styles.avatarGlowContainer, {
             borderColor: '#8B5CF6',
             shadowColor: isDarkMode ? '#8B5CF6' : '#A855F7',
             backgroundColor: isDarkMode ? '#060813' : '#FFFFFF'
           }]}>
-            {profilePhotoUrl ? (
-              <Image source={{ uri: profilePhotoUrl }} style={styles.avatarMainImage} resizeMode="cover" />
-            ) : (
-              <View style={[styles.avatarMainCircle, { backgroundColor: '#6366F1' }]}>
-                <Text style={styles.avatarMainText}>{avatarInitials}</Text>
-              </View>
-            )}
+            {/* Tap the photo to add, change or remove your DP */}
+            <ProfilePhoto size={100} name={rawName} accent="#6366F1" />
           </View>
 
           <Text style={[styles.profileName, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>{displayName}</Text>
+          {!!currentUser?.email && (
+            <Text style={[styles.profileSubText, { color: isDarkMode ? '#94A3B8' : '#64748B', marginTop: 2 }]}>
+              {currentUser.email}
+            </Text>
+          )}
           <Text style={[styles.profileSubText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>
             Level <Text style={{ color: '#818CF8', fontWeight: '800' }}>B2</Text> • Intermediate • Joined <Text style={{ color: '#818CF8', fontWeight: '800' }}>2026</Text>
           </Text>

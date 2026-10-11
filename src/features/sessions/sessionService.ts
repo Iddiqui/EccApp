@@ -159,6 +159,127 @@ const createBooking = async (
   return result.data as CreateBookingResponse;
 };
 
+// 🆕 Demo (trial) class: ek student ka ek hi baar. Price admin ke appConfig/demoClass se.
+const createDemoBooking = async (
+  params: CreateBookingParams
+): Promise<CreateBookingResponse> => {
+  const callable = functions().httpsCallable('createDemoBooking');
+  const result = await callable(params);
+  return result.data as CreateBookingResponse;
+};
+
+export interface DemoConfig {
+  isActive: boolean;
+  price: number; // rupees, 0 = free
+  alreadyUsed: boolean;
+}
+
+export const getDemoConfig = async (): Promise<DemoConfig> => {
+  const callable = functions().httpsCallable('getDemoConfig');
+  const result = await callable({});
+  return result.data as DemoConfig;
+};
+
+// 🆕 Video plan: book a slot with the assigned teacher. No payment; one plan session is used.
+export interface SubscriptionBookingResult {
+  bookingId: string;
+  teacherId: string;
+  teacherName: string;
+  date: string;
+  startTime: string;
+  endTime: string;
+  status: string;
+  kind: 'subscription';
+  remainingSessions: number;
+}
+
+export const bookSubscriptionSession = async (
+  params: CreateBookingParams
+): Promise<SubscriptionBookingResult> => {
+  const callable = functions().httpsCallable('createSubscriptionBooking');
+  const result = await callable(params);
+  return result.data as SubscriptionBookingResult;
+};
+
+// ─── 🆕 AUDIO GROUP CLASSES (audioSessions collection; all writes go through functions) ───
+export interface AudioSession {
+  id: string;
+  teacherId: string;
+  teacherName: string;
+  teacherEmail: string;
+  title: string;
+  description: string;
+  date: string; // "YYYY-MM-DD"
+  startTime: string; // "HH:MM"
+  endTime: string;
+  durationMins: number;
+  maxParticipants: number;
+  bookedCount: number;
+  roomName: string;
+  status: 'scheduled' | 'cancelled';
+}
+
+const audioCall = async (fn: string, payload: any) => {
+  const result = await functions().httpsCallable(fn)(payload);
+  return result.data as any;
+};
+
+export const createAudioSession = (p: {
+  title: string;
+  description?: string;
+  date: string;
+  startTime: string;
+  durationMins: number;
+  maxParticipants?: number;
+}) => audioCall('createAudioSession', p) as Promise<{ sessionId: string }>;
+
+export const cancelAudioSession = (sessionId: string) => audioCall('cancelAudioSession', { sessionId });
+export const bookAudioSession = (sessionId: string) => audioCall('bookAudioSession', { sessionId });
+export const cancelAudioBooking = (sessionId: string) => audioCall('cancelAudioBooking', { sessionId });
+export const getAudioSessionToken = (sessionId: string) =>
+  audioCall('getAudioSessionToken', { sessionId }) as Promise<{ token: string; roomName: string; role: 'host' | 'student' }>;
+
+/** Upcoming (not yet ended, not cancelled) group sessions of ONE teacher. */
+export const getAudioSessionsForTeacher = async (teacherId: string): Promise<AudioSession[]> => {
+  const snap = await firestore().collection('audioSessions').where('teacherId', '==', teacherId).get();
+  const now = Date.now();
+  return snap.docs
+    .map((d) => ({ id: d.id, ...(d.data() as any) } as AudioSession))
+    .filter((x) => x.status === 'scheduled' && new Date(`${x.date}T${x.endTime}:00`).getTime() > now)
+    .sort((a, b) => `${a.date} ${a.startTime}`.localeCompare(`${b.date} ${b.startTime}`));
+};
+
+/** Which of these sessions has the current student booked? (own attendee doc per session) */
+export const getMyAudioBookingIds = async (sessionIds: string[]): Promise<Set<string>> => {
+  const uid = auth().currentUser?.uid;
+  const ids = new Set<string>();
+  if (!uid) return ids;
+  await Promise.all(
+    sessionIds.map(async (id) => {
+      const doc = await firestore().collection('audioSessions').doc(id).collection('attendees').doc(uid).get();
+      if (doc.exists) ids.add(id);
+    })
+  );
+  return ids;
+};
+
+export const getAudioAttendees = async (sessionId: string): Promise<{ id: string; studentName: string }[]> => {
+  const snap = await firestore().collection('audioSessions').doc(sessionId).collection('attendees').get();
+  return snap.docs.map((d) => ({ id: d.id, studentName: (d.data() as any).studentName || 'Student' }));
+};
+
+/**
+ * Join the room of an audio session.
+ * The server checks everything (host or booked student with an active plan, time window)
+ * and returns a LiveKit token for room `audio_<sessionId>`.
+ * ⚠️ Connecting that token to the app's existing room screen is wired in the next step,
+ * once the room screen / CallSessionProvider files are shared.
+ */
+export const joinAudioRoom = async (session: AudioSession) => {
+  const data = await getAudioSessionToken(session.id);
+  return { serverUrl: LIVEKIT_SERVER_URL, token: data.token, roomName: data.roomName, role: data.role };
+};
+
 export const cancelBooking = async (bookingId: string): Promise<{ success: boolean }> => {
   const callable = functions().httpsCallable('cancelBooking');
   const result = await callable({ bookingId });
@@ -178,10 +299,17 @@ export const cancelBooking = async (bookingId: string): Promise<{ success: boole
 //      free kar dete hain, taaki wo permanently "booked" na reh jaye
 export const bookAndPaySession = async (
   params: CreateBookingParams,
-  method?: PayMethod // 🆕 payment screen par user ne jo method chuna (upi/card/netbanking/wallet)
+  method?: PayMethod, // 🆕 payment screen par user ne jo method chuna (upi/card/netbanking/wallet)
+  kind: 'regular' | 'demo' = 'regular' // 🆕 'demo' = ek-baar ka demo class (price admin config se)
 ): Promise<{ success: boolean; bookingId: string }> => {
   // Step 1 — slot reserve karo (server pe, race-condition-safe)
-  const booking = await createBooking(params);
+  const booking =
+    kind === 'demo' ? await createDemoBooking(params) : await createBooking(params);
+
+  // Free demo class: server ne booking seedha confirm kar di, payment ki zaroorat nahi
+  if (booking.status === 'confirmed') {
+    return { success: true, bookingId: booking.bookingId };
+  }
 
   try {
     // Step 2 — payment karo
@@ -269,7 +397,8 @@ export const getMyUpcomingSessionsAsTeacher = async (): Promise<Booking[]> => {
 // bilkul wahi pattern jo Study Room/Class Room host detection me already
 // use ho raha hai. HomeScreen ye decide karne ke liye use karega ki
 // student-side ya teacher-side "Upcoming Sessions" query chalani hai.
-export const checkIsHost = async (): Promise<boolean> => {
+// Admins: email is in the `admins` collection (Admin Panel is for these users only).
+export const checkIsAdmin = async (): Promise<boolean> => {
   const email = auth().currentUser?.email;
   if (!email) return false;
 
@@ -280,6 +409,34 @@ export const checkIsHost = async (): Promise<boolean> => {
     .get();
 
   return !snap.empty;
+};
+
+// 🆕 Teachers: the email belongs to an ACTIVE `session_teachers` document.
+// Only an admin can create that document (Admin Panel > Teachers), so a normal
+// student can never become a teacher by logging in.
+export const getMyTeacherProfile = async (): Promise<Teacher | null> => {
+  const email = auth().currentUser?.email;
+  if (!email) return null;
+
+  const emails = Array.from(new Set([email, email.toLowerCase()]));
+  const snap = await firestore()
+    .collection('session_teachers')
+    .where('email', 'in', emails)
+    .limit(1)
+    .get();
+
+  if (snap.empty) return null;
+  const doc = snap.docs[0];
+  const data = doc.data() as any;
+  if (data.isActive === false) return null;
+  return { id: doc.id, ...data } as Teacher;
+};
+
+// "Host" = anyone who teaches / runs sessions: an admin OR an approved teacher.
+// HomeScreen and the sessions list use this to show the teacher-side view.
+export const checkIsHost = async (): Promise<boolean> => {
+  const [admin, teacher] = await Promise.all([checkIsAdmin(), getMyTeacherProfile()]);
+  return admin || !!teacher;
 };
 
 // ─── JOIN SESSION (student aur teacher, dono isी EK function ko call

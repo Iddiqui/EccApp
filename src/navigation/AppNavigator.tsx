@@ -31,6 +31,16 @@ import TeacherProfileScreen from '../features/sessions/TeacherProfileScreen';
 import SlotSelectionScreen from '../features/sessions/SlotSelectionScreen';
 import UpcomingSessionsListScreen from '../features/sessions/UpcomingSessionsListScreen';
 import AdminSlotCreationScreen from '../features/sessions/AdminSlotCreationScreen';
+import DemoClassScreen from '../features/sessions/DemoClassScreen';
+import ProgramFlowScreen from '../features/payments/ProgramFlowScreen';
+import AdminPanelScreen from '../features/admin/AdminPanelScreen';
+import BookSessionScreen from '../features/sessions/BookSessionScreen';
+import TeacherDashboardScreen from '../features/sessions/TeacherDashboardScreen';
+import TeacherSlotsScreen from '../features/sessions/TeacherSlotsScreen';
+import TeacherProfileEditScreen from '../features/sessions/TeacherProfileEditScreen';
+import AudioSessionsScreen from '../features/sessions/AudioSessionsScreen';
+import TeacherAudioSessionsScreen from '../features/sessions/TeacherAudioSessionsScreen';
+import RateSessionsScreen from '../features/sessions/RateSessionsScreen';
 
 const Stack = createNativeStackNavigator();
 
@@ -163,6 +173,74 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
             <Stack.Screen
               name="SlotSelectionScreen"
               component={SlotSelectionScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Demo (trial) class booking: date, time, tutor cards, payment */}
+            <Stack.Screen
+              name="DemoClassScreen"
+              component={DemoClassScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Teacher side: dashboard, own slots, own profile */}
+            <Stack.Screen
+              name="TeacherDashboardScreen"
+              component={TeacherDashboardScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <Stack.Screen
+              name="TeacherSlotsScreen"
+              component={TeacherSlotsScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <Stack.Screen
+              name="TeacherProfileEditScreen"
+              component={TeacherProfileEditScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Audio group classes: student list + teacher management */}
+            <Stack.Screen
+              name="AudioSessionsScreen"
+              component={AudioSessionsScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+            <Stack.Screen
+              name="TeacherAudioSessionsScreen"
+              component={TeacherAudioSessionsScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Rate finished sessions */}
+            <Stack.Screen
+              name="RateSessionsScreen"
+              component={RateSessionsScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Book a session with a Video plan (no payment, uses one plan session) */}
+            <Stack.Screen
+              name="BookSessionScreen"
+              component={BookSessionScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Video / Audio subscription purchase flow:
+                mode -> intro -> teacher -> duration -> plan -> review -> payment -> success.
+                Open with navigation.navigate('ProgramFlowScreen') or
+                navigation.navigate('ProgramFlowScreen', { mode: 'video' | 'audio' }). */}
+            <Stack.Screen
+              name="ProgramFlowScreen"
+              component={ProgramFlowScreen}
+              options={{ animation: 'slide_from_right' }}
+            />
+
+            {/* Admin Panel: teacher access, plan prices, demo class price.
+                The screen checks checkIsHost() and every action is re-checked on the server. */}
+            <Stack.Screen
+              name="AdminPanelScreen"
+              component={AdminPanelScreen}
               options={{ animation: 'slide_from_right' }}
             />
 

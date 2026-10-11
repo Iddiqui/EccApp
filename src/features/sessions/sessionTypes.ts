@@ -44,6 +44,7 @@ export interface Booking {
   status: BookingStatus;
   paymentId?: string;
   roomId?: string; // LiveKit room id — video session ke liye
+  kind?: 'demo' | 'subscription'; // demo class / session paid through a Video plan; normal paid booking has none
   createdAt?: any;
 }
 
@@ -61,4 +62,6 @@ export interface CreateBookingResponse {
   startTime: string;
   endTime: string;
   price: number;
+  status?: BookingStatus; // demo class free ho to 'confirmed' aata hai
+  kind?: 'demo';
 }

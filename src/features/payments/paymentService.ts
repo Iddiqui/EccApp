@@ -14,6 +14,10 @@ import type {
   PayResult,
   PaymentErrorCode,
   PricingBreakdown,
+  ProgramAccess,
+  ProgramMode,
+  ProgramPlan,
+  ProgramPreview,
   SubscriptionPlan,
   VerifyPaymentRequest,
   VerifyPaymentResponse,
@@ -40,6 +44,45 @@ const previewPricingFn = httpsCallable<
   { planId: string; couponCode?: string },
   PricingBreakdown
 >(functions, 'previewPricing');
+
+// ─── 🆕 Video / Audio program plans ───
+const getProgramPlansFn = httpsCallable<
+  { mode: ProgramMode; durationMonths?: number },
+  { plans: ProgramPlan[] }
+>(functions, 'getProgramPlans');
+const previewProgramFn = httpsCallable<
+  { planId: string; teacherId?: string; couponCode?: string },
+  ProgramPreview
+>(functions, 'previewProgramPricing');
+const getMySubscriptionsFn = httpsCallable<
+  Record<string, never>,
+  { video: ProgramAccess; audio: ProgramAccess }
+>(functions, 'getMySubscriptions');
+
+/** Duration + plan screens: plans server (Firestore subscriptionPlans) se. */
+export async function getProgramPlans(
+  mode: ProgramMode,
+  durationMonths?: number
+): Promise<ProgramPlan[]> {
+  const { data } = await getProgramPlansFn({ mode, durationMonths });
+  return data.plans;
+}
+
+/** Review Your Plan: plan + teacher + coupon ke baad exact total. */
+export async function previewProgram(
+  planId: string,
+  teacherId?: string,
+  couponCode?: string
+): Promise<ProgramPreview> {
+  const { data } = await previewProgramFn({ planId, teacherId, couponCode });
+  return data;
+}
+
+/** Dono modes ka subscription status (dashboard / locks ke liye). */
+export async function getMySubscriptions(): Promise<{ video: ProgramAccess; audio: ProgramAccess }> {
+  const { data } = await getMySubscriptionsFn({});
+  return data;
+}
 
 /** SubscriptionScreen ke liye: plans + prices server se. */
 export async function getPlans(): Promise<SubscriptionPlan[]> {
@@ -124,6 +167,7 @@ export async function payWithRazorpay(
     planId: params.planId,
     couponCode: params.couponCode,
     bookingId,
+    teacherId: params.teacherId,
   });
 
   // 2) Razorpay checkout
@@ -180,7 +224,7 @@ export async function payWithRazorpay(
     // SubscriptionScreen isi message se cancel pehchanta hai
     if (isCheckoutCancelled(e)) throw payError('CANCELLED', 'CANCELLED', false);
     throw payError(
-      e?.description || e?.error?.description || 'The payment failed.',
+      e?.description || e?.error?.description || 'Payment failed.',
       'FAILED',
       false
     );
@@ -200,21 +244,22 @@ export async function payWithRazorpay(
       type: data.type ?? type,
       expiresAt: data.expiresAt,
       pricing: order.pricing,
+      program: data.program,
     };
   } catch (e: any) {
     if (isFailedPrecondition(e)) {
       // Server ne saaf bataya: paisa aaya par booking confirm nahi ho sakti (refund case)
       throw payError(
         e?.message ||
-          'Payment received, but the booking could not be confirmed. The money will be refunded.',
+          'We received your payment, but the booking could not be confirmed. The amount will be refunded.',
         'REFUND',
         true
       );
     }
     // Network / server issue. Webhook baad me activate kar dega.
     throw payError(
-      'The payment has been made, but it is taking a little while to get confirmed. ' +
-        'Please do not make the payment again. It will be activated shortly.',
+      'Your payment went through, but confirmation is taking a little longer. ' +
+        'Please do not pay again. It will be activated shortly.',
       'PENDING',
       true
     );

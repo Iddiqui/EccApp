@@ -35,13 +35,7 @@ import {
   Mail,
   AlertTriangle,
   Send,
-  Eye,
   User,
-  Phone,
-  Users,
-  Key,
-  Lock,
-  UserX,
   FileText,
   CheckCircle2,
   Flame,
@@ -121,6 +115,123 @@ const SUPPORT_TOPICS = [
 ];
 
 // 🌐 TRANSLATIONS DICTIONARY FOR SETTINGS
+// ─── PRIVACY POLICY CONTENT ───
+// Kind of block: 'p' = paragraph, 'b' = bullet list ({ label?, text }), 'contact' = support email + website
+type PolicyBlock =
+  | { k: 'p'; text: string }
+  | { k: 'b'; items: { label?: string; text: string }[] }
+  | { k: 'contact' };
+
+const PRIVACY_POLICY_UPDATED = '10 October 2026';
+
+const PRIVACY_POLICY: { title: string; blocks: PolicyBlock[] }[] = [
+  {
+    title: '1. Introduction',
+    blocks: [
+      { k: 'p', text: 'Welcome to ECC (English Conversation Club). We value your privacy and are committed to protecting your personal information. This Privacy Policy explains how we collect, use, store, and protect your information when you use our application.' },
+    ],
+  },
+  {
+    title: '2. Information We Collect',
+    blocks: [
+      { k: 'p', text: 'We may collect the following information when you use ECC:' },
+      {
+        k: 'b',
+        items: [
+          { label: 'Personal Information:', text: 'Name, email address, profile picture, and other details you choose to provide.' },
+          { label: 'Profile Information:', text: 'English proficiency level, native language, country, location, and interests.' },
+          { label: 'App Activity:', text: 'Practice history, quiz results, XP points, streaks, achievements, and leaderboard activity.' },
+          { label: 'Audio and Voice Data:', text: 'Voice messages, recordings, or voice-room activity when you use these features.' },
+          { label: 'Payment Information:', text: 'Subscription plans, transaction details, and payment status. Payments may be processed by third-party payment providers.' },
+        ],
+      },
+    ],
+  },
+  {
+    title: '3. How We Use Your Information',
+    blocks: [
+      { k: 'p', text: 'We use your information to:' },
+      {
+        k: 'b',
+        items: [
+          { text: 'Create and manage your account.' },
+          { text: 'Provide English learning, speaking practice, and community features.' },
+          { text: 'Track your learning progress, XP, streaks, and achievements.' },
+          { text: 'Enable voice rooms, chat, and coaching sessions.' },
+          { text: 'Process payments and manage subscriptions.' },
+          { text: 'Send important account updates and notifications.' },
+          { text: 'Improve app performance, security, and user experience.' },
+        ],
+      },
+    ],
+  },
+  {
+    title: '4. Account Privacy',
+    blocks: [
+      { k: 'p', text: "You can manage certain profile details through your account settings. Some information, such as your display name, profile picture, learning progress, or leaderboard position, may be visible to other users depending on the app's features and your privacy settings." },
+      { k: 'p', text: 'Please avoid sharing sensitive personal information in public community rooms or chats.' },
+    ],
+  },
+  {
+    title: '5. Audio, Voice Rooms and Community',
+    blocks: [
+      { k: 'p', text: 'When you participate in voice rooms, send voice messages, or use speaking-practice features, relevant audio and activity data may be processed to provide these services.' },
+      { k: 'p', text: 'Community messages and profile information may be visible to other participants. Please use these features responsibly.' },
+    ],
+  },
+  {
+    title: '6. Payments and Subscriptions',
+    blocks: [
+      { k: 'p', text: 'ECC may offer paid memberships, voice-chat plans, and one-to-one coaching sessions. Payments are handled through the payment provider displayed during checkout.' },
+      { k: 'p', text: "ECC does not intend to store your complete card number, CVV, or UPI PIN on its own servers. Payment processing is subject to the payment provider's terms and privacy policy." },
+    ],
+  },
+  {
+    title: '7. Data Sharing',
+    blocks: [
+      { k: 'p', text: 'We do not sell your personal information. We may share relevant information with trusted service providers when necessary to operate the app, process payments, provide communication services, maintain security, or comply with applicable laws.' },
+    ],
+  },
+  {
+    title: '8. Data Security',
+    blocks: [
+      { k: 'p', text: 'We take reasonable measures to protect your information from unauthorized access, misuse, loss, or disclosure. However, no digital platform can guarantee complete security.' },
+    ],
+  },
+  {
+    title: '9. Data Retention and Account Deletion',
+    blocks: [
+      { k: 'p', text: 'We retain your information for as long as necessary to provide our services, maintain records, resolve disputes, and comply with legal obligations.' },
+      { k: 'p', text: "You may request account deletion or removal of eligible personal information through the app's support or contact channels. Certain records may need to be retained where required by law." },
+    ],
+  },
+  {
+    title: "10. Children's Privacy",
+    blocks: [
+      { k: 'p', text: "ECC is intended for users who meet the applicable age requirements. If a child is permitted to use the app under applicable law, any required parental or guardian consent must be obtained. Please contact us if you believe a child's personal information has been collected improperly." },
+    ],
+  },
+  {
+    title: '11. Third-Party Services',
+    blocks: [
+      { k: 'p', text: 'ECC may use third-party services for authentication, cloud storage, analytics, live voice communication, and payment processing. These services may process information according to their respective privacy policies.' },
+    ],
+  },
+  {
+    title: '12. Changes to This Policy',
+    blocks: [
+      { k: 'p', text: 'We may update this Privacy Policy from time to time. Any updated version will be made available through the app, along with the revised effective date where appropriate.' },
+    ],
+  },
+  {
+    title: '13. Contact Us',
+    blocks: [
+      { k: 'p', text: 'If you have any questions, concerns, or requests regarding this Privacy Policy, please contact us:' },
+      { k: 'contact' },
+    ],
+  },
+];
+
 const TRANSLATIONS: Record<string, any> = {
   en: {
     settings: 'Settings',
@@ -134,7 +245,7 @@ const TRANSLATIONS: Record<string, any> = {
     roomReminders: 'Room reminders',
     streakAlerts: 'Streak alerts',
     privacySecurity: 'PRIVACY & SECURITY',
-    accountPrivacy: 'Account Privacy',
+    accountPrivacy: 'Privacy Policy',
     supportHelp: 'SUPPORT & HELP',
     helpCenter: 'Help Center',
     contactUs: 'Contact Us',
@@ -145,9 +256,7 @@ const TRANSLATIONS: Record<string, any> = {
     getRoomAlerts: 'Get alerts before room starts.',
     keepStreakAlive: 'Alerts to keep your streak active.',
     privacyMattersTitle: 'Your privacy matters',
-    privacyMattersDesc: 'Manage your privacy settings and secure your account and data',
-    personalInfo: 'Personal Info',
-    security: 'Security',
+    privacyMattersDesc: 'How we collect, use and protect your information',
     howCanWeHelp: 'How can we help you?',
     getInTouch: 'Get in Touch',
     sendUsMessage: 'Send us a Message',
@@ -292,11 +401,6 @@ export default function SettingsScreen({ navigation }: any) {
   const [roomReminders, setRoomReminders] = useState(true);
   const [streakAlerts, setStreakAlerts] = useState(false);
 
-  // Privacy & Security States
-  const [lastSeen, setLastSeen] = useState('Everyone');
-  const [profileVis, setProfileVis] = useState('Everyone');
-  const [twoStepVerif, setTwoStepVerif] = useState(true);
-
   // Contact Us Form State
   const [contactSubject, setContactSubject] = useState('');
   const [contactMessage, setContactMessage] = useState('');
@@ -395,14 +499,14 @@ export default function SettingsScreen({ navigation }: any) {
     </SafeAreaView>
   );
 
-  // 2️⃣ PRIVACY & SECURITY SUB-SCREEN
+  // 2️⃣ PRIVACY POLICY SUB-SCREEN
   const renderPrivacySubScreen = () => (
     <SafeAreaView style={[styles.subSafeArea, { backgroundColor: colors.bgLight }]}>
       <View style={styles.subHeaderRow}>
         <TouchableOpacity style={[styles.backBtn, { backgroundColor: colors.iconBg }]} onPress={() => setActiveSubScreen('main')}>
           <ChevronLeft size={22} color={colors.textPrimary} />
         </TouchableOpacity>
-        <Text style={[styles.subHeaderTitle, { color: colors.textPrimary }]}>{t.privacySecurity}</Text>
+        <Text style={[styles.subHeaderTitle, { color: colors.textPrimary }]}>{t.accountPrivacy}</Text>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollPadding}>
@@ -418,98 +522,66 @@ export default function SettingsScreen({ navigation }: any) {
           </View>
         </View>
 
-        <Text style={[styles.sectionHeaderLabel, { color: colors.textPrimary }]}>{t.personalInfo}</Text>
+        <View style={[styles.policyCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
+          <Text style={[styles.policyUpdated, { color: colors.textSecondary }]}>
+            Last Updated: {PRIVACY_POLICY_UPDATED}
+          </Text>
 
-        <View style={[styles.subCardContainer, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <Eye size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Last Seen & Online</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>{lastSeen}</Text>
-            </View>
-          </TouchableOpacity>
+          {PRIVACY_POLICY.map((section) => (
+            <View key={section.title} style={{ marginTop: 18 }}>
+              <Text style={[styles.policyHeading, { color: colors.textPrimary }]}>{section.title}</Text>
 
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <User size={20} color={colors.primary} />
+              {section.blocks.map((block, bi) => {
+                if (block.k === 'p') {
+                  return (
+                    <Text key={bi} style={[styles.policyPara, { color: colors.textSecondary }]}>
+                      {block.text}
+                    </Text>
+                  );
+                }
+                if (block.k === 'b') {
+                  return (
+                    <View key={bi} style={{ marginTop: 6 }}>
+                      {block.items.map((item, ii) => (
+                        <View key={ii} style={styles.policyBulletRow}>
+                          <Text style={[styles.policyBulletDot, { color: colors.primary }]}>{'\u2022'}</Text>
+                          <Text style={[styles.policyPara, { color: colors.textSecondary, flex: 1, marginTop: 0 }]}>
+                            {item.label ? (
+                              <Text style={{ fontWeight: '700', color: colors.textPrimary }}>{item.label} </Text>
+                            ) : null}
+                            {item.text}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  );
+                }
+                // contact block
+                return (
+                  <View key={bi} style={{ marginTop: 8 }}>
+                    <Text style={[styles.policyPara, { color: colors.textSecondary, marginTop: 0 }]}>
+                      <Text style={{ fontWeight: '700', color: colors.textPrimary }}>App Name: </Text>
+                      ECC – English Conversation Club
+                    </Text>
+                    <Text
+                      style={[styles.policyPara, { color: colors.textSecondary }]}
+                      onPress={() => Linking.openURL(`mailto:${SUPPORT_EMAIL}`).catch(() => Alert.alert(SUPPORT_EMAIL))}
+                    >
+                      <Text style={{ fontWeight: '700', color: colors.textPrimary }}>Email: </Text>
+                      <Text style={{ color: colors.primary }}>{SUPPORT_EMAIL}</Text>
+                    </Text>
+                    <Text
+                      style={[styles.policyPara, { color: colors.textSecondary }]}
+                      onPress={() => Linking.openURL(SUPPORT_WEBSITE_URL).catch(() => Alert.alert(SUPPORT_WEBSITE_LABEL))}
+                    >
+                      <Text style={{ fontWeight: '700', color: colors.textPrimary }}>Website: </Text>
+                      <Text style={{ color: colors.primary }}>{SUPPORT_WEBSITE_LABEL}</Text>
+                    </Text>
+                  </View>
+                );
+              })}
             </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Profile Visibility</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>{profileVis}</Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <Phone size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Phone Number Visibility</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>My Contacts</Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <Users size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Who Can Add Me to Groups</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>My Contacts</Text>
-            </View>
-          </TouchableOpacity>
-        </View>
-
-        <Text style={[styles.sectionHeaderLabel, { color: colors.textPrimary, marginTop: 20 }]}>{t.security}</Text>
-
-        <View style={[styles.subCardContainer, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-          <View style={styles.toggleRow}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <Key size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Two-Step Verification</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>Add extra security to your account</Text>
-            </View>
-            <Switch
-              value={twoStepVerif}
-              onValueChange={setTwoStepVerif}
-              trackColor={{ false: '#CBD5E1', true: colors.primary }}
-              thumbColor="#FFFFFF"
-            />
-          </View>
-
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <Lock size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Login Activity</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>Manage your active sessions</Text>
-            </View>
-          </TouchableOpacity>
-
-          <View style={[styles.divider, { backgroundColor: colors.border }]} />
-
-          <TouchableOpacity style={styles.settingItemRowInner}>
-            <View style={[styles.iconCircleBg, { backgroundColor: colors.primary + '1F' }]}>
-              <UserX size={20} color={colors.primary} />
-            </View>
-            <View style={{ flex: 1, marginLeft: 12 }}>
-              <Text style={[styles.toggleMainTitle, { color: colors.textPrimary }]}>Blocked Users</Text>
-              <Text style={[styles.toggleSubTitle, { color: colors.textSecondary }]}>Manage users you've blocked</Text>
-            </View>
-          </TouchableOpacity>
+          ))}
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -1335,6 +1407,14 @@ const styles = StyleSheet.create({
   toggleMainTitle: { fontSize: 15, fontWeight: '700' },
   toggleSubTitle: { fontSize: 12, marginTop: 2, fontWeight: '500' },
   sectionHeaderLabel: { fontSize: 16, fontWeight: '800', marginBottom: 10, marginLeft: 4 },
+
+  /* Privacy Policy */
+  policyCard: { borderWidth: 1, borderRadius: 16, padding: 16, marginTop: 4 },
+  policyUpdated: { fontSize: 12, fontWeight: '600' },
+  policyHeading: { fontSize: 15, fontWeight: '800' },
+  policyPara: { fontSize: 13.5, lineHeight: 21, marginTop: 6 },
+  policyBulletRow: { flexDirection: 'row', alignItems: 'flex-start', marginTop: 5, paddingRight: 4 },
+  policyBulletDot: { fontSize: 16, lineHeight: 21, width: 16 },
 
   /* Privacy Shield Banner */
   privacyShieldBanner: {

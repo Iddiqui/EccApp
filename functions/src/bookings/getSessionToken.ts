@@ -1,4 +1,4 @@
- import * as functions from 'firebase-functions';
+import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 import { AccessToken } from 'livekit-server-sdk';
 
@@ -41,7 +41,7 @@ export const getSessionToken = functions.https.onCall(
     if (booking.status !== 'confirmed') {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'This session is not confirmed (payment pending or cancelled).'
+        'This session is not confirmed (payment is pending or the booking was cancelled).'
       );
     }
 
@@ -50,7 +50,7 @@ export const getSessionToken = functions.https.onCall(
     const isTeacher =
       !!email && String(booking.teacherEmail || '').toLowerCase() === email;
     if (!isStudent && !isTeacher) {
-      throw new functions.https.HttpsError('permission-denied', 'This session is not yours.');
+      throw new functions.https.HttpsError('permission-denied', 'This session does not belong to you.');
     }
 
     // Time window (slots IST me bante hain)
@@ -60,7 +60,7 @@ export const getSessionToken = functions.https.onCall(
     if (now < startMs - JOIN_BEFORE_MIN * 60000) {
       throw new functions.https.HttpsError(
         'failed-precondition',
-        'The session has not started yet. You can join a little while before it begins.'
+        'The session has not started yet. You can join shortly before the start time.'
       );
     }
     if (now > endMs + JOIN_AFTER_END_MIN * 60000) {
