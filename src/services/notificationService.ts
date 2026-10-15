@@ -14,7 +14,21 @@ const CACHE_KEY = 'notifications_cache_v1';
 // ─────────────────────────────────────────────
 // TYPES
 // ─────────────────────────────────────────────
-export type NotificationType = 'streak' | 'room' | 'badge' | 'like';
+export type NotificationType =
+  | 'streak'
+  | 'room'
+  | 'badge'
+  | 'like'
+  | 'session'
+  | 'audio'
+  | 'payment'
+  | 'community'
+  | 'challenge'
+  | 'review';
+
+const NOTIFICATION_TYPES: NotificationType[] = [
+  'streak', 'room', 'badge', 'like', 'session', 'audio', 'payment', 'community', 'challenge', 'review',
+];
 
 export interface AppNotification {
   id: string;
@@ -26,6 +40,7 @@ export interface AppNotification {
   targetRoomId?: string;
   targetBadgeId?: string;
   targetScreen?: string;
+  targetTab?: string; // VoiceRoomScreen: public | official, Dashboard: Home | Practice | Community | Profile
 }
 
 // ─────────────────────────────────────────────
@@ -55,7 +70,7 @@ const normalize = (raw: any): AppNotification => {
 
   return {
     id: String(raw.id),
-    type: ['streak', 'room', 'badge', 'like'].includes(raw.type) ? raw.type : 'room',
+    type: NOTIFICATION_TYPES.includes(raw.type) ? raw.type : 'room',
     title: raw.title ?? 'New Update',
     desc: raw.body ?? raw.desc ?? '',
     createdAt,
@@ -63,6 +78,7 @@ const normalize = (raw: any): AppNotification => {
     targetRoomId: raw.targetRoomId,
     targetBadgeId: raw.targetBadgeId,
     targetScreen: raw.targetScreen,
+    targetTab: raw.targetTab,
   };
 };
 
@@ -210,6 +226,7 @@ const fromRemoteMessage = (msg: FirebaseMessagingTypes.RemoteMessage): AppNotifi
     targetRoomId: msg.data?.targetRoomId,
     targetBadgeId: msg.data?.targetBadgeId,
     targetScreen: msg.data?.targetScreen,
+    targetTab: msg.data?.targetTab,
   });
 
 // ─────────────────────────────────────────────
@@ -224,19 +241,42 @@ export async function displayLocalNotification(msg: FirebaseMessagingTypes.Remot
   });
 }
 
-// Screens a notification is allowed to open (all registered in AppNavigator, no params needed)
+// Screens a notification is allowed to open (all registered in AppNavigator)
 const ALLOWED_SCREENS = [
   'OneToOneSessionsScreen',
   'UpcomingSessionsListScreen',
   'SubscriptionScreen',
+  'AudioSessionsScreen',
+  'TeacherAudioSessionsScreen',
+  'TeacherDashboardScreen',
+  'ProgramFlowScreen',
+  'VoiceRoomScreen',
+  'Dashboard',
 ];
+const DASHBOARD_TABS = ['Home', 'Practice', 'Community', 'Profile'];
 
 export function navigateFromData(navigation: any, data?: Record<string, any>) {
   if (!data || !navigation) return;
 
+  const screen = data.targetScreen as string | undefined;
+  const tab = data.targetTab as string | undefined;
+
   // 1. Explicit target screen sent by the backend
-  if (data.targetScreen && ALLOWED_SCREENS.includes(data.targetScreen)) {
-    navigation.navigate(data.targetScreen);
+  if (screen && ALLOWED_SCREENS.includes(screen)) {
+    if (screen === 'Dashboard') {
+      // The bottom tabs live inside the "Dashboard" navigator, so they must be nested
+      if (tab && DASHBOARD_TABS.includes(tab)) navigation.navigate('Dashboard', { screen: tab });
+      else navigation.navigate('Dashboard');
+      return;
+    }
+    if (screen === 'VoiceRoomScreen') {
+      navigation.navigate('VoiceRoomScreen', {
+        tab: tab === 'official' ? 'official' : undefined,
+        roomId: data.targetRoomId || undefined,
+      });
+      return;
+    }
+    navigation.navigate(screen);
     return;
   }
 
@@ -249,6 +289,18 @@ export function navigateFromData(navigation: any, data?: Record<string, any>) {
         navigation.navigate('OneToOneSessionsScreen');
       }
       break;
+    case 'session':
+      navigation.navigate('UpcomingSessionsListScreen');
+      break;
+    case 'audio':
+      navigation.navigate('VoiceRoomScreen', { tab: 'official' });
+      break;
+    case 'payment':
+      navigation.navigate('ProgramFlowScreen');
+      break;
+    case 'review':
+      navigation.navigate('TeacherDashboardScreen');
+      break;
     case 'badge':
       // "Profile" is a tab inside the "Dashboard" tab navigator, so it must be nested
       navigation.navigate('Dashboard', {
@@ -260,6 +312,8 @@ export function navigateFromData(navigation: any, data?: Record<string, any>) {
       navigation.navigate('Dashboard', { screen: 'Practice' });
       break;
     case 'like':
+    case 'community':
+    case 'challenge':
       navigation.navigate('Dashboard', { screen: 'Community' });
       break;
   }

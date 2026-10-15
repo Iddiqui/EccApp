@@ -32,7 +32,7 @@ export const adminSetDemoConfig = functions.https.onCall(async (request: any) =>
 /** Subscription plan ki price (aur active/inactive). Sessions/duration yahan se nahi badalte. */
 export const adminUpdatePlanPrice = functions.https.onCall(async (request: any) => {
   await assertAdmin(request);
-  const { planId, price, isActive } = request.data || {};
+  const { planId, price, isActive, discountPercent } = request.data || {};
   if (typeof planId !== 'string' || !planId) throw bad('planId is required.');
   const update: Record<string, any> = { updatedAt: admin.firestore.FieldValue.serverTimestamp() };
   if (price !== undefined) {
@@ -42,6 +42,13 @@ export const adminUpdatePlanPrice = functions.https.onCall(async (request: any) 
     update.price = price;
   }
   if (isActive !== undefined) update.isActive = !!isActive;
+  if (discountPercent !== undefined) {
+    // Whole percent, 0-90. 0 removes the "Save N%" chip.
+    if (!Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 90) {
+      throw bad('Discount must be a whole number between 0 and 90.');
+    }
+    update.discountPercent = discountPercent;
+  }
 
   const ref = admin.firestore().collection('subscriptionPlans').doc(planId);
   const snap = await ref.get();
@@ -52,7 +59,13 @@ export const adminUpdatePlanPrice = functions.https.onCall(async (request: any) 
   if (finalActive && !(Number.isInteger(finalPrice) && finalPrice >= 1)) {
     throw bad('Set a price of at least ₹1 before activating this plan.');
   }
-  await ref.update(update); // purchased plans par asar nahi: unka snapshot payment me save hai
+  if (update.discountPercent !== undefined) {
+    // Keep the old text tagline in step, so a stale "Save 25%" never shows after a change
+    const oldTagline = String(snap.data()!.tagline || '');
+    if (update.discountPercent > 0) update.tagline = `Save ${update.discountPercent}%`;
+    else if (/\d+\s*%/.test(oldTagline)) update.tagline = '';
+  }
+  await ref.update(update); // plans already purchased are not affected: their snapshot is saved in the payment
   return { success: true };
 });
 

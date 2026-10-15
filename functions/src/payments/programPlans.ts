@@ -42,6 +42,7 @@ export interface ProgramPlan {
   isPopular: boolean;
   isActive: boolean;
   tagline: string;
+  discountPercent: number | null; // shown as the "Save N%" chip; 0 = admin removed it, null = not set
   features: string[];
   sortOrder: number;
 }
@@ -65,6 +66,7 @@ const toPlan = (id: string, d: any): ProgramPlan => ({
   isPopular: !!d.isPopular,
   isActive: d.isActive !== false,
   tagline: d.tagline ?? '',
+  discountPercent: typeof d.discountPercent === 'number' ? d.discountPercent : null,
   features: Array.isArray(d.features) ? d.features : [],
   sortOrder: d.sortOrder ?? 0,
 });

@@ -60,7 +60,8 @@ export const createOrder = functions.https.onCall(
       amountPaise = pricing.payablePaise;
     } else if (type === 'program') {
       const plan = await loadProgramPlan(planId);
-      const teacher = await loadApprovedTeacher(teacherId, plan.mode);
+      // Audio (group classes) has no personal teacher; only Video (1:1) needs one.
+      const teacher = plan.mode === 'video' ? await loadApprovedTeacher(teacherId, plan.mode) : null;
       await assertNoActiveProgram(uid, plan.mode);
       pricing = await computeProgramPricing(plan, couponCode);
       amountPaise = pricing.payablePaise;
@@ -71,10 +72,10 @@ export const createOrder = functions.https.onCall(
         durationLabel: plan.durationLabel,
         sessions: plan.sessions,
         sessionMins: plan.sessionMins,
-        teacherId: teacher.id,
-        teacherName: teacher.name,
-        teacherEmail: teacher.email,
-        teacherPhotoUrl: teacher.photoUrl,
+        teacherId: teacher?.id ?? null,
+        teacherName: teacher?.name ?? null,
+        teacherEmail: teacher?.email ?? null,
+        teacherPhotoUrl: teacher?.photoUrl ?? null,
       };
     } else {
       if (!bookingId || typeof bookingId !== 'string') {

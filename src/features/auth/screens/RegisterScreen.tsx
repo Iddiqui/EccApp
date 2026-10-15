@@ -82,6 +82,15 @@ export default function RegisterScreen({ navigation }: any) {
 
   // Registration Logic
   const handleRegister = async () => {
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email.trim())) {
+      Alert.alert('Invalid Email', 'Please enter a valid email address.');
+      return;
+    }
+    if (!/^[6-9]\d{9}$/.test(mobileNumber.trim())) {
+      Alert.alert('Invalid Mobile Number', 'Please enter a valid 10-digit Indian mobile number.');
+      return;
+    }
+
     if (
       !fullName.trim() ||
       !email.trim() ||
@@ -120,20 +129,25 @@ export default function RegisterScreen({ navigation }: any) {
       await firestore()
         .collection('users')
         .doc(user.uid)
-        .set({
-          uid: user.uid,
-          fullName: fullName.trim(),
-          email: email.trim().toLowerCase(),
-          phone: mobileNumber.trim(),
-          role: 'user',
-          streak: 0,
-          speakingScore: 0,
-          fluency: 0,
-          createdAt: firestore.FieldValue.serverTimestamp(),
-        });
+        .set(
+          {
+            uid: user.uid,
+            fullName: fullName.trim(),
+            email: email.trim().toLowerCase(),
+            phone: mobileNumber.trim(),
+            role: 'user',
+            streak: 0,
+            speakingScore: 0,
+            fluency: 0,
+            // The user still has to verify mobile + email on the Complete Profile screen
+            profileComplete: false,
+            createdAt: firestore.FieldValue.serverTimestamp(),
+          },
+          { merge: true },
+        );
 
       setLoading(false);
-      navigation.replace('Dashboard');
+      // No navigation needed: AppNavigator opens Complete Profile for this new user.
     } catch (error: any) {
       setLoading(false);
 
@@ -218,9 +232,10 @@ export default function RegisterScreen({ navigation }: any) {
                 placeholder="Mobile Number"
                 placeholderTextColor="#94A3B8"
                 keyboardType="phone-pad"
+                maxLength={10}
                 style={styles.input}
                 value={mobileNumber}
-                onChangeText={setMobileNumber}
+                onChangeText={(t) => setMobileNumber(t.replace(/\D/g, ''))}
                 editable={!loading}
               />
             </View>

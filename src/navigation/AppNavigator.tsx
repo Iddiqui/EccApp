@@ -17,6 +17,9 @@ import LoginScreen from '../features/auth/screens/LoginScreen';
 import RegisterScreen from '../features/auth/screens/RegisterScreen';
 import ForgotPasswordScreen from '../features/auth/screens/ForgotPasswordScreen';
 import MobileLoginScreen from '../features/auth/screens/MobileLoginScreen';
+import CompleteProfileScreen from '../features/auth/screens/CompleteProfileScreen';
+import { useProfileGate } from '../features/auth/useProfileGate';
+import { isAuthRoutingPaused } from '../features/auth/authFlow';
 import TabNavigator from './TabNavigator';
 import SettingsScreen from '../features/home/screens/SettingsScreen';
 import NotificationScreen from '../features/home/screens/NotificationScreen';
@@ -56,12 +59,21 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
   // Auth state listener
   useEffect(() => {
     const subscriber = auth().onAuthStateChanged((userState) => {
+      // Forgot-password-by-mobile signs in only for a moment; do not open the app for it
+      if (isAuthRoutingPaused()) {
+        if (initializing) setInitializing(false);
+        return;
+      }
       setUser(userState);
       if (initializing) setInitializing(false);
     });
 
     return subscriber;
   }, [initializing]);
+
+  // New users must finish "Complete Your Profile" before they can use the app.
+  // This also creates users/{uid} on the first sign-in.
+  const gate = useProfileGate(user);
 
   // Initialize push notifications once the user is logged in.
   // This hook must stay above the early return below to keep hook order stable.
@@ -86,7 +98,7 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
   }, [user?.uid]);
 
   // Loading screen while the session status is being checked
-  if (initializing) {
+  if (initializing || (user && gate === 'loading')) {
     return (
       <View style={styles.loadingContainer}>
         <ActivityIndicator size="large" color="#2563EB" />
@@ -100,6 +112,14 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
   //
   // freezeOnBlur is disabled to prevent a screen from staying blank/white after
   // a quick push and pop (for example when joining a Class Room).
+  if (user && gate === 'needsProfile') {
+    return (
+      <Stack.Navigator screenOptions={{ headerShown: false }}>
+        <Stack.Screen name="CompleteProfile" component={CompleteProfileScreen} />
+      </Stack.Navigator>
+    );
+  }
+
   return (
     <CallSessionProvider>
       <Stack.Navigator screenOptions={{ headerShown: false, freezeOnBlur: false }}>

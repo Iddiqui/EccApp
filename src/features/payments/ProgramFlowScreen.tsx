@@ -34,7 +34,8 @@ import type {
 // ONE route ("ProgramFlowScreen") that runs the whole purchase flow with
 // internal steps, so only one screen needs to be registered in the navigator:
 //
-//   mode -> intro -> teacher -> duration -> plan -> review -> payment -> success
+//   video: mode -> intro -> teacher -> duration -> plan -> review -> payment -> success
+//   audio: mode -> intro -> duration -> plan -> review -> payment -> success (no teacher)
 //
 // Optional route param: { mode: 'audio' | 'video' } to skip the first step.
 // All prices, durations, sessions and features come from the server
@@ -52,6 +53,15 @@ const DURATIONS: Record<ProgramMode, number[]> = {
 const IMG_PLAN = require('../../assets/plan.png');
 const IMG_AUDIO = require('../../assets/audio.png');
 const IMG_VIDEO = require('../../assets/video.png');
+const IMG_PLAN_SELECT = require('../../assets/planSelect.png'); // avatar at the bottom of the Video duration screen
+
+// Discount % for a plan: explicit `discountPercent` field, else the number in a tagline like "Save 25%"
+const discountOf = (p: any): number => {
+  // An explicit admin value wins (0 = chip removed); otherwise fall back to the tagline text
+  if (typeof p?.discountPercent === 'number') return Math.max(0, Math.round(p.discountPercent));
+  const m = /(\d{1,2})\s*%/.exec(String(p?.tagline || ''));
+  return m ? Number(m[1]) : 0;
+};
 
 const INTRO: Record<
   ProgramMode,
@@ -150,7 +160,8 @@ export default function ProgramFlowScreen() {
         setStep('intro');
         break;
       case 'duration':
-        setStep('teacher');
+        // Audio (group classes) has no teacher step
+        setStep(mode === 'video' ? 'teacher' : 'intro');
         break;
       case 'plan':
         setStep('duration');
@@ -159,7 +170,7 @@ export default function ProgramFlowScreen() {
         setStep('plan');
         break;
     }
-  }, [step, presetMode, navigation]);
+  }, [step, presetMode, navigation, mode]);
 
   useEffect(() => {
     const sub = BackHandler.addEventListener('hardwareBackPress', () => {
@@ -195,7 +206,7 @@ export default function ProgramFlowScreen() {
 
   // ── Teachers for this mode (only active ones; `modes` filter if the teacher has it) ──
   useEffect(() => {
-    if (!mode) return;
+    if (mode !== 'video') return; // Audio group classes: no teacher selection
     let alive = true;
     setLoadingTeachers(true);
     getTeachers()
@@ -217,11 +228,11 @@ export default function ProgramFlowScreen() {
   // ── Review: server-side price preview (also re-checks teacher + active plan) ──
   const loadPreview = useCallback(
     async (coupon?: string) => {
-      if (!plan || !teacher) return;
+      if (!plan || (mode === 'video' && !teacher)) return;
       setLoadingPreview(true);
       setCouponError(null);
       try {
-        const res = await previewProgram(plan.id, teacher.id, coupon);
+        const res = await previewProgram(plan.id, teacher?.id, coupon);
         setPreview(res);
         setAppliedCoupon(res.pricing.couponCode);
         return true;
@@ -236,7 +247,7 @@ export default function ProgramFlowScreen() {
         setLoadingPreview(false);
       }
     },
-    [plan, teacher]
+    [plan, teacher, mode]
   );
 
   useEffect(() => {
@@ -277,7 +288,7 @@ export default function ProgramFlowScreen() {
     const res = await payWithRazorpay({
       type: 'program',
       planId: plan!.id,
-      teacherId: teacher!.id,
+      teacherId: mode === 'video' ? teacher?.id : undefined,
       couponCode: appliedCoupon || undefined,
       method,
     });
@@ -490,7 +501,7 @@ export default function ProgramFlowScreen() {
                 <FeatureList items={info.features} />
               </View>
             </ScrollView>
-            <PrimaryButton label="Continue" onPress={() => setStep('teacher')} />
+            <PrimaryButton label="Continue" onPress={() => setStep(mode === 'video' ? 'teacher' : 'duration')} />
           </>
         )}
       </>
@@ -564,6 +575,12 @@ export default function ProgramFlowScreen() {
               : 'Select the duration that suits your goal.'
           }
         />
+        <View style={{ flex: 1 }}>
+        {mode === 'video' && (
+          <View style={styles.planSelectArt} pointerEvents="none">
+            <Image source={IMG_PLAN_SELECT} style={{ width: '100%', height: '100%' }} resizeMode="contain" />
+          </View>
+        )}
         <ScrollView contentContainerStyle={styles.scroll}>
           {DURATIONS[mode].map((months) => {
             const list = plans.filter((p) => p.durationMonths === months);
@@ -594,8 +611,14 @@ export default function ProgramFlowScreen() {
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.durationTitle, { color: colors.textPrimary }]}>{monthsLabel(months)}</Text>
-                  {showPrice && !!first?.tagline && (
-                    <Text style={[styles.teacherSub, { color: colors.textSecondary }]}>{first.tagline}</Text>
+                  {showPrice && !!first && discountOf(first) > 0 ? (
+                    <View style={styles.saveChip}>
+                      <Text style={styles.saveChipText}>Save {discountOf(first)}%</Text>
+                    </View>
+                  ) : (
+                    showPrice && !!first?.tagline && (
+                      <Text style={[styles.teacherSub, { color: colors.textSecondary }]}>{first.tagline}</Text>
+                    )
                   )}
                   {!available && (
                     <Text style={[styles.teacherSub, { color: colors.textSecondary }]}>Coming soon</Text>
@@ -608,6 +631,7 @@ export default function ProgramFlowScreen() {
             );
           })}
         </ScrollView>
+        </View>
         <PrimaryButton label="Continue" onPress={() => setStep('plan')} disabled={!duration || !plan} />
       </>
     );
@@ -639,7 +663,7 @@ export default function ProgramFlowScreen() {
 
             <View style={[styles.card, { backgroundColor: colors.bgCard, borderColor: colors.border, marginTop: 12 }]}>
               <Row label="Plan validity" value={monthsLabel(plan.durationMonths)} />
-              <Row label="Teacher" value={teacher?.name || '-'} />
+              {mode === 'video' && <Row label="Teacher" value={teacher?.name || '-'} />}
             </View>
           </ScrollView>
           <PrimaryButton label="Continue" onPress={() => setStep('review')} />
@@ -724,7 +748,7 @@ export default function ProgramFlowScreen() {
   };
 
   const renderReview = () => {
-    if (!mode || !plan || !teacher) return null;
+    if (!mode || !plan || (mode === 'video' && !teacher)) return null;
     const pricing = preview?.pricing;
     return (
       <>
@@ -745,7 +769,7 @@ export default function ProgramFlowScreen() {
 
           <View style={[styles.card, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
             <Row label="Mode" value={mode === 'audio' ? 'Audio Mode (Group Classes)' : '1:1 Video Call'} />
-            <Row label="Teacher" value={teacher.name} />
+            {mode === 'video' && <Row label="Teacher" value={teacher?.name || '-'} />}
             <Row label="Subscription duration" value={monthsLabel(plan.durationMonths)} />
             {mode === 'video' && <Row label="Session duration" value={`${plan.sessionMins} Minutes`} />}
             {mode === 'video' && <Row label="Total sessions" value={`${plan.sessions} Sessions`} />}
@@ -819,7 +843,9 @@ export default function ProgramFlowScreen() {
   const program = paid?.program;
   const successRows = [
     { label: 'Plan', value: program?.planName || plan?.durationLabel || '-' },
-    { label: 'Teacher', value: program?.teacherName || teacher?.name || '-' },
+    ...(mode === 'video' || program?.teacherName
+      ? [{ label: 'Teacher', value: program?.teacherName || teacher?.name || '-' }]
+      : []),
     ...(program?.sessions
       ? [
           { label: 'Sessions', value: `${program.sessions} (${program.sessionMins} min each)` },
@@ -845,7 +871,7 @@ export default function ProgramFlowScreen() {
       {step === 'plan' && renderPlan()}
       {step === 'review' && renderReview()}
 
-      {!!plan && !!teacher && !!preview && (
+      {!!plan && (mode !== 'video' || !!teacher) && !!preview && (
         <PaymentFlowModal
           visible={payOpen}
           amountRupees={preview.pricing.total}
@@ -876,6 +902,10 @@ const styles = StyleSheet.create({
   footer: { padding: 16, borderTopWidth: StyleSheet.hairlineWidth },
   primaryBtn: { borderRadius: 14, paddingVertical: 15, alignItems: 'center', justifyContent: 'center' },
   primaryBtnText: { color: '#FFF', fontSize: 16, fontWeight: '800' },
+
+  planSelectArt: { position: 'absolute', left: 0, right: 0, bottom: 0, width: '100%', height: '46%' },
+  saveChip: { alignSelf: 'flex-start', marginTop: 4, backgroundColor: '#FEF3C7', borderRadius: 8, paddingHorizontal: 9, paddingVertical: 3 },
+  saveChipText: { color: '#B45309', fontSize: 11.5, fontWeight: '800' },
 
   bgArt: { position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, width: '100%', height: '100%', opacity: 0.07 },
 

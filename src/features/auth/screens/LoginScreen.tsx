@@ -17,7 +17,6 @@ import {
   Easing 
 } from 'react-native';
 import auth from '@react-native-firebase/auth';
-import firestore from '@react-native-firebase/firestore';
 import { GoogleSignin } from '@react-native-google-signin/google-signin'; 
 import { useTheme } from '../../../hooks/useTheme'; 
 
@@ -105,28 +104,11 @@ export default function LoginScreen({ navigation }: any) {
     setLoading(true);
     try {
       const userCredential = await auth().signInWithEmailAndPassword(email.trim(), password);
-      const user = userCredential.user;
-
-      if (user) {
-        const userDocRef = firestore().collection('users').doc(user.uid);
-        const userSnapshot = await userDocRef.get();
-
-        if (!userSnapshot.exists) {
-          await userDocRef.set({
-            uid: user.uid,
-            fullName: user.displayName || user.email?.split('@')[0] || 'Learner',
-            email: user.email,
-            role: 'user',
-            streak: 0,
-            speakingScore: 0,
-            fluency: 0,
-            createdAt: firestore.FieldValue.serverTimestamp()
-          });
-        }
-      }
+      // users/{uid} is created by AppNavigator (useProfileGate); new users see Complete Profile.
+      await userCredential.user?.getIdToken();
 
       setLoading(false);
-      navigation.replace('Dashboard');
+      // No navigation needed: AppNavigator switches to the app when the user signs in.
     } catch (error: any) {
       setLoading(false);
       Alert.alert("Authentication Failed", "Invalid email or password.");
@@ -169,29 +151,11 @@ export default function LoginScreen({ navigation }: any) {
       const googleCredential = auth.GoogleAuthProvider.credential(idToken, finalAccessToken);
       
       const userCredential = await auth().signInWithCredential(googleCredential);
-      const user = userCredential.user;
-
-      if (user) {
-        const userDocRef = firestore().collection('users').doc(user.uid);
-        const userSnapshot = await userDocRef.get();
-
-        if (!userSnapshot.exists) {
-          await userDocRef.set({
-            uid: user.uid,
-            fullName: user.displayName || 'Learner',
-            email: user.email,
-            photoURL: user.photoURL || null,
-            role: 'user',
-            streak: 0,
-            speakingScore: 0,
-            fluency: 0,
-            createdAt: firestore.FieldValue.serverTimestamp()
-          });
-        }
-      }
+      // users/{uid} is created by AppNavigator (useProfileGate); new users see Complete Profile.
+      void userCredential;
       
       setLoading(false);
-      navigation.replace('Dashboard');
+      // No navigation needed: AppNavigator switches to the app when the user signs in.
     } catch (error: any) {
       setLoading(false);
       Alert.alert("Google Auth Error", error?.message || "Google sign in failed");

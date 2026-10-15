@@ -220,6 +220,97 @@ const MONTH_NAMES = [
 ];
 
 // Shared look of the Home "trial" and "plan" cards
+// ── Animated press / "hover" feedback for the home cards ──
+function useCardPress(toValue = 0.96) {
+  const scale = useRef(new Animated.Value(1)).current;
+  const to = (v: number) =>
+    Animated.spring(scale, { toValue: v, friction: 5, tension: 160, useNativeDriver: true }).start();
+  return { scale, pressIn: () => to(toValue), pressOut: () => to(1) };
+}
+
+// Card that fades/slides in, and springs smaller while pressed
+function AnimatedCard({ children, onPress, style, delay = 0 }: {
+  children: React.ReactNode; onPress?: () => void; style?: any; delay?: number;
+}) {
+  const { scale, pressIn, pressOut } = useCardPress(0.96);
+  const enter = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    Animated.timing(enter, { toValue: 1, duration: 450, delay, easing: Easing.out(Easing.cubic), useNativeDriver: true }).start();
+  }, [enter, delay]);
+  return (
+    <Animated.View
+      style={{
+        opacity: enter,
+        transform: [{ translateY: enter.interpolate({ inputRange: [0, 1], outputRange: [18, 0] }) }, { scale }],
+      }}
+    >
+      <TouchableOpacity activeOpacity={0.9} onPress={onPress} onPressIn={pressIn} onPressOut={pressOut} style={style}>
+        {children}
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
+// Wrapper that shrinks slightly while a finger is on it (for cards with inner buttons)
+function HeroTouchScale({ children }: { children: React.ReactNode }) {
+  const { scale, pressIn, pressOut } = useCardPress(0.98);
+  return (
+    <Animated.View
+      style={{ transform: [{ scale }] }}
+      onTouchStart={pressIn}
+      onTouchEnd={pressOut}
+      onTouchCancel={pressOut}
+    >
+      {children}
+    </Animated.View>
+  );
+}
+
+// Emoji that gently floats up and down
+function FloatingEmoji({ emoji, size = 22, style }: { emoji: string; size?: number; style?: any }) {
+  const y = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(y, { toValue: -5, duration: 1100, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+        Animated.timing(y, { toValue: 0, duration: 1100, easing: Easing.inOut(Easing.sin), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [y]);
+  return <Animated.Text style={[{ fontSize: size, transform: [{ translateY: y }] }, style]}>{emoji}</Animated.Text>;
+}
+
+const HERO_W = SCREEN_WIDTH - 40;
+const HERO_H = 175;
+
+// One promo slide of the home hero carousel (trial / plans)
+function HeroPromoSlide({ bg, badge, title, desc, cta, emoji, onPress }: {
+  bg: string; badge: string; title: string; desc: string; cta: string; emoji: string; onPress: () => void;
+}) {
+  const { scale, pressIn, pressOut } = useCardPress(0.97);
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+    <TouchableOpacity activeOpacity={0.92} onPress={onPress} onPressIn={pressIn} onPressOut={pressOut} style={[styles.bannerCardWrapper, { backgroundColor: bg, height: HERO_H }]}>
+      <FloatingEmoji emoji={emoji} size={64} style={{ position: 'absolute', right: 14, top: 14, opacity: 0.9 }} />
+      <View style={styles.liveHeroCardContent}>
+        <View style={styles.liveBadge}>
+          <Text style={styles.liveBadgeText}>{badge}</Text>
+        </View>
+        <Text style={[styles.heroCardTitle, { maxWidth: '75%' }]} numberOfLines={1}>{title}</Text>
+        <Text style={[styles.heroCardDesc, { maxWidth: '78%' }]} numberOfLines={2}>{desc}</Text>
+        <View style={[styles.heroFooterRow, { justifyContent: 'flex-end' }]}>
+          <View style={styles.heroJoinButton}>
+            <Text style={[styles.heroJoinBtnText, { color: bg }]}>{cta}</Text>
+          </View>
+        </View>
+      </View>
+    </TouchableOpacity>
+    </Animated.View>
+  );
+}
+
 const homeActionCard = {
   width: '100%' as const,
   marginRight: 0,
@@ -246,10 +337,10 @@ export default function HomeScreen() {
   const [sessionsLoading, setSessionsLoading] = useState(true);
   const [joiningSessionId, setJoiningSessionId] = useState<string | null>(null);
 
-  // 🆕 OPEN/AVAILABLE SLOTS — sab teachers ke un-booked slots, taaki koi
-  // bhi user seedha yahin se (bina pehle teacher choose kiye) tap-to-book
-  // kar sake. Sirf STUDENTS ko chahiye (teacher/admin ka kaam "Manage
-  // Session Slots" se slots BANANA hai, khud book karna nahi).
+  // 🆕 OPEN/AVAILABLE SLOTS — un-booked slots of all teachers, so any user
+  // can tap-to-book straight from here (without choosing a teacher first).
+  // Students only (teachers/admins create slots via "Manage Session Slots",
+  // they do not book them).
   const [availableSlots, setAvailableSlots] = useState<OpenSlot[]>([]);
   const [bookingSlotId, setBookingSlotId] = useState<string | null>(null);
 
@@ -381,10 +472,31 @@ export default function HomeScreen() {
   useEffect(() => {
     if (isTeacher) return;
     let alive = true;
+    // Fast path: read the demo config and this student's demo bookings straight
+    // from Firestore (a few hundred ms). The callable `getDemoConfig` can take
+    // 15-20 s on a cold start, so it is only a fallback if the direct read is blocked.
+    const loadDemoFast = async (): Promise<DemoConfig> => {
+      const uid = auth().currentUser?.uid;
+      if (!uid) throw new Error('not-signed-in');
+      const [cfgSnap, bookSnap] = await Promise.all([
+        firestore().doc('appConfig/demoClass').get(),
+        firestore().collection('bookings').where('studentId', '==', uid).where('kind', '==', 'demo').get(),
+      ]);
+      const exists = typeof (cfgSnap as any).exists === 'function' ? (cfgSnap as any).exists() : (cfgSnap as any).exists;
+      const d: any = exists ? cfgSnap.data() : null;
+      const isActive = !!d && d.isActive === true && Number.isInteger(d.price) && d.price >= 0;
+      const alreadyUsed = bookSnap.docs.some((b: any) => ['confirmed', 'completed'].includes(b.data().status));
+      return { isActive, price: isActive ? d.price : 0, alreadyUsed };
+    };
+
     const loadDemo = () => {
-      getDemoConfig()
+      loadDemoFast()
         .then((cfg) => alive && setDemoCfg(cfg))
-        .catch(() => {});
+        .catch(() => {
+          getDemoConfig()
+            .then((cfg) => alive && setDemoCfg(cfg))
+            .catch(() => {});
+        });
       getMySubscriptions()
         .then((subs) => {
           if (!alive) return;
@@ -400,6 +512,31 @@ export default function HomeScreen() {
       unsub();
     };
   }, [isTeacher, navigation]);
+
+  // ── Hero carousel: public room / trial / plans, auto-slides every 4s ──
+  const heroScrollRef = useRef<ScrollView>(null);
+  const heroIdxRef = useRef(0);
+  const heroPausedRef = useRef(false);
+  const [heroIndex, setHeroIndex] = useState(0);
+  const showDemoSlide = !isTeacher && !!demoCfg?.isActive && !demoCfg.alreadyUsed;
+  const showAudioPlanSlide = !isTeacher && !audioSub?.active;
+  const heroSlideCount = 1 + (showDemoSlide ? 1 : 0) + (!isTeacher ? 1 : 0) + (showAudioPlanSlide ? 1 : 0);
+  useEffect(() => {
+    if (heroIdxRef.current >= heroSlideCount) {
+      heroIdxRef.current = 0;
+      setHeroIndex(0);
+      heroScrollRef.current?.scrollTo({ x: 0, animated: false });
+    }
+    if (heroSlideCount <= 1) return;
+    const timer = setInterval(() => {
+      if (heroPausedRef.current) return;
+      const next = (heroIdxRef.current + 1) % heroSlideCount;
+      heroIdxRef.current = next;
+      setHeroIndex(next);
+      heroScrollRef.current?.scrollTo({ x: next * HERO_W, animated: true });
+    }, 4000);
+    return () => clearInterval(timer);
+  }, [heroSlideCount]);
 
   useEffect(() => {
     let isMounted = true;
@@ -428,13 +565,12 @@ export default function HomeScreen() {
     };
 
     loadSessions();
-    // 🔑 THE ACTUAL FIX: pehle ye effect sirf [] deps ke saath ek hi baar
-    // chalta tha (mount par). Matlab agar student OneToOneSessionsScreen
-    // se ek session book karke wapas Home pe aata (navigation.goBack()),
-    // HomeScreen already-mounted hone ki wajah se dobara loadSessions() call
-    // hi nahi hota — naya booking "Upcoming Sessions" me tab tak nahi dikhta
-    // jab tak app poora reload na ho. Ab 'focus' event par bhi refetch hota
-    // hai, taaki Home screen par WAPAS AANE par hamesha latest data mile.
+    // 🔑 THE ACTUAL FIX: this effect used to run only once on mount. If a
+    // student booked a session in OneToOneSessionsScreen and came back to
+    // Home (navigation.goBack()), HomeScreen was already mounted, so
+    // loadSessions() did not run again and the new booking did not show up
+    // in "Upcoming Sessions" until a full app reload. We now also refetch on
+    // the 'focus' event, so Home always shows the latest data on return.
     const unsubscribeFocus = navigation.addListener('focus', loadSessions);
 
     return () => {
@@ -443,22 +579,22 @@ export default function HomeScreen() {
     };
   }, [navigation]);
 
-  // Session start time se 10 min pehle se "Join" allow karte hain — usse
-  // pehle card tap karne par sirf details dikhते hain (join button disabled).
+  // "Join" is allowed from 10 minutes before the session start; before that,
+  // tapping the card only shows the details (join button disabled).
   const isSessionJoinable = (session: Booking) => {
     const sessionDateTime = new Date(`${session.date}T${session.startTime}:00`);
     const now = new Date();
     const minutesUntilStart = (sessionDateTime.getTime() - now.getTime()) / 60000;
-    return minutesUntilStart <= 10 && minutesUntilStart > -60; // 10 min pehle se 1hr baad tak
+    return minutesUntilStart <= 10 && minutesUntilStart > -60; // from 10 min before start until 1 hour after
   };
 
   const handleJoinSession = async (session: Booking) => {
-    if (joiningSessionId) return; // ek time pe ek hi join process ho
+    if (joiningSessionId) return; // only one join process at a time
 
     if (!isSessionJoinable(session)) {
       Alert.alert(
         'Not yet',
-        `Ye session ${session.date} ${session.startTime} baje shuru hoga. Session shuru hone se 10 min pehle Join button active ho jaayega.`
+        `This session starts on ${session.date} at ${session.startTime}. The Join button becomes active 10 minutes before the start time.`
       );
       return;
     }
@@ -476,28 +612,26 @@ export default function HomeScreen() {
       });
     } catch (err: any) {
       console.error('Join session error:', err);
-      Alert.alert('Error', 'Session join nahi ho payi. Please try again.');
+      Alert.alert('Error', 'Could not join the session. Please try again.');
     } finally {
       setJoiningSessionId(null);
     }
   };
 
-  // 🆕 EK TAP SE BOOK+PAY — Home card / "See all" par kisi bhi open slot
-  // ko tap karne par ye chalta hai. Pehle ek chhota confirm-Alert dikhate
-  // hain (price + time saaf batane ke liye), fir seedha
-  // `bookAndPaySession()` (booking reserve + Razorpay checkout) chalta
-  // hai. Success par dono lists (available slots aur "meri sessions")
-  // refresh kar dete hain — jo slot abhi book hua wo turant available
-  // list se gayab ho jaayega, aur agar isi user ne book kiya hai to wo
-  // uski "upcoming/joinable" list me aa jaayega.
+  // 🆕 ONE-TAP BOOK + PAY — runs when an open slot is tapped on the Home
+  // card or in "See all". We first show a small confirm alert (price and
+  // time), then call `bookAndPaySession()` (reserve booking + Razorpay
+  // checkout). On success we refresh both lists (available slots and "my
+  // sessions"): the slot that was just booked disappears from the available
+  // list and, for the booking user, appears in their upcoming/joinable list.
   const handleBookSlot = (slot: OpenSlot) => {
-    if (bookingSlotId) return; // ek time pe ek hi booking process ho
+    if (bookingSlotId) return; // only one booking process at a time
 
     const dateLabel = slot.date === new Date().toISOString().split('T')[0] ? 'Today' : slot.date;
 
     Alert.alert(
       'Confirm Booking',
-      `${slot.teacherName} ke saath ${dateLabel}, ${slot.startTime} - ${slot.endTime} ka session book karein?\n\nPrice: ₹${slot.teacherPricePerSession}`,
+      `Book a session with ${slot.teacherName} on ${dateLabel}, ${slot.startTime} - ${slot.endTime}?\n\nPrice: ₹${slot.teacherPricePerSession}`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -512,11 +646,11 @@ export default function HomeScreen() {
               if (result.success) {
                 Alert.alert(
                   'Booking Confirmed 🎉',
-                  'Aapka session book ho gaya hai — decided time par yahin se Join kar sakte ho.'
+                  'Your session is booked. You can join from here at the scheduled time.'
                 );
-                // Refresh both lists — booked slot ab available list me
-                // nahi dikhna chahiye, aur naya booking "meri sessions"
-                // me aana chahiye.
+                // Refresh both lists — the booked slot must no longer show in
+                // the available list, and the new booking must appear in
+                // "my sessions".
                 const [sessions, slots] = await Promise.all([
                   getMyUpcomingSessionsAsStudent(),
                   getAllAvailableSlots(),
@@ -526,7 +660,7 @@ export default function HomeScreen() {
               } else {
                 Alert.alert(
                   'Payment Incomplete',
-                  'Payment complete nahi hui — slot free kar diya gaya hai. Dobara try karo.'
+                  'The payment was not completed and the slot has been released. Please try again.'
                 );
                 getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
               }
@@ -534,8 +668,8 @@ export default function HomeScreen() {
               console.error('handleBookSlot error:', err);
               const message =
                 err?.message?.includes('already-exists') || err?.code === 'already-exists'
-                  ? 'Ye slot abhi kisi aur ne book kar liya. Koi aur slot try karo.'
-                  : err?.message || 'Booking nahi ho payi. Dobara try karo.';
+                  ? 'This slot was just booked by someone else. Please try another slot.'
+                  : err?.message || 'Could not complete the booking. Please try again.';
               Alert.alert('Error', message);
               getAllAvailableSlots().then(setAvailableSlots).catch(() => {});
             } finally {
@@ -573,6 +707,145 @@ export default function HomeScreen() {
   const [greetingKey, setGreetingKey] = useState<'goodMorning' | 'goodAfternoon' | 'goodEvening'>('goodMorning');
   
   const [latestCommunityPost, setLatestCommunityPost] = useState<any>(null);
+
+  // 🕒 Recent activity: the user's own actions + what was newly added in the app
+  type ActivityItem = { id: string; icon: string; title: string; ts: number };
+  const [recentActivity, setRecentActivity] = useState<ActivityItem[]>([]);
+  const [activityLoading, setActivityLoading] = useState(true);
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+    let alive = true;
+    const toMs = (t: any): number =>
+      t?.toMillis ? t.toMillis() : t?.seconds ? t.seconds * 1000 : typeof t === 'number' ? t : 0;
+    const safe = async (fn: () => Promise<ActivityItem[]>) => {
+      try {
+        return await fn();
+      } catch (e) {
+        console.log('recent activity source error:', e);
+        return [] as ActivityItem[];
+      }
+    };
+    const db = firestore();
+
+    const load = async () => {
+      const results = await Promise.all([
+        // My bookings (demo and 1-on-1 sessions)
+        safe(async () => {
+          const snap = await db.collection('bookings').where('studentId', '==', uid).get();
+          return snap.docs
+            .map((d: any) => ({ id: d.id, ...d.data() }))
+            .filter((b: any) => ['confirmed', 'completed', 'cancelled'].includes(b.status))
+            .map((b: any) => ({
+              id: `booking_${b.id}`,
+              icon: b.status === 'cancelled' ? '❌' : b.kind === 'demo' ? '🎁' : '📅',
+              title:
+                b.status === 'cancelled'
+                  ? `Cancelled your session with ${b.teacherName || 'a teacher'}`
+                  : b.kind === 'demo'
+                  ? `Booked a demo class with ${b.teacherName || 'a teacher'}`
+                  : `Booked a session with ${b.teacherName || 'a teacher'}`,
+              ts: toMs(b.createdAt),
+            }));
+        }),
+        // My plans
+        safe(async () => {
+          const snap = await db.collection('subscriptions').where('userId', '==', uid).get();
+          return snap.docs.map((d: any) => {
+            const x = d.data();
+            return {
+              id: `sub_${d.id}`,
+              icon: '👑',
+              title: `Subscribed to ${x.planName || (x.mode === 'audio' ? 'Audio plan' : 'Video plan')}`,
+              ts: toMs(x.createdAt) || toMs(x.startAt),
+            };
+          });
+        }),
+        // My challenge responses
+        safe(async () => {
+          const snap = await db.collection('challenge_recordings').where('uid', '==', uid).get();
+          return snap.docs.map((d: any) => {
+            const x = d.data();
+            return {
+              id: `rec_${d.id}`,
+              icon: '🏆',
+              title: `Submitted a challenge response${x.challengeTitle ? `: ${x.challengeTitle}` : ''}`,
+              ts: toMs(x.createdAt),
+            };
+          });
+        }),
+        // Community posts (mine and others')
+        safe(async () => {
+          const snap = await db.collection('posts').orderBy('createdAt', 'desc').limit(10).get();
+          return snap.docs.map((d: any) => {
+            const x = d.data();
+            const mine = x.uid === uid;
+            return {
+              id: `post_${d.id}`,
+              icon: '💬',
+              title: mine ? 'You posted in Community' : `${x.userName || x.authorName || 'Someone'} posted in Community`,
+              ts: toMs(x.createdAt),
+            };
+          });
+        }),
+        // Study / class rooms
+        safe(async () => {
+          const snap = await db.collection('voice_rooms').orderBy('createdAt', 'desc').limit(5).get();
+          return snap.docs.map((d: any) => {
+            const x = d.data();
+            const mine = x.createdBy === uid;
+            const kind = x.type === 'official' ? 'class room' : 'study room';
+            return {
+              id: `room_${d.id}`,
+              icon: '🎙️',
+              title: mine ? `You started a ${kind}: ${x.title || ''}` : `New ${kind}: ${x.title || ''}`,
+              ts: toMs(x.createdAt),
+            };
+          });
+        }),
+        // New teachers
+        safe(async () => {
+          const snap = await db.collection('session_teachers').orderBy('createdAt', 'desc').limit(3).get();
+          return snap.docs
+            .filter((d: any) => d.data().isActive !== false)
+            .map((d: any) => ({
+              id: `teacher_${d.id}`,
+              icon: '🧑‍🏫',
+              title: `New teacher joined: ${d.data().name || 'Teacher'}`,
+              ts: toMs(d.data().createdAt),
+            }));
+        }),
+        // New audio group classes
+        safe(async () => {
+          const snap = await db.collection('audioSessions').orderBy('createdAt', 'desc').limit(3).get();
+          return snap.docs
+            .filter((d: any) => d.data().status !== 'cancelled')
+            .map((d: any) => ({
+              id: `audio_${d.id}`,
+              icon: '🎧',
+              title: `New audio class: ${d.data().title || 'Group class'}`,
+              ts: toMs(d.data().createdAt),
+            }));
+        }),
+      ]);
+      if (!alive) return;
+      const merged = results
+        .reduce((all: ActivityItem[], r) => all.concat(r), [])
+        .filter((i) => i.ts > 0)
+        .sort((a, b) => b.ts - a.ts)
+        .slice(0, 6);
+      setRecentActivity(merged);
+      setActivityLoading(false);
+    };
+
+    load();
+    // Refresh whenever the user comes back to Home
+    const unsubFocus = navigation.addListener('focus', load);
+    return () => {
+      alive = false;
+      unsubFocus();
+    };
+  }, [currentUser?.uid, navigation]);
   
   // 📅 Streak Calendar States
   const [isCalendarVisible, setIsCalendarVisible] = useState(false);
@@ -594,6 +867,8 @@ export default function HomeScreen() {
 
   // Firestore Saved Recordings (Privacy Layer)
   const [savedUserRecording, setSavedUserRecording] = useState<any>(null);
+  // All of this student's recordings from the last 30 days (older ones are auto-deleted on the server)
+  const [myRecordings, setMyRecordings] = useState<any[]>([]);
   const [allAdminRecordings, setAllAdminRecordings] = useState<any[]>([]);
   const [activePlayingUrl, setActivePlayingUrl] = useState<string | null>(null);
 
@@ -767,8 +1042,10 @@ export default function HomeScreen() {
               return timeB - timeA;
             });
             setSavedUserRecording(docs[0]);
+            setMyRecordings(docs);
           } else {
             setSavedUserRecording(null);
+            setMyRecordings([]);
           }
         }, (err: any) => console.log('User recording sync err:', err));
 
@@ -933,8 +1210,8 @@ export default function HomeScreen() {
     stopAudioPlayback();
 
     try {
-      // Small sync tick to guarantee local audio file is fully written to disk
-      await new Promise((resolve) => setTimeout(resolve, 250));
+      // Short tick so the local audio file is fully written to disk
+      await new Promise((resolve) => setTimeout(resolve, 80));
 
       const fileName = `challenge_${currentUser.uid}_${Date.now()}.wav`;
       const storagePath = `challenges_recordings/${currentUser.uid}/${fileName}`;
@@ -950,29 +1227,32 @@ export default function HomeScreen() {
         uploadUri = uploadUri.replace('file://', '');
       }
 
-      await reference.putFile(uploadUri);
+      await reference.putFile(uploadUri, { contentType: 'audio/wav' });
       const downloadUrl = await reference.getDownloadURL();
 
-      // Saved in challenge_recordings for User view & Admin dashboard
-      await firestore().collection('challenge_recordings').add({
-        challengeTitle: dailyTopicData.title,
-        uid: currentUser.uid,
-        studentName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
-        userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
-        userPhoto: currentUser.photoURL || null,
-        audioUrl: downloadUrl,
-        durationSeconds: elapsedSeconds || 1,
-        createdAt: firestore.FieldValue.serverTimestamp()
-      });
-
-      // Increment User XP (+10 XP)
-      await firestore().collection('users').doc(currentUser.uid).set({
-        xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
-      }, { merge: true });
+      // Save the record and the XP together (two writes in parallel instead of one after another)
+      await Promise.all([
+        firestore().collection('challenge_recordings').add({
+          challengeTitle: dailyTopicData.title,
+          uid: currentUser.uid,
+          studentName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
+          userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
+          userPhoto: currentUser.photoURL || null,
+          audioUrl: downloadUrl,
+          storagePath,
+          durationSeconds: elapsedSeconds || 1,
+          createdAt: firestore.FieldValue.serverTimestamp(),
+          // Recordings are kept for 30 days; a daily Cloud Function deletes older ones (file + record).
+          expiresAt: firestore.Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
+        }),
+        firestore().collection('users').doc(currentUser.uid).set({
+          xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
+        }, { merge: true }),
+      ]);
 
       setIsSavingAudio(false);
       setLocalRecordedAudioUri(null);
-      Alert.alert('🎉 Sent Successfully!', 'Your speaking challenge response has been saved.');
+      Alert.alert('🎉 Sent Successfully!', 'Your speaking challenge response has been saved. You can listen to it again for the next 30 days.');
     } catch (e: any) {
       setIsSavingAudio(false);
       console.log('Firebase storage upload error:', e);
@@ -1338,9 +1618,27 @@ export default function HomeScreen() {
           </View>
         </View>
 
-        {/* 3. HERO LIVE ROOM CARD */}
+        {/* 3. HERO CAROUSEL: live room + trial + plans (auto slide) */}
         <View style={styles.heroCardContainer}>
-          <View style={styles.bannerCardWrapper}>
+          <ScrollView
+            ref={heroScrollRef}
+            horizontal
+            pagingEnabled
+            nestedScrollEnabled
+            showsHorizontalScrollIndicator={false}
+            decelerationRate="fast"
+            snapToInterval={HERO_W}
+            onScrollBeginDrag={() => { heroPausedRef.current = true; }}
+            onMomentumScrollEnd={(e) => {
+              const i = Math.round(e.nativeEvent.contentOffset.x / HERO_W);
+              heroIdxRef.current = i;
+              setHeroIndex(i);
+              heroPausedRef.current = false;
+            }}
+          >
+            <View style={{ width: HERO_W }}>
+          <HeroTouchScale>
+          <View style={[styles.bannerCardWrapper, { height: HERO_H }]}>
             <Image 
               source={IMG_SMALL_TALK} 
               style={styles.absoluteBackgroundCrop}
@@ -1394,6 +1692,82 @@ export default function HomeScreen() {
               </View>
             </View>
           </View>
+          </HeroTouchScale>
+            </View>
+
+            {showDemoSlide && (
+              <View style={{ width: HERO_W }}>
+                <HeroPromoSlide
+                  bg="#4F46E5"
+                  badge="FREE TRIAL"
+                  emoji="🎥"
+                  title="Book 1-on-1 Trial"
+                  desc="Try a 30-minute class with a tutor"
+                  cta={demoCfg?.price === 0 ? 'Book Now · Free' : `Book Now @${demoCfg?.price}`}
+                  onPress={() => navigation.navigate('DemoClassScreen')}
+                />
+              </View>
+            )}
+
+            {!isTeacher && (() => {
+              // Active Video plan with sessions left -> "Book a Session"; otherwise -> "Choose your plan"
+              const hasSessions = !!videoSub?.active && (videoSub.remainingSessions ?? 0) > 0;
+              const usedUp = videoSub?.reason === 'no_sessions_left';
+              return (
+                <View style={{ width: HERO_W }}>
+                  <HeroPromoSlide
+                    bg="#7C3AED"
+                    badge={hasSessions ? 'VIDEO PLAN' : 'VIDEO CLASSES'}
+                    emoji={hasSessions ? '📅' : '👑'}
+                    title={hasSessions ? 'Book a Session' : usedUp ? 'All sessions used' : 'Choose your plan'}
+                    desc={
+                      hasSessions
+                        ? `${videoSub!.remainingSessions} of ${videoSub!.totalSessions} sessions left with ${videoSub!.teacherName}`
+                        : usedUp
+                        ? 'You can buy a new plan after your current plan expires'
+                        : 'Practice with experts in 1-on-1 video classes'
+                    }
+                    cta={hasSessions ? 'Book Now' : usedUp ? 'My plan' : 'Subscribe'}
+                    onPress={() =>
+                      hasSessions
+                        ? navigation.navigate('BookSessionScreen')
+                        : navigation.navigate('ProgramFlowScreen', usedUp ? { mode: 'video' } : undefined)
+                    }
+                  />
+                </View>
+              );
+            })()}
+
+            {showAudioPlanSlide && (
+              <View style={{ width: HERO_W }}>
+                <HeroPromoSlide
+                  bg="#0EA5E9"
+                  badge="AUDIO CLASSES"
+                  emoji="🎙️"
+                  title="Join Audio Classes"
+                  desc="Live group speaking classes with trainers"
+                  cta="Subscribe"
+                  onPress={() => navigation.navigate('ProgramFlowScreen', { mode: 'audio' })}
+                />
+              </View>
+            )}
+          </ScrollView>
+
+          {heroSlideCount > 1 && (
+            <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: 8, gap: 6 }}>
+              {Array.from({ length: heroSlideCount }).map((_, i) => (
+                <View
+                  key={i}
+                  style={{
+                    width: i === heroIndex ? 18 : 6,
+                    height: 6,
+                    borderRadius: 3,
+                    backgroundColor: i === heroIndex ? colors.primary : colors.primary + '40',
+                  }}
+                />
+              ))}
+            </View>
+          )}
         </View>
 
         {/* 4. TODAY'S CHALLENGE CARD (HYPER-PREMIUM NEON GLOW & VIBRANT TOPIC) */}
@@ -1460,17 +1834,17 @@ export default function HomeScreen() {
         </TouchableOpacity>
 
         {/* 🆕 TRIAL + PLAN CARDS (students only): the demo class and the subscription are separate cards.
-            Demo card shows only while demo classes are on and this student has not used theirs. */}
+            The demo card shows only while demo classes are on and this student has not used theirs. */}
         {!isTeacher && (
           <View style={{ paddingHorizontal: 20, marginBottom: 18, gap: 12 }}>
             {demoCfg?.isActive && !demoCfg.alreadyUsed && (
-              <TouchableOpacity
+              <AnimatedCard
                 style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
                 onPress={() => navigation.navigate('DemoClassScreen')}
-                activeOpacity={0.85}
+                delay={0}
               >
                 <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
-                  <Text style={{ fontSize: 22 }}>🎥</Text>
+                  <FloatingEmoji emoji="🎥" />
                 </View>
                 <View style={{ flex: 1 }}>
                   <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Book 1-on-1 Trial</Text>
@@ -1483,7 +1857,7 @@ export default function HomeScreen() {
                     {demoCfg.price === 0 ? 'Book Now · Free' : `Book Now @${demoCfg.price}`}
                   </Text>
                 </View>
-              </TouchableOpacity>
+              </AnimatedCard>
             )}
 
             {(() => {
@@ -1498,17 +1872,17 @@ export default function HomeScreen() {
                 : 'Practice with experts';
               const cta = hasSessions ? 'Book Now' : usedUp ? 'My plan' : 'Subscribe';
               return (
-                <TouchableOpacity
+                <AnimatedCard
                   style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
                   onPress={() =>
                     hasSessions
                       ? navigation.navigate('BookSessionScreen')
                       : navigation.navigate('ProgramFlowScreen', usedUp ? { mode: 'video' } : undefined)
                   }
-                  activeOpacity={0.85}
+                  delay={120}
                 >
                   <View style={[homeIconCircle, { backgroundColor: '#F59E0B22' }]}>
-                    <Text style={{ fontSize: 22 }}>{hasSessions ? '📅' : '👑'}</Text>
+                    <FloatingEmoji emoji={hasSessions ? '📅' : '👑'} />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>{title}</Text>
@@ -1517,7 +1891,7 @@ export default function HomeScreen() {
                   <View style={[homePill, { backgroundColor: hasSessions ? colors.primary : colors.primary + '1A' }]}>
                     <Text style={[homePillText, { color: hasSessions ? '#FFFFFF' : colors.primary }]}>{cta}</Text>
                   </View>
-                </TouchableOpacity>
+                </AnimatedCard>
               );
             })()}
 
@@ -1526,13 +1900,13 @@ export default function HomeScreen() {
               const endMs = nextAudio ? new Date(`${nextAudio.date}T${nextAudio.endTime}:00`).getTime() : 0;
               const canJoin = !!nextAudio && Date.now() >= startMs - 10 * 60000 && Date.now() <= endMs;
               return (
-                <TouchableOpacity
+                <AnimatedCard
                   style={[styles.upcomingSessionCard, homeActionCard, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
                   onPress={() => navigation.navigate('VoiceRoomScreen', { tab: 'official' })}
-                  activeOpacity={0.85}
+                  delay={240}
                 >
                   <View style={[homeIconCircle, { backgroundColor: colors.primary + '1A' }]}>
-                    <Text style={{ fontSize: 22 }}>🎙️</Text>
+                    <FloatingEmoji emoji="🎙️" />
                   </View>
                   <View style={{ flex: 1 }}>
                     <Text style={[styles.sessionMainTitle, { color: colors.textPrimary }]}>Audio Classes</Text>
@@ -1554,7 +1928,7 @@ export default function HomeScreen() {
                       <Text style={[homePillText, { color: '#FFFFFF' }]}>{canJoin ? 'Join' : 'View'}</Text>
                     )}
                   </TouchableOpacity>
-                </TouchableOpacity>
+                </AnimatedCard>
               );
             })()}
           </View>
@@ -1720,17 +2094,40 @@ export default function HomeScreen() {
           {t?.home?.recentActivity || 'Recent Activity'}
         </Text>
         <View style={styles.recentActivityContainer}>
-          <View style={[styles.activityItemRow, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
-            <View style={[styles.activityIconWrapper, { backgroundColor: colors.primary + '1F' }]}><Text style={styles.actIcon}>🎙️</Text></View>
-            <View style={styles.activityMainDetails}>
-              <Text style={[styles.activityTitleText, { color: colors.textPrimary }]}>
-                {t?.home?.act1Title || "Joined 'Morning Small Talk'"}
-              </Text>
-              <Text style={[styles.activityTimeTextOffset, { color: colors.textSecondary }]}>
-                {t?.home?.act1Time || '2h ago'}
-              </Text>
+          {activityLoading ? (
+            <ActivityIndicator size="small" color={colors.primary} style={{ marginTop: 16 }} />
+          ) : recentActivity.length === 0 ? (
+            <View style={[styles.activityItemRow, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}>
+              <View style={[styles.activityIconWrapper, { backgroundColor: colors.primary + '1F' }]}>
+                <Text style={styles.actIcon}>✨</Text>
+              </View>
+              <View style={styles.activityMainDetails}>
+                <Text style={[styles.activityTitleText, { color: colors.textPrimary }]}>No recent activity yet</Text>
+                <Text style={[styles.activityTimeTextOffset, { color: colors.textSecondary }]}>
+                  Book a class or join a room to get started
+                </Text>
+              </View>
             </View>
-          </View>
+          ) : (
+            recentActivity.map((item) => (
+              <View
+                key={item.id}
+                style={[styles.activityItemRow, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
+              >
+                <View style={[styles.activityIconWrapper, { backgroundColor: colors.primary + '1F' }]}>
+                  <Text style={styles.actIcon}>{item.icon}</Text>
+                </View>
+                <View style={styles.activityMainDetails}>
+                  <Text style={[styles.activityTitleText, { color: colors.textPrimary }]} numberOfLines={2}>
+                    {item.title}
+                  </Text>
+                  <Text style={[styles.activityTimeTextOffset, { color: colors.textSecondary }]}>
+                    {formatTimeAgo({ toDate: () => new Date(item.ts) })}
+                  </Text>
+                </View>
+              </View>
+            ))
+          )}
         </View>
 
       </ScrollView>
@@ -1816,24 +2213,39 @@ export default function HomeScreen() {
                 </View>
               )}
 
-              {/* 🎧 SECTION 2: SAVED USER AUDIO (PERSISTENT & PRIVATE TO THIS STUDENT) */}
-              {!isAdmin && savedUserRecording && (
-                <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.primary + '55', marginTop: 6 }]}>
-                  <View style={styles.previewAudioRow}>
-                    <TouchableOpacity 
-                      style={[styles.playPreviewBtn, { backgroundColor: activePlayingUrl === savedUserRecording.audioUrl ? '#EF4444' : colors.primary }]} 
-                      onPress={() => handleTogglePlayAudio(savedUserRecording.audioUrl)}
+              {/* 🎧 SECTION 2: MY SAVED RECORDINGS (PRIVATE TO THIS STUDENT, KEPT FOR 30 DAYS) */}
+              {!isAdmin && myRecordings.length > 0 && (
+                <View style={{ marginTop: 6 }}>
+                  <Text style={[styles.adminSubmissionsHeading, { color: colors.textPrimary }]}>
+                    Your Recordings ({myRecordings.length})
+                  </Text>
+                  <Text style={[styles.audioEmptyHint, { color: colors.textSecondary, marginBottom: 8, marginTop: 2 }]}>
+                    Saved for 30 days, then deleted automatically.
+                  </Text>
+                  {myRecordings.map((item) => (
+                    <View
+                      key={item.id}
+                      style={[styles.adminAudioItemCard, { backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC', borderColor: colors.border }]}
                     >
-                      {activePlayingUrl === savedUserRecording.audioUrl ? <Pause size={18} color="#FFFFFF" /> : <Play size={18} color="#FFFFFF" style={{ marginLeft: 2 }} />}
-                    </TouchableOpacity>
-                    <View style={{ flex: 1, marginLeft: 12 }}>
-                      <Text style={[styles.previewAudioTitle, { color: colors.textPrimary }]}>Your Saved Recording</Text>
-                      <Text style={[styles.previewAudioSub, { color: colors.textSecondary }]}>{savedUserRecording.durationSeconds}s duration • {formatTimeAgo(savedUserRecording.createdAt)}</Text>
+                      <TouchableOpacity
+                        style={[styles.playPreviewMiniBtn, { backgroundColor: activePlayingUrl === item.audioUrl ? '#EF4444' : colors.primary }]}
+                        onPress={() => handleTogglePlayAudio(item.audioUrl)}
+                      >
+                        {activePlayingUrl === item.audioUrl ? <Pause size={14} color="#FFFFFF" /> : <Play size={14} color="#FFFFFF" style={{ marginLeft: 2 }} />}
+                      </TouchableOpacity>
+                      <View style={{ flex: 1, marginLeft: 10 }}>
+                        <Text style={[styles.adminAudioStudentName, { color: colors.textPrimary }]} numberOfLines={1}>
+                          {item.challengeTitle || 'Speaking challenge'}
+                        </Text>
+                        <Text style={[styles.adminAudioStudentSub, { color: colors.textSecondary }]}>
+                          {item.durationSeconds}s • {formatTimeAgo(item.createdAt)}
+                        </Text>
+                      </View>
+                      <TouchableOpacity style={styles.deleteAudioBtn} onPress={() => handleDeleteFirestoreRecording(item.id, item.audioUrl)}>
+                        <Trash2 size={16} color="#EF4444" />
+                      </TouchableOpacity>
                     </View>
-                    <TouchableOpacity style={styles.deleteAudioBtn} onPress={() => handleDeleteFirestoreRecording(savedUserRecording.id, savedUserRecording.audioUrl)}>
-                      <Trash2 size={18} color="#EF4444" />
-                    </TouchableOpacity>
-                  </View>
+                  ))}
                 </View>
               )}
 

@@ -48,6 +48,7 @@ interface PlanRow {
   sessions: number | null;
   sessionMins: number | null;
   price: number;
+  discountPercent: number; // "Save N%" chip shown to students (0 = none)
   isActive: boolean;
 }
 
@@ -85,6 +86,7 @@ export default function AdminPanelScreen() {
   // ── Plans ──
   const [plans, setPlans] = useState<PlanRow[]>([]);
   const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
+  const [discountDraft, setDiscountDraft] = useState<Record<string, string>>({});
 
   // ── Demo ──
   const [demo, setDemo] = useState<DemoConfig | null>(null);
@@ -121,6 +123,10 @@ export default function AdminPanelScreen() {
         sessions: x.sessions ?? null,
         sessionMins: x.sessionMins ?? null,
         price: x.price ?? 0,
+        discountPercent:
+          typeof x.discountPercent === 'number'
+            ? x.discountPercent
+            : Number((/(\d{1,2})\s*%/.exec(String(x.tagline || '')) || [])[1]) || 0,
         isActive: x.isActive !== false,
       } as PlanRow;
     });
@@ -135,6 +141,9 @@ export default function AdminPanelScreen() {
     const draft: Record<string, string> = {};
     rows.forEach((r) => (draft[r.id] = r.price ? String(r.price) : ''));
     setPriceDraft(draft);
+    const dDraft: Record<string, string> = {};
+    rows.forEach((r) => (dDraft[r.id] = r.discountPercent ? String(r.discountPercent) : ''));
+    setDiscountDraft(dDraft);
   }, []);
 
   const loadDemo = useCallback(async () => {
@@ -247,6 +256,20 @@ export default function AdminPanelScreen() {
     }
     // Saving a price also switches the plan on, so it shows to students right away.
     savePlan(p, true, price).then(() => undefined);
+  };
+
+  // Discount chip ("Save N%") on the Audio plan screen. Empty or 0 removes it.
+  const savePlanDiscount = (p: PlanRow) => {
+    const raw = (discountDraft[p.id] ?? '').trim();
+    const pct = raw === '' ? 0 : Number(raw);
+    if (!Number.isInteger(pct) || pct < 0 || pct > 90) {
+      Alert.alert('Invalid Discount', 'Enter a whole number between 0 and 90 (leave empty to remove the discount).');
+      return;
+    }
+    run(async () => {
+      await call('adminUpdatePlanPrice', { planId: p.id, discountPercent: pct });
+      await loadPlans();
+    }, pct === 0 ? 'Discount removed.' : `Discount set to ${pct}%.`);
   };
 
   const seedDefaults = () =>
@@ -420,6 +443,27 @@ export default function AdminPanelScreen() {
               <Text style={styles.btnText}>Save</Text>
             </TouchableOpacity>
           </View>
+          {p.mode === 'audio' && (
+            <View style={{ flexDirection: 'row', gap: 10, marginTop: 10, alignItems: 'center' }}>
+              <Text style={[styles.rupee, { color: colors.textPrimary }]}>%</Text>
+              <TextInput
+                value={discountDraft[p.id] ?? ''}
+                onChangeText={(t) => setDiscountDraft((d) => ({ ...d, [p.id]: t.replace(/[^0-9]/g, '') }))}
+                placeholder="Discount % (empty = none)"
+                placeholderTextColor={colors.textSecondary}
+                keyboardType="number-pad"
+                style={[...input, { flex: 1, marginTop: 0 }]}
+                maxLength={2}
+              />
+              <TouchableOpacity
+                style={[styles.btn, { backgroundColor: accent, paddingHorizontal: 18 }, busy && { opacity: 0.45 }]}
+                disabled={busy}
+                onPress={() => savePlanDiscount(p)}
+              >
+                <Text style={styles.btnText}>Save</Text>
+              </TouchableOpacity>
+            </View>
+          )}
           {!p.isActive && (
             <Text style={[styles.hint, { color: '#D97706', marginTop: 6 }]}>
               Hidden from students ("Coming soon"). Enter a price and press Save to switch it on.
@@ -434,7 +478,7 @@ export default function AdminPanelScreen() {
   const renderPlans = () => (
     <>
       <Text style={[styles.hint, { color: colors.textSecondary }]}>
-        You can change the price and turn a plan on or off. Sessions and validity are fixed. A new price applies to new
+        You can change the price, set or remove the discount % (Audio plans), and turn a plan on or off. Sessions and validity are fixed. A new price applies to new
         purchases only; plans already bought are not affected.
       </Text>
       {renderPlanGroup('Video Mode (1-to-1)', grouped.video)}

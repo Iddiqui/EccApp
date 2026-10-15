@@ -11,7 +11,10 @@ import {
   ActivityIndicator,
   RefreshControl,
 } from 'react-native';
-import { ChevronLeft, Flame, Mic, Trophy, Heart, BellOff } from 'lucide-react-native';
+import {
+  ChevronLeft, Flame, Mic, Trophy, Heart, BellOff,
+  CalendarCheck, Headphones, CreditCard, Users, Target, Star,
+} from 'lucide-react-native';
 
 import { useTheme } from '../../../hooks/useTheme';
 import {
@@ -112,6 +115,7 @@ export default function NotificationScreen({ navigation }: any) {
       targetRoomId: item.targetRoomId,
       targetBadgeId: item.targetBadgeId,
       targetScreen: item.targetScreen,
+      targetTab: item.targetTab,
     });
   };
 
@@ -126,6 +130,18 @@ export default function NotificationScreen({ navigation }: any) {
         return { icon: <Trophy size={22} color="#10B981" />, bg: isDarkMode ? '#064E3B' : '#E8F5E9' };
       case 'like':
         return { icon: <Heart size={22} color="#EF4444" />, bg: isDarkMode ? '#7F1D1D' : '#FEF2F2' };
+      case 'session':
+        return { icon: <CalendarCheck size={22} color="#7C3AED" />, bg: isDarkMode ? '#3B0764' : '#F5F3FF' };
+      case 'audio':
+        return { icon: <Headphones size={22} color="#0891B2" />, bg: isDarkMode ? '#164E63' : '#ECFEFF' };
+      case 'payment':
+        return { icon: <CreditCard size={22} color="#16A34A" />, bg: isDarkMode ? '#14532D' : '#F0FDF4' };
+      case 'community':
+        return { icon: <Users size={22} color="#DB2777" />, bg: isDarkMode ? '#831843' : '#FDF2F8' };
+      case 'challenge':
+        return { icon: <Target size={22} color="#EA580C" />, bg: isDarkMode ? '#7C2D12' : '#FFF7ED' };
+      case 'review':
+        return { icon: <Star size={22} color="#CA8A04" />, bg: isDarkMode ? '#713F12' : '#FEFCE8' };
       default:
         return { icon: <Mic size={22} color="#2563EB" />, bg: isDarkMode ? '#1E3A8A' : '#EFF6FF' };
     }
@@ -175,7 +191,7 @@ export default function NotificationScreen({ navigation }: any) {
       <Text style={[styles.emptySubText, { color: colors.textSecondary }]}>
         {error
           ? 'Check your internet connection and try again.'
-          : "We'll notify you when rooms start, badges unlock, or updates happen."}
+          : "We'll notify you about your sessions, classes, plans, community and streak."}
       </Text>
       {error && (
         <TouchableOpacity

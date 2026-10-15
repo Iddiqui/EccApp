@@ -21,7 +21,8 @@ import {
   Easing,
   Image,
   TouchableWithoutFeedback,
-  KeyboardAvoidingView
+  KeyboardAvoidingView,
+  Linking
 } from 'react-native';
 import { 
   Trash2, Send, Trophy, Plus, X, CheckCircle, Flame, 
@@ -33,6 +34,7 @@ import {
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
+import functions from '@react-native-firebase/functions';
 import AudioRecord from 'react-native-audio-record';
 
 let SoundPlayer: any = null;
@@ -45,6 +47,27 @@ try {
 } catch (e) {
   console.log("react-native-sound missing");
 }
+
+// Optional native packages for sharing files in chat. If one is missing the app still runs,
+// and the user gets a clear message when they try to use that feature.
+//   npm i @react-native-firebase/storage react-native-image-picker @react-native-documents/picker
+let storageLib: any = null;
+try { storageLib = require('@react-native-firebase/storage').default; } catch (e) {}
+let imagePicker: any = null;
+try { imagePicker = require('react-native-image-picker'); } catch (e) {}
+let docPicker: any = null;
+try { docPicker = require('@react-native-documents/picker'); } catch (e) {
+  try { docPicker = require('react-native-document-picker'); } catch (e2) {}
+}
+
+const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
+
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
 
 //@ts-ignore
 import ConfettiCannon from 'react-native-confetti-cannon';
@@ -325,6 +348,105 @@ const AnimatedReactionBadge = ({ item, onRemove }: { item: any; onRemove: (id: s
   );
 };
 
+// ───────────── Members list modal (own component, so the big screen does not re-render with it) ─────────────
+const MemberRow = React.memo(function MemberRow({ item, isMe, isAdmin, now, colors, onKick }: any) {
+  const online = isPresenceFresh(item, now);
+  return (
+    <View style={[styles.memberItemRow, { borderColor: colors.border }]}>
+      <View style={[styles.memberAvatarCircle, { backgroundColor: getAvatarColor(item.userName) }]}>
+        {item.photoURL ? (
+          <Image source={{ uri: item.photoURL }} style={styles.memberImg} />
+        ) : (
+          <Text style={styles.memberAvatarInitial}>{(item.userName || 'U').charAt(0).toUpperCase()}</Text>
+        )}
+      </View>
+      <View style={{ flex: 1, marginLeft: 12 }}>
+        <Text style={[styles.memberNameText, { color: colors.textPrimary }]}>
+          {item.userName} {isMe ? '(You)' : ''}
+        </Text>
+        <Text style={{ fontSize: 11, color: online ? '#10B981' : colors.textSecondary, marginTop: 1 }}>
+          {online ? 'Online' : (item.lastActive ? `Last seen ${formatTimeAgo(item.lastActive, now)}` : 'Last seen unavailable')}
+        </Text>
+      </View>
+      <View style={[styles.memberStatusDot, { backgroundColor: online ? '#10B981' : '#64748B' }]} />
+      {isAdmin && !isMe && (
+        <TouchableOpacity style={styles.adminKickBtn} onPress={() => onKick(item)} activeOpacity={0.7}>
+          <UserX size={15} color="#EF4444" />
+        </TouchableOpacity>
+      )}
+    </View>
+  );
+});
+
+const MembersModal = React.memo(function MembersModal({ visible, onClose, members, total, myUid, isAdmin, isDarkMode, colors, primaryColor, onKick }: any) {
+  const [now, setNow] = useState(Date.now());
+
+  // The "online" clock runs only while the list is open
+  useEffect(() => {
+    if (!visible) return;
+    setNow(Date.now());
+    const t = setInterval(() => setNow(Date.now()), 20000);
+    return () => clearInterval(t);
+  }, [visible]);
+
+  const sorted = React.useMemo(() => {
+    if (!visible) return [];
+    const ms = (m: any) => (hasToDate(m?.lastActive) ? m.lastActive.toDate().getTime() : 0);
+    return [...members].sort((a: any, b: any) => {
+      const oa = isPresenceFresh(a, now) ? 1 : 0;
+      const ob = isPresenceFresh(b, now) ? 1 : 0;
+      return ob - oa || ms(b) - ms(a);
+    });
+  }, [visible, members, now]);
+
+  const renderItem = React.useCallback(
+    ({ item }: any) => (
+      <MemberRow item={item} isMe={item.uid === myUid} isAdmin={isAdmin} now={now} colors={colors} onKick={onKick} />
+    ),
+    [myUid, isAdmin, now, colors, onKick]
+  );
+
+  return (
+    <Modal visible={visible} animationType="fade" transparent={true} onRequestClose={onClose} hardwareAccelerated>
+      <View style={styles.membersModalOverlay}>
+        {/* Tap outside to close. It is a sibling of the card, so it never steals the list's scroll touches. */}
+        <TouchableOpacity style={StyleSheet.absoluteFillObject} activeOpacity={1} onPress={onClose} />
+        <View style={[styles.membersModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]}>
+          <View style={styles.membersModalHeader}>
+            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+              <Users size={20} color={primaryColor} />
+              <Text style={[styles.membersModalTitle, { color: colors.textPrimary }]}>Group Members ({total})</Text>
+            </View>
+            <TouchableOpacity onPress={onClose} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
+              <X size={20} color={colors.textSecondary} />
+            </TouchableOpacity>
+          </View>
+
+          {members.length === 0 ? (
+            <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+              <ActivityIndicator size="small" color={primaryColor} />
+              <Text style={{ color: colors.textSecondary, marginTop: 8, fontSize: 13 }}>Loading members...</Text>
+            </View>
+          ) : (
+            <FlatList
+              data={sorted}
+              keyExtractor={(item: any) => item.id}
+              renderItem={renderItem}
+              showsVerticalScrollIndicator={false}
+              contentContainerStyle={{ paddingVertical: 8 }}
+              initialNumToRender={10}
+              maxToRenderPerBatch={10}
+              windowSize={5}
+              removeClippedSubviews
+              nestedScrollEnabled
+            />
+          )}
+        </View>
+      </View>
+    </Modal>
+  );
+});
+
 export default function CommunityScreen({ navigation }: any) {
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? false;
@@ -357,14 +479,41 @@ export default function CommunityScreen({ navigation }: any) {
   const initialIsAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean);
   const [isAdmin, setIsAdmin] = useState(initialIsAdmin);
 
+  // Feed admin = the same `admins` collection the Admin Panel and Voice Rooms use.
+  // (Not the fixed email list above, which only controls group-chat powers.)
+  const [isFeedAdmin, setIsFeedAdmin] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const rawEmail = (currentUser?.email || '').trim();
+    if (!rawEmail) {
+      setIsFeedAdmin(false);
+      return;
+    }
+    const emails = Array.from(new Set([rawEmail.toLowerCase(), rawEmail]));
+    firestore()
+      .collection('admins')
+      .where('email', 'in', emails)
+      .limit(1)
+      .get()
+      .then((snap: any) => { if (alive) setIsFeedAdmin(!snap.empty); })
+      .catch(() => { if (alive) setIsFeedAdmin(false); });
+    return () => { alive = false; };
+  }, [currentUser?.email]);
+
   const [isMember, setIsMember] = useState(false);
   const [isJoining, setIsJoining] = useState(false);
   const [communityMembersList, setCommunityMembersList] = useState<any[]>([]);
   const [totalMembers, setTotalMembers] = useState(0);
   const [onlineMembers, setOnlineMembers] = useState(0);
-  const [presenceNow, setPresenceNow] = useState(Date.now());
   const [showThreeDotsMenu, setShowThreeDotsMenu] = useState(false);
   const [showMembersListModal, setShowMembersListModal] = useState(false);
+  const closeMembersModal = React.useCallback(() => setShowMembersListModal(false), []);
+  const kickFromList = React.useCallback((m: any) => {
+    setMemberToKick(m);
+    setShowKickConfirmModal(true);
+  }, []);
+  // Name / photo cache, so a heartbeat update does not re-read every user document
+  const memberProfileCache = useRef<Record<string, { userName: string; photoURL: string }>>({});
 
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const isSelectionMode = selectedMessageIds.length > 0;
@@ -400,6 +549,7 @@ export default function CommunityScreen({ navigation }: any) {
   const shineAnim = useRef(new Animated.Value(0.6)).current;
 
   const [showMediaPicker, setShowMediaPicker] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [selectedMessageForAction, setSelectedMessageForAction] = useState<any>(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
 
@@ -520,32 +670,39 @@ export default function CommunityScreen({ navigation }: any) {
         });
         setOnlineMembers(activeCount);
 
-        Promise.all(rawList.map(async (member: any) => {
+        const cache = memberProfileCache.current;
+        const withProfile = (member: any) => {
           const uid = member.uid || member.id;
-          if (!uid) return member;
-          try {
-            const userSnap = await firestore().collection('users').doc(uid).get();
-            if (snapshotExists(userSnap)) {
-              const user = userSnap.data() || {};
-              return {
-                ...member,
-                uid,
-                userName: user.fullName || user.name || member.userName || 'Learner',
-                photoURL: user.photoURL || member.photoURL || '',
-              };
-            }
-          } catch (_) {}
-          return { ...member, uid };
-        })).then(setCommunityMembersList).catch(() => {});
+          const c = uid ? cache[uid] : undefined;
+          return c ? { ...member, uid, userName: c.userName, photoURL: c.photoURL } : { ...member, uid };
+        };
+        // Show the list immediately with what we already know
+        setCommunityMembersList(rawList.map(withProfile));
+
+        // Read profiles only for members we have not seen yet
+        const missing = rawList.map((m: any) => m.uid || m.id).filter((uid: string) => uid && !cache[uid]);
+        if (missing.length === 0) return;
+        Promise.all(
+          missing.map(async (uid: string) => {
+            try {
+              const userSnap = await firestore().collection('users').doc(uid).get();
+              if (snapshotExists(userSnap)) {
+                const user = userSnap.data() || {};
+                const m = rawList.find((x: any) => (x.uid || x.id) === uid) || {};
+                cache[uid] = {
+                  userName: user.fullName || user.name || m.userName || 'Learner',
+                  photoURL: user.photoURL || m.photoURL || '',
+                };
+              }
+            } catch (_) {}
+          })
+        )
+          .then(() => setCommunityMembersList(rawList.map(withProfile)))
+          .catch(() => {});
       }, (err) => console.log('Members load error:', err));
 
     return () => unsubMembers();
   }, [currentUser?.uid]);
-
-  useEffect(() => {
-    const timer = setInterval(() => setPresenceNow(Date.now()), 15000);
-    return () => clearInterval(timer);
-  }, []);
 
   useEffect(() => {
     const uid = currentUser?.uid;
@@ -648,12 +805,13 @@ export default function CommunityScreen({ navigation }: any) {
     setIsJoining(true);
     try {
       const uid = currentUser.uid;
-      let profile: any = {};
 
-      try {
-        const userSnap = await firestore().collection('users').doc(uid).get();
-        if (snapshotExists(userSnap)) profile = userSnap.data() || {};
-      } catch (_) {}
+      // Read the profile and clear any old join request at the same time
+      const [userSnap] = await Promise.all([
+        firestore().collection('users').doc(uid).get().catch(() => null),
+        firestore().collection('community_join_requests').doc(uid).delete().catch(() => {}),
+      ]);
+      const profile: any = userSnap && snapshotExists(userSnap) ? userSnap.data() || {} : {};
 
       const userName =
         profile.fullName ||
@@ -673,10 +831,6 @@ export default function CommunityScreen({ navigation }: any) {
         isChatActive: false,
         lastActive: firestore.FieldValue.serverTimestamp(),
       }, { merge: true });
-
-      try {
-        await firestore().collection('community_join_requests').doc(uid).delete();
-      } catch (_) {}
 
       setIsMember(true);
       setShowJoinConfirmModal(false);
@@ -795,6 +949,15 @@ export default function CommunityScreen({ navigation }: any) {
   const handleMessagePress = (item: any) => {
     if (isSelectionMode) {
       toggleSelectMessage(item.id);
+      return;
+    }
+    if (item?.uploading || !item?.mediaUrl) return;
+    if (item.type === 'image') {
+      setPreviewImageUrl(item.mediaUrl);
+    } else if (item.type === 'file') {
+      Linking.openURL(item.mediaUrl).catch(() =>
+        Alert.alert('Cannot open file', 'No app found to open this file.')
+      );
     }
   };
 
@@ -824,7 +987,7 @@ export default function CommunityScreen({ navigation }: any) {
   const getSingleSelectedEditableMessage = () => {
     if (selectedMessageIds.length !== 1) return null;
     const targetMsg = chatMessages.find(m => m.id === selectedMessageIds[0]);
-    if (!targetMsg || targetMsg.type === 'voice') return null;
+    if (!targetMsg || ['voice', 'image', 'file'].includes(targetMsg.type)) return null;
     if (targetMsg.senderId !== (currentUser?.uid || 'guest_user')) return null;
 
     const createdDate = hasToDate(targetMsg.createdAt) ? targetMsg.createdAt.toDate() : new Date(targetMsg.createdAt);
@@ -1085,7 +1248,8 @@ export default function CommunityScreen({ navigation }: any) {
           msgs.push(item);
           if (item?.isPinned) pinned.push(item);
         });
-        setChatMessages(msgs);
+        // keep files that are still uploading so they don't vanish when another message arrives
+        setChatMessages(prev => [...prev.filter((m: any) => m.uploading), ...msgs]);
         setPinnedMessages(pinned);
       });
   }, [selectedGroup?.id]);
@@ -1154,23 +1318,63 @@ export default function CommunityScreen({ navigation }: any) {
     setRecordSecs(0);
   };
 
-  const handleStopAndSendRecording = async () => {
-    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+  // ─── Chat media: every file is uploaded to Firebase Storage and the message
+  //     (with its download link) is saved in Firestore: community_groups/{id}/messages ───
+  const sendMediaMessage = async (p: {
+    type: 'voice' | 'image' | 'file';
+    localUri: string;
+    fileName: string;
+    mimeType: string;
+    fileSize?: number;
+    duration?: number;
+  }) => {
+    const uid = currentUser?.uid;
+    const groupId = selectedGroup?.id || 'ecc_community_chat';
+    const senderName = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
+    const label = p.type === 'voice' ? 'Voice Note' : p.type === 'image' ? 'Photo' : p.fileName;
+
+    const tempId = `temp_${Date.now()}`;
+    setChatMessages(prev => [{
+      id: tempId,
+      text: label,
+      type: p.type,
+      mediaUrl: p.localUri,
+      fileName: p.fileName,
+      fileSize: p.fileSize || null,
+      duration: p.duration || null,
+      senderId: uid || 'guest_user',
+      senderName,
+      senderPhoto: currentUser?.photoURL || null,
+      status: 'sending',
+      uploading: true,
+      reactions: {},
+      isPinned: false,
+      createdAt: new Date(),
+    }, ...prev]);
 
     try {
-      if (timerRef.current) clearInterval(timerRef.current);
-      let audioFilePath = await AudioRecord.stop();
-      setIsRecording(false);
+      if (!uid) throw new Error('Please log in again.');
+      if (!storageLib) {
+        throw new Error('File upload is not set up yet. Run: npm i @react-native-firebase/storage, then rebuild the app.');
+      }
+      const dot = p.fileName.lastIndexOf('.');
+      const ext = (dot >= 0 ? p.fileName.slice(dot + 1) : 'bin').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+      const storagePath = `community_media/${groupId}/${uid}/${p.type}_${Date.now()}.${ext}`;
+      const ref = storageLib().ref(storagePath);
+      await ref.putFile(p.localUri, { contentType: p.mimeType });
+      const mediaUrl = await ref.getDownloadURL();
 
-      const finalDuration = recordSecs > 0 ? recordSecs : 2;
-
-      await firestore().collection('community_groups').doc(targetGroupId).collection('messages').add({
-        text: `Voice Note`,
-        type: 'voice',
-        duration: finalDuration,
-        mediaUrl: audioFilePath, 
-        senderId: currentUser?.uid || 'guest_user',
-        senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
+      await firestore().collection('community_groups').doc(groupId).collection('messages').add({
+        text: label,
+        type: p.type,
+        mediaUrl,
+        storagePath,
+        fileName: p.fileName,
+        mimeType: p.mimeType,
+        fileSize: p.fileSize || null,
+        duration: p.duration || null,
+        senderId: uid,
+        senderName,
         senderPhoto: currentUser?.photoURL || null,
         status: 'sent',
         reactions: {},
@@ -1178,8 +1382,105 @@ export default function CommunityScreen({ navigation }: any) {
         createdAt: firestore.FieldValue.serverTimestamp()
       });
     } catch (e: any) {
+      Alert.alert('Upload failed', e?.message || 'Could not send. Please try again.');
+    } finally {
+      setChatMessages(prev => prev.filter((m: any) => m.id !== tempId));
+    }
+  };
+
+  const handlePickImage = async (fromCamera: boolean) => {
+    if (!imagePicker) {
+      Alert.alert('Not available', 'Image picker is not installed. Run: npm i react-native-image-picker, then rebuild the app.');
+      return;
+    }
+    try {
+      const launch = fromCamera ? imagePicker.launchCamera : imagePicker.launchImageLibrary;
+      const res = await launch({
+        mediaType: 'photo',
+        quality: 0.8,
+        maxWidth: 1600,
+        maxHeight: 1600,
+        selectionLimit: 1,
+        saveToPhotos: false,
+      });
+      if (res?.didCancel) return;
+      if (res?.errorCode) {
+        Alert.alert('Error', res.errorMessage || String(res.errorCode));
+        return;
+      }
+      const asset = res?.assets?.[0];
+      if (!asset?.uri) return;
+      if (asset.fileSize && asset.fileSize > MAX_CHAT_FILE_BYTES) {
+        Alert.alert('File too large', 'Maximum size is 20 MB.');
+        return;
+      }
+      await sendMediaMessage({
+        type: 'image',
+        localUri: asset.uri,
+        fileName: asset.fileName || `photo_${Date.now()}.jpg`,
+        mimeType: asset.type || 'image/jpeg',
+        fileSize: asset.fileSize,
+      });
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not open the picker.');
+    }
+  };
+
+  const handlePickDocument = async (kind: 'document' | 'audio') => {
+    if (!docPicker) {
+      Alert.alert('Not available', 'Document picker is not installed. Run: npm i @react-native-documents/picker, then rebuild the app.');
+      return;
+    }
+    try {
+      const T = docPicker.types || {};
+      const type = kind === 'audio'
+        ? [T.audio].filter(Boolean)
+        : [T.pdf, T.doc, T.docx, T.xls, T.xlsx, T.ppt, T.pptx, T.plainText, T.zip].filter(Boolean);
+      const opts: any = type.length ? { type } : {};
+      const result = typeof docPicker.pickSingle === 'function'
+        ? await docPicker.pickSingle(opts)
+        : await docPicker.pick(opts);
+      const file: any = Array.isArray(result) ? result[0] : result;
+      if (!file?.uri) return;
+      if (file.size && file.size > MAX_CHAT_FILE_BYTES) {
+        Alert.alert('File too large', 'Maximum size is 20 MB.');
+        return;
+      }
+      await sendMediaMessage({
+        type: 'file',
+        localUri: file.uri,
+        fileName: file.name || `file_${Date.now()}`,
+        mimeType: file.type || (kind === 'audio' ? 'audio/mpeg' : 'application/octet-stream'),
+        fileSize: file.size || undefined,
+      });
+    } catch (e: any) {
+      const cancelled =
+        (typeof docPicker.isCancel === 'function' && docPicker.isCancel(e)) ||
+        e?.code === 'DOCUMENT_PICKER_CANCELED' ||
+        e?.code === 'OPERATION_CANCELED';
+      if (!cancelled) Alert.alert('Error', e?.message || 'Could not open the file picker.');
+    }
+  };
+
+  const handleStopAndSendRecording = async () => {
+    try {
+      if (timerRef.current) clearInterval(timerRef.current);
+      const audioFilePath = await AudioRecord.stop();
       setIsRecording(false);
-      Alert.alert('Error', e.message);
+
+      const finalDuration = recordSecs > 0 ? recordSecs : 2;
+      setRecordSecs(0);
+
+      await sendMediaMessage({
+        type: 'voice',
+        localUri: audioFilePath,
+        fileName: `voice_${Date.now()}.wav`,
+        mimeType: 'audio/wav',
+        duration: finalDuration,
+      });
+    } catch (e: any) {
+      setIsRecording(false);
+      Alert.alert('Error', e?.message || 'Could not send the voice note.');
     }
   };
 
@@ -1357,6 +1658,12 @@ export default function CommunityScreen({ navigation }: any) {
           batch.delete(docRef);
         });
         await batch.commit();
+        // best effort: also remove the uploaded file from Storage
+        if (storageLib) {
+          messagesBackup.forEach((m: any) => {
+            if (m?.storagePath) storageLib().ref(m.storagePath).delete().catch(() => {});
+          });
+        }
       } catch (error) {
         setChatMessages(prev => [...messagesBackup, ...prev]);
       }
@@ -1409,10 +1716,37 @@ export default function CommunityScreen({ navigation }: any) {
     }
   };
 
-  const handleDeletePost = (id: string) => {
+  // Only an admin can delete any post. Everyone else can delete only their own post.
+  // Own post: deleted directly (Firestore rules allow only the author).
+  // Someone else's post: only through the adminDeletePost Cloud Function, which re-checks
+  // the `admins` collection on the server.
+  const isOwnPost = (post: any): boolean =>
+    !!currentUser?.uid && !!post?.uid && post.uid === currentUser.uid;
+
+  const canDeletePost = (post: any): boolean => isOwnPost(post) || isFeedAdmin;
+
+  const handleDeletePost = (post: any) => {
+    if (!canDeletePost(post)) {
+      Alert.alert('Not allowed', 'You can delete only your own posts.');
+      return;
+    }
     Alert.alert('Delete Post', 'Are you sure?', [
       { text: 'Cancel', style: 'cancel' },
-      { text: 'Delete', style: 'destructive', onPress: () => firestore().collection('posts').doc(id).delete() }
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          try {
+            if (isOwnPost(post)) {
+              await firestore().collection('posts').doc(post.id).delete();
+            } else {
+              await functions().httpsCallable('adminDeletePost')({ postId: post.id });
+            }
+          } catch (e: any) {
+            Alert.alert('Delete failed', e?.message || 'You are not allowed to delete this post.');
+          }
+        }
+      }
     ]);
   };
 
@@ -1717,7 +2051,7 @@ export default function CommunityScreen({ navigation }: any) {
               showsVerticalScrollIndicator={false} 
               contentContainerStyle={styles.scrollList} 
               renderItem={({ item }) => {
-                const canDelete = isAdmin || (currentUser?.uid && item.uid === currentUser.uid);
+                const canDelete = canDeletePost(item);
                 return (
                   <View style={[styles.premiumCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
                     <View style={styles.cardHeader}>
@@ -1731,7 +2065,7 @@ export default function CommunityScreen({ navigation }: any) {
                         </View>
                       </View>
                       {canDelete && (
-                        <TouchableOpacity onPress={() => handleDeletePost(item.id)} style={styles.deleteIconButton}>
+                        <TouchableOpacity onPress={() => handleDeletePost(item)} style={styles.deleteIconButton}>
                           <Trash2 size={16} color="#EF4444" />
                         </TouchableOpacity>
                       )}
@@ -1870,72 +2204,6 @@ export default function CommunityScreen({ navigation }: any) {
                     </TouchableOpacity>
                   )}
                 </View>
-              </View>
-
-              {/* VOICE ROOMS SECTION */}
-              <View style={[styles.sectionTitleRow, { marginTop: 26 }]}>
-                <Text style={[styles.sectionHeadingTitle, { color: colors.textPrimary }]}>Voice Rooms</Text>
-                <View style={styles.liveNowPill}>
-                  <Radio size={12} color="#3B82F6" />
-                  <Text style={styles.liveNowPillText}>Live Now</Text>
-                </View>
-              </View>
-
-              <View style={styles.voiceRoomsRow}>
-                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#FEE2E2' }]}>
-                    <Text style={{ fontSize: 26 }}>🚀</Text>
-                  </View>
-                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>English Learners</Text>
-                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]} numberOfLines={1}>Practice Together</Text>
-                  <View style={styles.roomOnlineStatusRow}>
-                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
-                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>{onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}</Text>
-                  </View>
-                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
-                    <Mic size={13} color={primaryColor} />
-                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#E0E7FF' }]}>
-                    <Text style={{ fontSize: 26 }}>🎤</Text>
-                  </View>
-                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>Interview Prep</Text>
-                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]} numberOfLines={1}>Mock Sessions</Text>
-                  <View style={styles.roomOnlineStatusRow}>
-                    <View style={[styles.greenDot, { backgroundColor: '#64748B' }]} />
-                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>Offline</Text>
-                  </View>
-                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
-                    <Mic size={13} color={primaryColor} />
-                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
-                  </TouchableOpacity>
-                </View>
-
-                <View style={[styles.voiceRoomGridCard, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-                  <View style={[styles.roomEmojiBubble, { backgroundColor: '#E0F2FE' }]}>
-                    <Text style={{ fontSize: 26 }}>🎧</Text>
-                  </View>
-                  <Text style={[styles.roomCardTitle, { color: colors.textPrimary }]} numberOfLines={1}>Accent Boost</Text>
-                  <Text style={[styles.roomCardSub, { color: colors.textSecondary }]}>Speak Confidently</Text>
-                  <View style={styles.roomOnlineStatusRow}>
-                    <View style={[styles.greenDot, { backgroundColor: '#64748B' }]} />
-                    <Text style={[styles.roomOnlineCount, { color: colors.textSecondary }]}>Offline</Text>
-                  </View>
-                  <TouchableOpacity style={[styles.joinRoomBtn, { backgroundColor: primaryColor + '18' }]} activeOpacity={0.85}>
-                    <Mic size={13} color={primaryColor} />
-                    <Text style={[styles.joinRoomBtnText, { color: primaryColor }]}>Join</Text>
-                  </TouchableOpacity>
-                </View>
-              </View>
-
-              <View style={[styles.fluencyTipBanner, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFBEB', borderColor: isDarkMode ? '#334155' : '#FDE68A', marginTop: 22 }]}>
-                <Text style={{ fontSize: 16, marginRight: 8 }}>💡</Text>
-                <Text style={[styles.fluencyTipText, { color: isDarkMode ? '#F8FAFC' : '#92400E' }]}>
-                  <Text style={{ fontWeight: '900' }}>Tip: </Text>Join voice rooms to improve your fluency faster! 😊
-                </Text>
               </View>
             </View>
           </ScrollView>
@@ -2554,7 +2822,7 @@ export default function CommunityScreen({ navigation }: any) {
                                 onLongPress={() => handleMessageLongPress(item)}
                                 style={{ 
                                   backgroundColor: isSingleEmojiText(item.text) ? 'transparent' : (isMe ? primaryColor : colors.bgCard), 
-                                  padding: isSingleEmojiText(item.text) ? 0 : 14,
+                                  padding: isSingleEmojiText(item.text) ? 0 : (item.type === 'image' ? 4 : 14),
                                   paddingBottom: isSingleEmojiText(item.text) ? 0 : (hasReaction ? 28 : 14),
                                   borderRadius: isSingleEmojiText(item.text) ? 10 : 18,
                                   borderWidth: isSingleEmojiText(item.text) ? 0 : (isSelected ? 2 : (isMe ? 0 : 1)), 
@@ -2578,6 +2846,29 @@ export default function CommunityScreen({ navigation }: any) {
                                       <Text style={{ color: isMe ? 'rgba(255,255,255,0.85)' : colors.textSecondary, fontSize: 11 }}>{item.duration || 2}s</Text>
                                     </View>
                                   </TouchableOpacity>
+                                ) : item.type === 'image' ? (
+                                  <View>
+                                    <Image source={{ uri: item.mediaUrl }} style={styles.chatImageMessage} resizeMode="cover" />
+                                    {item.uploading && (
+                                      <View style={styles.chatImageUploading}>
+                                        <ActivityIndicator color="#FFF" />
+                                      </View>
+                                    )}
+                                  </View>
+                                ) : item.type === 'file' ? (
+                                  <View style={styles.chatFileRow}>
+                                    <View style={[styles.chatFileIcon, { backgroundColor: isMe ? 'rgba(255,255,255,0.22)' : primaryColor + '18' }]}>
+                                      {item.uploading
+                                        ? <ActivityIndicator size="small" color={isMe ? '#FFF' : primaryColor} />
+                                        : <FileText size={20} color={isMe ? '#FFF' : primaryColor} />}
+                                    </View>
+                                    <View style={{ flex: 1 }}>
+                                      <Text numberOfLines={2} style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '700', fontSize: 13 }}>{item.fileName || item.text}</Text>
+                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.8)' : colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                                        {item.uploading ? 'Uploading...' : (formatFileSize(item.fileSize) || 'Tap to open')}
+                                      </Text>
+                                    </View>
+                                  </View>
                                 ) : isSingleEmojiText(item.text) ? (
                                   <Text style={[
                                     styles.standaloneEmojiMessage,
@@ -2821,6 +3112,17 @@ export default function CommunityScreen({ navigation }: any) {
           </Modal>
         )}
 
+        {!!previewImageUrl && (
+          <Modal transparent visible={true} animationType="fade" onRequestClose={() => setPreviewImageUrl(null)}>
+            <View style={styles.imagePreviewBackdrop}>
+              <Image source={{ uri: previewImageUrl }} style={styles.imagePreviewImage} resizeMode="contain" />
+              <TouchableOpacity style={styles.imagePreviewClose} onPress={() => setPreviewImageUrl(null)} activeOpacity={0.8}>
+                <X size={22} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          </Modal>
+        )}
+
         {showMediaPicker && (
           <Modal transparent visible={true} animationType="fade" onRequestClose={closeMediaPicker}>
             <TouchableOpacity style={styles.mediaOverlayBackdrop} activeOpacity={1} onPress={closeMediaPicker}>
@@ -2833,28 +3135,28 @@ export default function CommunityScreen({ navigation }: any) {
                 </View>
 
                 <View style={styles.mediaGridContainer}>
-                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Camera", "Open Camera"); }}>
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickImage(true); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#EC4899' }]}>
                       <Camera size={22} color="#FFFFFF" />
                     </View>
                     <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Camera</Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Gallery", "Open Gallery"); }}>
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickImage(false); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#8B5CF6' }]}>
                       <ImageIcon size={22} color="#FFFFFF" />
                     </View>
                     <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Gallery</Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Document", "Select Document"); }}>
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickDocument('document'); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#3B82F6' }]}>
                       <FileText size={22} color="#FFFFFF" />
                     </View>
                     <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Document</Text>
                   </TouchableOpacity>
 
-                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); Alert.alert("Audio", "Send Audio File"); }}>
+                  <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickDocument('audio'); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#F59E0B' }]}>
                       <Music size={22} color="#FFFFFF" />
                     </View>
@@ -2920,72 +3222,18 @@ export default function CommunityScreen({ navigation }: any) {
       </Modal>
 
       {/* MEMBERS LIST MODAL */}
-      <Modal visible={showMembersListModal} animationType="fade" transparent={true} onRequestClose={() => setShowMembersListModal(false)}>
-        <TouchableOpacity style={styles.membersModalOverlay} activeOpacity={1} onPress={() => setShowMembersListModal(false)}>
-          <TouchableOpacity activeOpacity={1} style={[styles.membersModalCard, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]} onPress={(e) => e.stopPropagation()}>
-            <View style={styles.membersModalHeader}>
-              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
-                <Users size={20} color={primaryColor} />
-                <Text style={[styles.membersModalTitle, { color: colors.textPrimary }]}>Group Members ({totalMembers})</Text>
-              </View>
-              <TouchableOpacity onPress={() => setShowMembersListModal(false)} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
-                <X size={20} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
-
-            {communityMembersList.length === 0 ? (
-              <View style={{ paddingVertical: 24, alignItems: 'center' }}>
-                <ActivityIndicator size="small" color={primaryColor} />
-                <Text style={{ color: colors.textSecondary, marginTop: 8, fontSize: 13 }}>Loading members...</Text>
-              </View>
-            ) : (
-              <FlatList
-                data={communityMembersList}
-                keyExtractor={(item) => item.id}
-                showsVerticalScrollIndicator={false}
-                contentContainerStyle={{ paddingVertical: 8 }}
-                renderItem={({ item }) => {
-                  const isTargetMe = item.uid === currentUser?.uid;
-                  const memberIsOnline = isPresenceFresh(item, presenceNow);
-                  return (
-                    <View style={[styles.memberItemRow, { borderColor: colors.border }]}>
-                      <View style={[styles.memberAvatarCircle, { backgroundColor: getAvatarColor(item.userName) }]}>
-                        {item.photoURL ? (
-                          <Image source={{ uri: item.photoURL }} style={styles.memberImg} />
-                        ) : (
-                          <Text style={styles.memberAvatarInitial}>{(item.userName || 'U').charAt(0).toUpperCase()}</Text>
-                        )}
-                      </View>
-                      <View style={{ flex: 1, marginLeft: 12 }}>
-                        <Text style={[styles.memberNameText, { color: colors.textPrimary }]}>
-                          {item.userName} {isTargetMe ? '(You)' : ''}
-                        </Text>
-                        <Text style={{ fontSize: 11, color: memberIsOnline ? '#10B981' : colors.textSecondary, marginTop: 1 }}>
-                          {memberIsOnline ? 'Online' : (item.lastActive ? `Last seen ${formatTimeAgo(item.lastActive, presenceNow)}` : 'Last seen unavailable')}
-                        </Text>
-                      </View>
-                      <View style={[styles.memberStatusDot, { backgroundColor: memberIsOnline ? '#10B981' : '#64748B' }]} />
-
-                      {isAdmin && !isTargetMe && (
-                        <TouchableOpacity 
-                          style={styles.adminKickBtn} 
-                          onPress={() => {
-                            setMemberToKick(item);
-                            setShowKickConfirmModal(true);
-                          }} 
-                          activeOpacity={0.7}
-                        >
-                          <UserX size={15} color="#EF4444" />
-                        </TouchableOpacity>
-                      )}
-                    </View>
-                  );
-                }}
-              />
-            )}
-          </TouchableOpacity>
-        </TouchableOpacity>
-      </Modal>
+      <MembersModal
+        visible={showMembersListModal}
+        onClose={closeMembersModal}
+        members={communityMembersList}
+        total={totalMembers}
+        myUid={currentUser?.uid}
+        isAdmin={isAdmin}
+        isDarkMode={isDarkMode}
+        colors={colors}
+        primaryColor={primaryColor}
+        onKick={kickFromList}
+      />
 
       {/* LEAVE MODAL */}
       <Modal visible={showLeaveConfirmModal} animationType="fade" transparent={true} onRequestClose={() => setShowLeaveConfirmModal(false)}>
@@ -4442,6 +4690,54 @@ const styles = StyleSheet.create({
     flex: 1, 
     backgroundColor: 'rgba(0,0,0,0.45)', 
     justifyContent: 'flex-end', 
+  },
+  chatImageMessage: {
+    width: 220,
+    height: 220,
+    borderRadius: 14,
+    backgroundColor: '#CBD5E1',
+  },
+  chatImageUploading: {
+    ...StyleSheet.absoluteFill,
+    borderRadius: 14,
+    backgroundColor: 'rgba(0,0,0,0.35)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatFileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    minWidth: 190,
+    maxWidth: 240,
+  },
+  chatFileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imagePreviewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imagePreviewImage: {
+    width: '100%',
+    height: '85%',
+  },
+  imagePreviewClose: {
+    position: 'absolute',
+    top: (StatusBar.currentHeight || 40) + 8,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   premiumMediaSheet: {
     borderTopLeftRadius: 28, 

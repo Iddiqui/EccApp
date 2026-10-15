@@ -75,6 +75,7 @@ export interface ProgramPlan {
   mrp: number | null;
   isPopular: boolean;
   tagline: string;
+  discountPercent?: number | null; // "Save N%" chip; 0 = removed by admin, null/undefined = use tagline
   features: string[];
   sortOrder: number;
 }

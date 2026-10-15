@@ -186,14 +186,39 @@ export {
 export { getSessionToken } from './bookings/getSessionToken';
 
 export { releaseExpiredBookings } from './bookings/releaseExpiredBookings';
+ 
 export {
+  // sessions and bookings
+  onBookingCreated,
   onBookingStatusChange,
   onSlotCreated,
   sendSessionReminders,
+  // teachers
+  onTeacherAdded,
+  onReviewCreated,
+  // audio group classes
+  onAudioSessionCreated,
+  onAudioAttendeeCreated,
+  onAudioSessionCancelled,
+  // plans and payments
+  onPaymentPaid,
+  sendPlanExpiryReminders,
+  // rooms, community, challenges
+  onVoiceRoomCreated,
+  onFeedPostCreated,
+  onChatMessageCreated,
+  onChallengeCreated,
+  onDailyChallengeCreated,
+  // streak
   sendStreakReminders,
+  onStreakChange,
 } from './notifications/notificationTriggers';
 export { getDemoConfig, createDemoBooking } from './bookings/demoClass';
 export {
   adminSetDemoConfig, adminUpdatePlanPrice,
   adminUpsertTeacher, adminSetTeacherActive, adminDeleteTeacher,
 } from './admin/adminTools';
+export { adminDeletePost } from './admin/communityAdmin';
+import './globalOptions';
+  export { cleanupChallengeRecordings } from './challenges/cleanupRecordings';
+  export { sendEmailCode, verifyEmailCode, completeProfile, resetPasswordWithEmailCode, resetPasswordWithPhone } from './auth/accountAuth';
