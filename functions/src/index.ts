@@ -222,3 +222,5 @@ export { adminDeletePost } from './admin/communityAdmin';
 import './globalOptions';
   export { cleanupChallengeRecordings } from './challenges/cleanupRecordings';
   export { sendEmailCode, verifyEmailCode, completeProfile, resetPasswordWithEmailCode, resetPasswordWithPhone } from './auth/accountAuth';
+     export { onCommunityMention } from './notifications/mentionNotifications';
+     export { syncChatAdmin, onAdminListDeleted, onSubAdminListDeleted } from './admin/chatModeration';

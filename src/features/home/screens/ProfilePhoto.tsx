@@ -9,7 +9,7 @@
 // Usage in your Profile screen, where the avatar / email is shown:
 //   <ProfilePhoto size={96} name={displayName} />
 import React, { useEffect, useState } from 'react';
-import { View, Text, Image, TouchableOpacity, ActivityIndicator, Alert, StyleSheet } from 'react-native';
+import { View, Text, Image, TouchableOpacity, ActivityIndicator, Alert, Platform, StyleSheet } from 'react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import { Camera } from 'lucide-react-native';
@@ -131,7 +131,9 @@ export default function ProfilePhoto({ size = 96, name, accent = '#2563EB', onCh
     const buttons: any[] = [{ text: photoUrl ? 'Change photo' : 'Add photo', onPress: choosePhoto }];
     if (photoUrl) buttons.push({ text: 'Remove photo', style: 'destructive', onPress: removePhoto });
     buttons.push({ text: 'Cancel', style: 'cancel' });
-    Alert.alert('Profile photo', undefined, buttons);
+    // Android lists a 3-button alert bottom-to-top, so the array is reversed there
+    // to show: Change photo, Remove photo, Cancel (top to bottom).
+    Alert.alert('Profile photo', undefined, Platform.OS === 'android' ? [...buttons].reverse() : buttons, { cancelable: true });
   };
 
   const initial = (name || user?.displayName || user?.email || 'U').trim().charAt(0).toUpperCase();

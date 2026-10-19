@@ -13,7 +13,7 @@ import {
 } from 'react-native';
 import {
   ChevronLeft, Flame, Mic, Trophy, Heart, BellOff,
-  CalendarCheck, Headphones, CreditCard, Users, Target, Star,
+  CalendarCheck, Headphones, CreditCard, Users, Target, Star, AtSign,
 } from 'lucide-react-native';
 
 import { useTheme } from '../../../hooks/useTheme';
@@ -85,6 +85,13 @@ export default function NotificationScreen({ navigation }: any) {
     };
   }, [reloadKey]);
 
+  // When the user leaves this screen, everything they saw counts as read (this clears the red dot on Home)
+  useEffect(() => {
+    return () => {
+      markAllNotificationsRead().catch(() => {});
+    };
+  }, []);
+
   const onRefresh = () => {
     setRefreshing(true);
     setReloadKey(k => k + 1);
@@ -116,6 +123,8 @@ export default function NotificationScreen({ navigation }: any) {
       targetBadgeId: item.targetBadgeId,
       targetScreen: item.targetScreen,
       targetTab: item.targetTab,
+      targetGroupId: item.targetGroupId,
+      targetMessageId: item.targetMessageId,
     });
   };
 
@@ -136,6 +145,8 @@ export default function NotificationScreen({ navigation }: any) {
         return { icon: <Headphones size={22} color="#0891B2" />, bg: isDarkMode ? '#164E63' : '#ECFEFF' };
       case 'payment':
         return { icon: <CreditCard size={22} color="#16A34A" />, bg: isDarkMode ? '#14532D' : '#F0FDF4' };
+      case 'mention':
+        return { icon: <AtSign size={22} color="#4F46E5" />, bg: isDarkMode ? '#312E81' : '#EEF2FF' };
       case 'community':
         return { icon: <Users size={22} color="#DB2777" />, bg: isDarkMode ? '#831843' : '#FDF2F8' };
       case 'challenge':

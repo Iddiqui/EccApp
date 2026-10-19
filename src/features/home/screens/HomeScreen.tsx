@@ -90,7 +90,12 @@ const KNOWN_ADMIN_EMAILS = [
 // ─── LOCAL ASSETS ───
 const IMG_STREAK = require('../../../assets/streak.png');
 const IMG_SMALL_TALK = require('../../../assets/small_talk.png');
-const IMG_CHALLENGE = require('../../../assets/challnge.png');
+const IMG_HERO_PUBLIC = require('../../../assets/publicroom.png');
+const IMG_HERO_TRIAL = require('../../../assets/1-1session.png');
+const IMG_HERO_PLANS = require('../../../assets/plancard.png');
+const IMG_HERO_AUDIO = require('../../../assets/audiogroup.png');
+const IMG_HERO_AI = require('../../../assets/ai.png');
+const IMG_CHALLENGE_BANNER = require('../../../assets/challenge.png');
 const IMG_CALENDER_OBJECT = require('../../../assets/calender.png');
 
 const AVATAR_COLORS = ['#8B5CF6', '#6366F1', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#3B82F6', '#D946EF'];
@@ -283,7 +288,29 @@ function FloatingEmoji({ emoji, size = 22, style }: { emoji: string; size?: numb
 }
 
 const HERO_W = SCREEN_WIDTH - 40;
-const HERO_H = 175;
+// The banner images are 1100 x 554, so the card height follows the image (no cropping, no empty space)
+const HERO_H = Math.round((HERO_W * 554) / 1100);
+// Today's Challenge banner is 1200 x 429
+const CHAL_W = SCREEN_WIDTH - 40;
+const CHAL_H = Math.round((CHAL_W * 429) / 1200);
+
+// A hero slide that is just the banner image (tap = open the screen)
+function HeroImageSlide({ source, onPress, roundedClip = true }: { source: any; onPress: () => void; roundedClip?: boolean }) {
+  const { scale, pressIn, pressOut } = useCardPress(0.97);
+  return (
+    <Animated.View style={{ transform: [{ scale }] }}>
+      <TouchableOpacity
+        activeOpacity={0.95}
+        onPress={onPress}
+        onPressIn={pressIn}
+        onPressOut={pressOut}
+        style={{ width: HERO_W, height: HERO_H, borderRadius: roundedClip ? 26 : 0, overflow: 'hidden' }}
+      >
+        <Image source={source} style={{ width: HERO_W, height: HERO_H }} resizeMode="cover" />
+      </TouchableOpacity>
+    </Animated.View>
+  );
+}
 
 // One promo slide of the home hero carousel (trial / plans)
 function HeroPromoSlide({ bg, badge, title, desc, cta, emoji, onPress }: {
@@ -311,6 +338,146 @@ function HeroPromoSlide({ bg, badge, title, desc, cta, emoji, onPress }: {
   );
 }
 
+// ───────────── Recent Activity: auto-sliding animated cards ─────────────
+const ACT_W = SCREEN_WIDTH - 40;
+const ACT_H = 108;
+const activityLook = (id: string) => {
+  if (id.startsWith('teacher_')) return { tag: 'NEW TEACHER', color: '#8B5CF6' };
+  if (id.startsWith('audio_')) return { tag: 'AUDIO CLASS', color: '#0EA5E9' };
+  if (id.startsWith('post_')) return { tag: 'COMMUNITY', color: '#10B981' };
+  if (id.startsWith('room_')) return { tag: 'LIVE ROOM', color: '#F43F5E' };
+  if (id.startsWith('booking_')) return { tag: 'BOOKING', color: '#F59E0B' };
+  if (id.startsWith('sub_')) return { tag: 'PLAN', color: '#EAB308' };
+  if (id.startsWith('rec_')) return { tag: 'CHALLENGE', color: '#6366F1' };
+  return { tag: 'UPDATE', color: '#6366F1' };
+};
+
+function ActivitySlide({ item, index, scrollX, cardBg, textColor, subColor, onPress }: any) {
+  const { tag, color } = activityLook(item.id);
+  const pulse = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.timing(pulse, { toValue: 1, duration: 1600, easing: Easing.out(Easing.quad), useNativeDriver: true })
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [pulse]);
+
+  const inputRange = [(index - 1) * ACT_W, index * ACT_W, (index + 1) * ACT_W];
+  const scale = scrollX.interpolate({ inputRange, outputRange: [0.92, 1, 0.92], extrapolate: 'clamp' });
+  const opacity = scrollX.interpolate({ inputRange, outputRange: [0.5, 1, 0.5], extrapolate: 'clamp' });
+
+  return (
+    <TouchableOpacity activeOpacity={0.92} onPress={() => onPress && onPress(item)} style={{ width: ACT_W }}>
+      <Animated.View
+        style={{
+          height: ACT_H,
+          borderRadius: 24,
+          backgroundColor: cardBg,
+          borderWidth: 1.5,
+          borderColor: color + '55',
+          paddingHorizontal: 16,
+          flexDirection: 'row',
+          alignItems: 'center',
+          overflow: 'hidden',
+          opacity,
+          transform: [{ scale }],
+        }}
+      >
+        <View style={{ position: 'absolute', right: -34, top: -34, width: 120, height: 120, borderRadius: 60, backgroundColor: color + '1A' }} />
+        <View style={{ position: 'absolute', right: 30, bottom: -40, width: 80, height: 80, borderRadius: 40, backgroundColor: color + '12' }} />
+
+        <View style={{ width: 58, height: 58, alignItems: 'center', justifyContent: 'center', marginRight: 14 }}>
+          <Animated.View
+            style={{
+              position: 'absolute', width: 52, height: 52, borderRadius: 18, backgroundColor: color,
+              opacity: pulse.interpolate({ inputRange: [0, 1], outputRange: [0.4, 0] }),
+              transform: [{ scale: pulse.interpolate({ inputRange: [0, 1], outputRange: [1, 1.5] }) }],
+            }}
+          />
+          <View style={{ width: 52, height: 52, borderRadius: 18, backgroundColor: color + '24', alignItems: 'center', justifyContent: 'center' }}>
+            <FloatingEmoji emoji={item.icon} size={26} />
+          </View>
+        </View>
+
+        <View style={{ flex: 1 }}>
+          <View style={{ alignSelf: 'flex-start', backgroundColor: color + '24', borderRadius: 8, paddingHorizontal: 8, paddingVertical: 2, marginBottom: 5 }}>
+            <Text style={{ color, fontSize: 9.5, fontWeight: '900', letterSpacing: 0.6 }}>{tag}</Text>
+          </View>
+          <Text style={{ color: textColor, fontSize: 14.5, fontWeight: '800', lineHeight: 19 }} numberOfLines={2}>
+            {item.title}
+          </Text>
+          <Text style={{ color: subColor, fontSize: 11.5, fontWeight: '600', marginTop: 3 }}>
+            {formatTimeAgo({ toDate: () => new Date(item.ts) })}
+          </Text>
+        </View>
+      </Animated.View>
+    </TouchableOpacity>
+  );
+}
+
+function ActivitySlider({ items, cardBg, textColor, subColor, activeColor, onItemPress }: any) {
+  const scrollX = useRef(new Animated.Value(0)).current;
+  const scrollRef = useRef<any>(null);
+  const idxRef = useRef(0);
+  const pausedRef = useRef(false);
+  const [idx, setIdx] = useState(0);
+
+  useEffect(() => {
+    if (idxRef.current >= items.length) {
+      idxRef.current = 0;
+      setIdx(0);
+      scrollRef.current?.scrollTo({ x: 0, animated: false });
+    }
+    if (items.length <= 1) return;
+    const timer = setInterval(() => {
+      if (pausedRef.current) return;
+      const next = (idxRef.current + 1) % items.length;
+      idxRef.current = next;
+      setIdx(next);
+      scrollRef.current?.scrollTo({ x: next * ACT_W, animated: true });
+    }, 3500);
+    return () => clearInterval(timer);
+  }, [items.length]);
+
+  return (
+    <View>
+      <Animated.ScrollView
+        ref={scrollRef}
+        horizontal
+        pagingEnabled
+        nestedScrollEnabled
+        showsHorizontalScrollIndicator={false}
+        decelerationRate="fast"
+        snapToInterval={ACT_W}
+        scrollEventThrottle={16}
+        onScroll={Animated.event([{ nativeEvent: { contentOffset: { x: scrollX } } }], { useNativeDriver: true })}
+        onScrollBeginDrag={() => { pausedRef.current = true; }}
+        onMomentumScrollEnd={(e: any) => {
+          const i = Math.round(e.nativeEvent.contentOffset.x / ACT_W);
+          idxRef.current = i;
+          setIdx(i);
+          pausedRef.current = false;
+        }}
+      >
+        {items.map((item: any, i: number) => (
+          <ActivitySlide key={item.id} item={item} index={i} scrollX={scrollX} cardBg={cardBg} textColor={textColor} subColor={subColor} onPress={onItemPress} />
+        ))}
+      </Animated.ScrollView>
+      {items.length > 1 && (
+        <View style={{ flexDirection: 'row', justifyContent: 'center', marginTop: 10, gap: 6 }}>
+          {items.map((_: any, i: number) => (
+            <View
+              key={i}
+              style={{ width: i === idx ? 18 : 6, height: 6, borderRadius: 3, backgroundColor: i === idx ? activeColor : activeColor + '40' }}
+            />
+          ))}
+        </View>
+      )}
+    </View>
+  );
+}
+
 const homeActionCard = {
   width: '100%' as const,
   marginRight: 0,
@@ -327,6 +494,15 @@ const homeIconCircle = {
 };
 const homePill = { borderRadius: 22, paddingHorizontal: 14, paddingVertical: 10 };
 const homePillText = { fontSize: 13, fontWeight: '800' as const };
+
+// Monday of the current week (local time) as YYYY-MM-DD. The weekly Speaking gain is only shown
+// for the week it was earned in, so it goes back to +0 every Monday.
+const getWeekKey = (): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
 export default function HomeScreen() {
   const navigation = useNavigation<any>();
@@ -451,12 +627,13 @@ export default function HomeScreen() {
   useEffect(() => {
     let alive = true;
     const loadRoles = () => {
-      Promise.all([checkIsAdmin(), getMyTeacherProfile()])
-        .then(([a, t]) => {
-          if (!alive) return;
-          setIsPanelAdmin(a);
-          setMyTeacher(t);
-        })
+      // Checked separately: before, if the teacher lookup failed, the admin result was thrown away too
+      // and the Admin Panel card never appeared for that admin.
+      checkIsAdmin()
+        .then((a) => { if (alive) setIsPanelAdmin(a); })
+        .catch((e) => console.log('Admin check failed:', e));
+      getMyTeacherProfile()
+        .then((t) => { if (alive) setMyTeacher(t); })
         .catch(() => {});
     };
     loadRoles();
@@ -520,7 +697,7 @@ export default function HomeScreen() {
   const [heroIndex, setHeroIndex] = useState(0);
   const showDemoSlide = !isTeacher && !!demoCfg?.isActive && !demoCfg.alreadyUsed;
   const showAudioPlanSlide = !isTeacher && !audioSub?.active;
-  const heroSlideCount = 1 + (showDemoSlide ? 1 : 0) + (!isTeacher ? 1 : 0) + (showAudioPlanSlide ? 1 : 0);
+  const heroSlideCount = 1 + (showDemoSlide ? 1 : 0) + (!isTeacher ? 1 : 0) + (showAudioPlanSlide ? 1 : 0) + 1; // + AI slide
   useEffect(() => {
     if (heroIdxRef.current >= heroSlideCount) {
       heroIdxRef.current = 0;
@@ -700,7 +877,31 @@ export default function HomeScreen() {
 
   const currentUser = auth().currentUser;
   const currentEmailClean = (currentUser?.email || '').toLowerCase().trim();
-  const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean);
+  // Admin = the fixed email list OR any email listed in the Firestore `admins` / `sub_admins` collections
+  // (so an admin added in the Firebase console gets the admin tools in the app too).
+  const [listAdmin, setListAdmin] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const rawEmail = (currentUser?.email || '').trim();
+    if (!rawEmail) {
+      setListAdmin(false);
+      return;
+    }
+    const emails = Array.from(new Set([rawEmail.toLowerCase(), rawEmail]));
+    const inList = (col: string) =>
+      firestore()
+        .collection(col)
+        .where('email', 'in', emails)
+        .limit(1)
+        .get()
+        .then((snap: any) => !snap.empty)
+        .catch(() => false);
+    Promise.all([inList('admins'), inList('sub_admins')]).then(([a, b]) => {
+      if (alive) setListAdmin(a || b);
+    });
+    return () => { alive = false; };
+  }, [currentUser?.email]);
+  const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean) || listAdmin;
 
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -709,9 +910,75 @@ export default function HomeScreen() {
   const [latestCommunityPost, setLatestCommunityPost] = useState<any>(null);
 
   // 🕒 Recent activity: the user's own actions + what was newly added in the app
-  type ActivityItem = { id: string; icon: string; title: string; ts: number };
+  type ActivityItem = { id: string; icon: string; title: string; ts: number; tab?: string };
   const [recentActivity, setRecentActivity] = useState<ActivityItem[]>([]);
   const [activityLoading, setActivityLoading] = useState(true);
+
+  // 🔔 Unread notifications: the red dot shows only while something is unread, and the bell rings
+  // when a new notification arrives (and again every few seconds while some stay unread).
+  const [unreadCount, setUnreadCount] = useState(0);
+  const prevUnreadRef = useRef<number | null>(null);
+  const bellRotate = useRef(new Animated.Value(0)).current;
+  const dotPulse = useRef(new Animated.Value(0)).current;
+
+  const ringBell = React.useCallback(() => {
+    bellRotate.setValue(0);
+    Animated.sequence([
+      Animated.timing(bellRotate, { toValue: 1, duration: 90, useNativeDriver: true }),
+      Animated.timing(bellRotate, { toValue: -1, duration: 160, useNativeDriver: true }),
+      Animated.timing(bellRotate, { toValue: 0.8, duration: 140, useNativeDriver: true }),
+      Animated.timing(bellRotate, { toValue: -0.6, duration: 120, useNativeDriver: true }),
+      Animated.timing(bellRotate, { toValue: 0.3, duration: 100, useNativeDriver: true }),
+      Animated.timing(bellRotate, { toValue: 0, duration: 90, useNativeDriver: true }),
+    ]).start();
+  }, [bellRotate]);
+
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+    const unsub = firestore()
+      .collection('users').doc(uid).collection('notifications')
+      .orderBy('createdAt', 'desc')
+      .limit(50)
+      .onSnapshot(
+        (snap) => {
+          // Same rule as the Notifications screen: anything not marked isRead === true is unread
+          const count = snap ? snap.docs.filter((d: any) => d.data()?.isRead !== true).length : 0;
+          setUnreadCount(count);
+        },
+        () => {}
+      );
+    return () => unsub();
+  }, [currentUser?.uid]);
+
+  // Ring when the number of unread notifications goes up
+  useEffect(() => {
+    if (prevUnreadRef.current !== null && unreadCount > prevUnreadRef.current) ringBell();
+    prevUnreadRef.current = unreadCount;
+  }, [unreadCount, ringBell]);
+
+  // While something is unread: soft pulsing dot + a small ring every 8 seconds
+  useEffect(() => {
+    if (unreadCount <= 0) return;
+    const pulse = Animated.loop(
+      Animated.timing(dotPulse, { toValue: 1, duration: 1300, easing: Easing.out(Easing.quad), useNativeDriver: true })
+    );
+    pulse.start();
+    const timer = setInterval(ringBell, 8000);
+    return () => { pulse.stop(); dotPulse.setValue(0); clearInterval(timer); };
+  }, [unreadCount > 0, ringBell, dotPulse]);
+
+  // Recent Activity card tap → open the matching screen
+  const handleActivityPress = (item: ActivityItem) => {
+    const id = item.id;
+    if (id.startsWith('booking_')) navigation.navigate('UpcomingSessionsListScreen');
+    else if (id.startsWith('sub_')) navigation.navigate('ProgramFlowScreen');
+    else if (id.startsWith('rec_')) openChallengeModal();
+    else if (id.startsWith('post_')) navigation.navigate('Community');
+    else if (id.startsWith('room_')) navigation.navigate('VoiceRoomScreen', { tab: item.tab || 'public' });
+    else if (id.startsWith('teacher_')) navigation.navigate('OneToOneSessionsScreen');
+    else if (id.startsWith('audio_')) navigation.navigate('VoiceRoomScreen', { tab: 'official' });
+  };
   useEffect(() => {
     const uid = currentUser?.uid;
     if (!uid) return;
@@ -800,6 +1067,7 @@ export default function HomeScreen() {
               icon: '🎙️',
               title: mine ? `You started a ${kind}: ${x.title || ''}` : `New ${kind}: ${x.title || ''}`,
               ts: toMs(x.createdAt),
+              tab: x.type === 'official' ? 'official' : 'public',
             };
           });
         }),
@@ -1512,8 +1780,28 @@ export default function HomeScreen() {
             onPress={() => navigation.navigate('Notifications')}
             activeOpacity={0.7}
           >
-            <Text style={styles.bellIcon}>🔔</Text>
-            <View style={[styles.redDotBadge, { backgroundColor: colors.alertRed }]} />
+            <Animated.View
+              style={{
+                transform: [{ rotate: bellRotate.interpolate({ inputRange: [-1, 1], outputRange: ['-24deg', '24deg'] }) }],
+              }}
+            >
+              <Text style={styles.bellIcon}>🔔</Text>
+            </Animated.View>
+            {unreadCount > 0 && (
+              <>
+                <Animated.View
+                  style={[
+                    styles.redDotBadge,
+                    {
+                      backgroundColor: colors.alertRed,
+                      opacity: dotPulse.interpolate({ inputRange: [0, 1], outputRange: [0.5, 0] }),
+                      transform: [{ scale: dotPulse.interpolate({ inputRange: [0, 1], outputRange: [1, 2.6] }) }],
+                    },
+                  ]}
+                />
+                <View style={[styles.redDotBadge, { backgroundColor: colors.alertRed }]} />
+              </>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -1595,7 +1883,7 @@ export default function HomeScreen() {
                   {t?.home?.speaking || 'Speaking'}
                 </Text>
                 <Text style={[styles.ringSubtitle, { color: colors.textSecondary }]}>
-                  {t?.home?.thisWeek || '+4 this week'}
+                  {`+${userData?.weeklyGainWeek === getWeekKey() ? (Number(userData?.weeklySpeakingGain) || 0) : 0} this week`}
                 </Text>
               </View>
             </View>
@@ -1603,7 +1891,7 @@ export default function HomeScreen() {
             <View style={[styles.ringMiniCard, { backgroundColor: cardBg, borderColor: 'rgba(16, 185, 129, 0.35)' }]}>
               <View style={[styles.scoreBadgeCircle, { backgroundColor: 'rgba(16, 185, 129, 0.15)' }]}>
                 <Text style={[styles.scoreValueText, { color: '#10B981' }]}>
-                  {userData?.fluency ?? 0}
+                  ✨
                 </Text>
               </View>
               <View style={styles.ringInfoTextContainer}>
@@ -1611,7 +1899,7 @@ export default function HomeScreen() {
                   {t?.home?.fluency || 'Fluency'}
                 </Text>
                 <Text style={[styles.ringSubtitle, { color: colors.textSecondary }]}>
-                  {t?.home?.level || 'Level B2'}
+                  Coming Soon
                 </Text>
               </View>
             </View>
@@ -1637,6 +1925,8 @@ export default function HomeScreen() {
             }}
           >
             <View style={{ width: HERO_W }}>
+          {liveRoom ? (
+          <>
           <HeroTouchScale>
           <View style={[styles.bannerCardWrapper, { height: HERO_H }]}>
             <Image 
@@ -1693,17 +1983,19 @@ export default function HomeScreen() {
             </View>
           </View>
           </HeroTouchScale>
+          </>
+          ) : (
+            <HeroImageSlide
+              source={IMG_HERO_PUBLIC}
+              onPress={() => navigation.navigate('VoiceRoomScreen', { tab: 'public' })}
+            />
+          )}
             </View>
 
             {showDemoSlide && (
               <View style={{ width: HERO_W }}>
-                <HeroPromoSlide
-                  bg="#4F46E5"
-                  badge="FREE TRIAL"
-                  emoji="🎥"
-                  title="Book 1-on-1 Trial"
-                  desc="Try a 30-minute class with a tutor"
-                  cta={demoCfg?.price === 0 ? 'Book Now · Free' : `Book Now @${demoCfg?.price}`}
+                <HeroImageSlide
+                  source={IMG_HERO_TRIAL}
                   onPress={() => navigation.navigate('DemoClassScreen')}
                 />
               </View>
@@ -1715,6 +2007,12 @@ export default function HomeScreen() {
               const usedUp = videoSub?.reason === 'no_sessions_left';
               return (
                 <View style={{ width: HERO_W }}>
+                  {!hasSessions && !usedUp ? (
+                    <HeroImageSlide
+                      source={IMG_HERO_PLANS}
+                      onPress={() => navigation.navigate('ProgramFlowScreen')}
+                    />
+                  ) : (
                   <HeroPromoSlide
                     bg="#7C3AED"
                     badge={hasSessions ? 'VIDEO PLAN' : 'VIDEO CLASSES'}
@@ -1734,23 +2032,29 @@ export default function HomeScreen() {
                         : navigation.navigate('ProgramFlowScreen', usedUp ? { mode: 'video' } : undefined)
                     }
                   />
+                  )}
                 </View>
               );
             })()}
 
             {showAudioPlanSlide && (
               <View style={{ width: HERO_W }}>
-                <HeroPromoSlide
-                  bg="#0EA5E9"
-                  badge="AUDIO CLASSES"
-                  emoji="🎙️"
-                  title="Join Audio Classes"
-                  desc="Live group speaking classes with trainers"
-                  cta="Subscribe"
+                <HeroImageSlide
+                  source={IMG_HERO_AUDIO}
+                  roundedClip={false}
                   onPress={() => navigation.navigate('ProgramFlowScreen', { mode: 'audio' })}
                 />
               </View>
             )}
+
+            {/* AI conversation: coming soon */}
+            <View style={{ width: HERO_W }}>
+              <HeroImageSlide
+                source={IMG_HERO_AI}
+                roundedClip={false}
+                onPress={() => Alert.alert('Coming Soon', 'AI conversation practice is coming soon. Stay tuned!')}
+              />
+            </View>
           </ScrollView>
 
           {heroSlideCount > 1 && (
@@ -1782,54 +2086,30 @@ export default function HomeScreen() {
         >
           <Animated.View style={[styles.challengeGlowAura, { borderColor: animatedBorderColor }]} />
 
-          <View style={styles.challengeBannerWrapper}>
-            <Image 
-              source={IMG_CHALLENGE} 
-              style={styles.absoluteBackgroundCrop}
+          <View style={[styles.challengeBannerWrapper, { minHeight: 0, height: CHAL_H }]}>
+            <Image
+              source={IMG_CHALLENGE_BANNER}
+              style={{ width: CHAL_W, height: CHAL_H }}
               resizeMode="cover"
             />
 
-            <View style={styles.challengeClickOverlay}>
-              <View style={styles.challengeLeftContent}>
-                <View style={styles.challengeTopTagRow}>
-                  <Sparkles size={12} color="#F59E0B" />
-                  <Text style={styles.challengeLabelTag}>Today's Challenge</Text>
-                </View>
-
-                <Text style={styles.challengeMainTitleBold} numberOfLines={2}>
-                  {dailyTopicData?.title || 'Describe your daily morning routine...'}
-                </Text>
-                
-                <Text style={styles.challengeSubTitle}>
-                  {dailyTopicData?.subtitle || 'Record voice & send'}
-                </Text>
-                
-                <View style={styles.challengeStatsRow}>
-                  <View style={styles.challengeXpBadge}>
-                    <Text style={styles.challengeXpText}>★ +{dailyTopicData?.rewardXP || 10} XP</Text>
+            {((savedUserRecording && !isAdmin) || (isAdmin && allAdminRecordings.length > 0)) && (
+              <View style={{ position: 'absolute', left: 14, bottom: 10, flexDirection: 'row', gap: 8 }}>
+                {savedUserRecording && !isAdmin && (
+                  <View style={styles.draftSavedTag}>
+                    <Check size={11} color="#10B981" strokeWidth={3} />
+                    <Text style={styles.draftSavedTagText}>Saved</Text>
                   </View>
-                  <Text style={styles.challengeDurationText}>⏱️ {dailyTopicData?.durationSec || 60}s</Text>
-                  
-                  {savedUserRecording && !isAdmin && (
-                    <View style={styles.draftSavedTag}>
-                      <Check size={11} color="#10B981" strokeWidth={3} />
-                      <Text style={styles.draftSavedTagText}>Saved</Text>
-                    </View>
-                  )}
+                )}
 
-                  {isAdmin && allAdminRecordings.length > 0 && (
-                    <View style={styles.adminCountTag}>
-                      <Headphones size={11} color="#C084FC" strokeWidth={2.5} />
-                      <Text style={styles.adminCountTagText}>{allAdminRecordings.length} Submissions</Text>
-                    </View>
-                  )}
-                </View>
+                {isAdmin && allAdminRecordings.length > 0 && (
+                  <View style={styles.adminCountTag}>
+                    <Headphones size={11} color="#C084FC" strokeWidth={2.5} />
+                    <Text style={styles.adminCountTagText}>{allAdminRecordings.length} Submissions</Text>
+                  </View>
+                )}
               </View>
-
-              <View style={styles.challengeArrowPill}>
-                <ChevronRight size={17} color="#FFFFFF" strokeWidth={3.8} />
-              </View>
-            </View>
+            )}
           </View>
         </TouchableOpacity>
 
@@ -2017,7 +2297,7 @@ export default function HomeScreen() {
         )}
 
         {/* Admin Panel: teacher access, plan prices, demo class price (admins only) */}
-        {isPanelAdmin && (
+        {(isPanelAdmin || isAdmin) && (
           <TouchableOpacity
             style={[
               styles.upcomingSessionCard,
@@ -2109,24 +2389,14 @@ export default function HomeScreen() {
               </View>
             </View>
           ) : (
-            recentActivity.map((item) => (
-              <View
-                key={item.id}
-                style={[styles.activityItemRow, { backgroundColor: cardBg, borderColor: activeGlowBorder }]}
-              >
-                <View style={[styles.activityIconWrapper, { backgroundColor: colors.primary + '1F' }]}>
-                  <Text style={styles.actIcon}>{item.icon}</Text>
-                </View>
-                <View style={styles.activityMainDetails}>
-                  <Text style={[styles.activityTitleText, { color: colors.textPrimary }]} numberOfLines={2}>
-                    {item.title}
-                  </Text>
-                  <Text style={[styles.activityTimeTextOffset, { color: colors.textSecondary }]}>
-                    {formatTimeAgo({ toDate: () => new Date(item.ts) })}
-                  </Text>
-                </View>
-              </View>
-            ))
+            <ActivitySlider
+              items={recentActivity}
+              cardBg={cardBg}
+              textColor={colors.textPrimary}
+              subColor={colors.textSecondary}
+              activeColor={colors.primary}
+              onItemPress={handleActivityPress}
+            />
           )}
         </View>
 

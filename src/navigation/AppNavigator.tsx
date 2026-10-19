@@ -1,5 +1,5 @@
-import React, { useState, useEffect } from 'react';
-import { View, ActivityIndicator, StyleSheet } from 'react-native';
+import React, { useState, useEffect, useRef } from 'react';
+import { View, ActivityIndicator, StyleSheet, Linking } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import auth, { FirebaseAuthTypes } from '@react-native-firebase/auth';
@@ -74,6 +74,35 @@ export default function AppNavigator({ theme }: AppNavigatorProps) {
   // New users must finish "Complete Your Profile" before they can use the app.
   // This also creates users/{uid} on the first sign-in.
   const gate = useProfileGate(user);
+
+  // Shared room links: eccapp://room/<id> or https://.../room/<id>
+  // The link opens the Rooms list with that room highlighted, so the user can tap it to join.
+  const pendingRoomId = useRef<string | null>(null);
+  const [roomLinkTick, setRoomLinkTick] = useState(0);
+
+  useEffect(() => {
+    const handle = (url?: string | null) => {
+      const m = url ? url.match(/\/room\/([A-Za-z0-9_-]+)/) : null;
+      if (m) {
+        pendingRoomId.current = m[1];
+        setRoomLinkTick((n) => n + 1);
+      }
+    };
+    Linking.getInitialURL().then(handle).catch(() => {});
+    const sub = Linking.addEventListener('url', (e) => handle(e.url));
+    return () => sub.remove();
+  }, []);
+
+  useEffect(() => {
+    if (!user || gate !== 'ready' || !pendingRoomId.current) return;
+    const roomId = pendingRoomId.current;
+    pendingRoomId.current = null;
+    // Wait one moment so the signed-in stack is mounted
+    const t = setTimeout(() => {
+      (navigation as any).navigate('VoiceRoomScreen', { roomId });
+    }, 400);
+    return () => clearTimeout(t);
+  }, [user, gate, roomLinkTick]);
 
   // Initialize push notifications once the user is logged in.
   // This hook must stay above the early return below to keep hook order stable.

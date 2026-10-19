@@ -276,11 +276,12 @@ export default function ProfileScreen({ navigation }: any) {
               <View style={{ flex: 1 }}>
                 <View style={styles.progressLabelRow}>
                   <Text style={[styles.progressNameText, { color: isDarkMode ? '#E2E8F0' : '#1E293B' }]}>{item.label}</Text>
-                  <Text style={[styles.progressValText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>{item.value}</Text>
+                  {/* Phase 2: real scores will replace this. Until then every row says Coming Soon. */}
+                  <View style={{ paddingHorizontal: 9, paddingVertical: 3, borderRadius: 999, backgroundColor: item.barColor + '22' }}>
+                    <Text style={{ fontSize: 10.5, fontWeight: '800', color: item.barColor }}>Coming Soon</Text>
+                  </View>
                 </View>
-                <View style={[styles.progressBarBg, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.06)' : '#F1F5F9' }]}>
-                  <View style={[styles.progressBarFill, { width: item.value, backgroundColor: item.barColor }]} />
-                </View>
+                <View style={[styles.progressBarBg, { backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.06)' : '#F1F5F9' }]} />
               </View>
             </View>
           ))}
@@ -336,19 +337,14 @@ export default function ProfileScreen({ navigation }: any) {
             <Award size={20} color="#8B5CF6" />
           </View>
           <View style={{ flex: 1, marginLeft: 12 }}>
-            <Text style={[styles.certMainTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>B2 Conversation Fluency</Text>
-            <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 2 }}>
-              <Text style={[styles.certSubTitle, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>Issued Jan 2026 • Verified </Text>
-              <View style={styles.blueCheckSmall}>
-                <Text style={{ color: '#FFFFFF', fontSize: 8, fontWeight: '900' }}>✓</Text>
-              </View>
-            </View>
+            <Text style={[styles.certMainTitle, { color: isDarkMode ? '#FFFFFF' : '#0F172A' }]}>Fluency Certificate</Text>
+            <Text style={[styles.certSubTitle, { color: isDarkMode ? '#94A3B8' : '#64748B', marginTop: 2 }]}>
+              Coming Soon • Keep practicing to earn yours
+            </Text>
           </View>
-          <TouchableOpacity style={[styles.certDownloadCircleBtn, { 
-            backgroundColor: isDarkMode ? 'rgba(255, 255, 255, 0.08)' : '#F1F5F9' 
-          }]} activeOpacity={0.8}>
-            <Download size={15} color={isDarkMode ? '#CBD5E1' : '#475569'} />
-          </TouchableOpacity>
+          <View style={{ paddingHorizontal: 10, paddingVertical: 5, borderRadius: 999, backgroundColor: 'rgba(139, 92, 246, 0.15)' }}>
+            <Text style={{ fontSize: 10.5, fontWeight: '900', color: '#8B5CF6', letterSpacing: 0.4 }}>SOON</Text>
+          </View>
         </View>
 
         {/* ─── 5. SIGN OUT ACCOUNT BUTTON ─── */}

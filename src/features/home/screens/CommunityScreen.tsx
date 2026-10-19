@@ -1,6 +1,7 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { 
-  StyleSheet, 
+  StyleSheet,
+  PanResponder, 
   AppState,
   Text, 
   View, 
@@ -30,7 +31,7 @@ import {
   Play, Pause, MoreVertical, XCircle, Check, CheckCheck, Clock, ShieldCheck, ChevronRight, AlertTriangle, Smile,
   Radio, Puzzle, RotateCcw, Shuffle, ArrowLeft, BarChart2, Lightbulb,
   Pin, PinOff, Camera, Image as ImageIcon, FileText, Music, MapPin, LogOut, UserPlus, Timer, ShieldAlert, UserX, Delete,
-  Edit3, Keyboard as KeyboardIcon
+  Edit3, Keyboard as KeyboardIcon, ZoomIn, ZoomOut, AtSign
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
@@ -233,11 +234,21 @@ const formatTimeAgo = (timestamp: any, nowMs: number = Date.now()) => {
   return `${Math.floor(hours / 24)}d ago`;
 };
 
-const isPresenceFresh = (member: any, nowMs: number = Date.now()) => {
-  if (!member?.isChatActive || !member?.lastActive) return false;
-  const date = hasToDate(member.lastActive) ? member.lastActive.toDate() : new Date(member.lastActive);
+const PRESENCE_TTL_MS = 90 * 1000;
+
+const presenceMs = (value: any): number => {
+  if (!value) return 0;
+  const date = hasToDate(value) ? value.toDate() : new Date(value);
   const time = date.getTime();
-  return Number.isFinite(time) && nowMs - time <= 90 * 1000;
+  return Number.isFinite(time) ? time : 0;
+};
+
+// Online = chat is open right now (isChatActive) OR the member is on the Community screen (appOnlineAt).
+// Both are heartbeats, so they count only if they are fresh.
+const isPresenceFresh = (member: any, nowMs: number = Date.now()) => {
+  const chatFresh = member?.isChatActive === true && nowMs - presenceMs(member?.lastActive) <= PRESENCE_TTL_MS;
+  const screenFresh = nowMs - presenceMs(member?.appOnlineAt) <= PRESENCE_TTL_MS;
+  return chatFresh || screenFresh;
 };
 
 const formatMessageTime = (timestamp: any) => {
@@ -245,6 +256,12 @@ const formatMessageTime = (timestamp: any) => {
   const date = hasToDate(timestamp) ? timestamp.toDate() : new Date(timestamp);
   return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
+
+// Community chat moderation: only admins may share links. Keep this in sync with the
+// Firestore rules (chatHasLink) - the rules are the real enforcement, this gives instant feedback.
+const CHAT_LINK_REGEX = /(https?:\/\/|ftp:\/\/|www\.|[a-z0-9-]+\.(com|net|org|in|io|co|me|app|ly|link|xyz|info|biz|us|uk|tv|gl|be|to|cc|ai|dev|site|online|store|shop|live|club|top|page|gle)(?![a-z0-9]))/i;
+const chatHasLink = (value: any): boolean => CHAT_LINK_REGEX.test(String(value ?? ''));
+const IMAGE_FILE_REGEX = /\.(jpe?g|png|gif|webp|heic|heif|bmp|svg|tiff?)$/i;
 
 const isSingleEmojiText = (value: any): boolean => {
   const text = String(value ?? '').trim();
@@ -348,6 +365,164 @@ const AnimatedReactionBadge = ({ item, onRemove }: { item: any; onRemove: (id: s
   );
 };
 
+// ───────────── Full-screen image viewer with pinch / double-tap / button zoom ─────────────
+const MAX_ZOOM = 5;
+const ZoomableImage = ({ uri, onClose }: { uri: string; onClose: () => void }) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  const tx = useRef(new Animated.Value(0)).current;
+  const ty = useRef(new Animated.Value(0)).current;
+  const st = useRef({
+    scale: 1, x: 0, y: 0,
+    startDist: 0, startScale: 1, pinching: false,
+    lastX: 0, lastY: 0, lastCount: 0, lastTap: 0, moved: false,
+  }).current;
+  const [zoomLabel, setZoomLabel] = useState(100);
+
+  const clampPos = () => {
+    const maxX = (SCREEN_WIDTH * (st.scale - 1)) / 2;
+    const maxY = (SCREEN_HEIGHT * (st.scale - 1)) / 2;
+    st.x = Math.max(-maxX, Math.min(maxX, st.x));
+    st.y = Math.max(-maxY, Math.min(maxY, st.y));
+  };
+  const apply = (animated: boolean) => {
+    clampPos();
+    setZoomLabel(Math.round(st.scale * 100));
+    if (animated) {
+      Animated.parallel([
+        Animated.timing(scale, { toValue: st.scale, duration: 160, useNativeDriver: false }),
+        Animated.timing(tx, { toValue: st.x, duration: 160, useNativeDriver: false }),
+        Animated.timing(ty, { toValue: st.y, duration: 160, useNativeDriver: false }),
+      ]).start();
+    } else {
+      scale.setValue(st.scale); tx.setValue(st.x); ty.setValue(st.y);
+    }
+  };
+  const zoomTo = (next: number) => {
+    st.scale = Math.max(1, Math.min(MAX_ZOOM, next));
+    if (st.scale <= 1.02) { st.scale = 1; st.x = 0; st.y = 0; }
+    apply(true);
+  };
+
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => {
+        const t = e.nativeEvent.touches;
+        st.pinching = false; st.moved = false;
+        st.lastCount = t.length;
+        st.lastX = t[0]?.pageX || 0; st.lastY = t[0]?.pageY || 0;
+      },
+      onPanResponderMove: (e) => {
+        const t = e.nativeEvent.touches;
+        if (t.length >= 2) {
+          const dx = t[0].pageX - t[1].pageX;
+          const dy = t[0].pageY - t[1].pageY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (!st.pinching || st.lastCount < 2) {
+            st.pinching = true; st.startDist = dist || 1; st.startScale = st.scale;
+          }
+          st.scale = Math.max(0.8, Math.min(MAX_ZOOM, st.startScale * (dist / st.startDist)));
+          st.moved = true;
+          st.lastCount = t.length;
+          clampPos();
+          setZoomLabel(Math.round(st.scale * 100));
+          scale.setValue(st.scale); tx.setValue(st.x); ty.setValue(st.y);
+          return;
+        }
+        const cx = t[0]?.pageX || 0; const cy = t[0]?.pageY || 0;
+        if (st.lastCount !== t.length) {
+          // finger count changed (pinch -> one finger): restart from this point
+          st.lastCount = t.length; st.lastX = cx; st.lastY = cy;
+          return;
+        }
+        const ddx = cx - st.lastX; const ddy = cy - st.lastY;
+        st.lastX = cx; st.lastY = cy;
+        if (Math.abs(ddx) + Math.abs(ddy) > 1) st.moved = true;
+        if (st.scale > 1) {
+          st.x += ddx; st.y += ddy;
+          clampPos();
+          tx.setValue(st.x); ty.setValue(st.y);
+        }
+      },
+      onPanResponderRelease: () => {
+        const wasPinch = st.pinching;
+        st.pinching = false; st.lastCount = 0;
+        if (st.scale < 1.02) { st.scale = 1; st.x = 0; st.y = 0; apply(true); }
+        else { apply(false); }
+        // double tap = toggle zoom
+        if (!st.moved && !wasPinch) {
+          const nowMs = Date.now();
+          if (nowMs - st.lastTap < 300) {
+            st.lastTap = 0;
+            if (st.scale > 1) { st.scale = 1; st.x = 0; st.y = 0; apply(true); }
+            else { st.scale = 2.5; apply(true); }
+          } else {
+            st.lastTap = nowMs;
+          }
+        }
+      },
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
+  return (
+    <View style={styles.imagePreviewBackdrop}>
+      <View style={{ flex: 1, width: '100%' }} {...pan.panHandlers}>
+        <Animated.Image
+          source={{ uri }}
+          resizeMode="contain"
+          style={{
+            width: '100%',
+            height: '100%',
+            transform: [{ translateX: tx }, { translateY: ty }, { scale }],
+          }}
+        />
+      </View>
+
+      <TouchableOpacity style={styles.imagePreviewClose} onPress={onClose} activeOpacity={0.8}>
+        <X size={22} color="#FFFFFF" />
+      </TouchableOpacity>
+
+      <View style={{ position: 'absolute', bottom: 36, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 28, paddingHorizontal: 8 }}>
+        <TouchableOpacity style={{ padding: 12 }} onPress={() => zoomTo(st.scale - 0.75)} activeOpacity={0.7}>
+          <ZoomOut size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+        <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13, minWidth: 48, textAlign: 'center' }}>{zoomLabel}%</Text>
+        <TouchableOpacity style={{ padding: 12 }} onPress={() => zoomTo(st.scale + 0.75)} activeOpacity={0.7}>
+          <ZoomIn size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
+
+// ───────────── @mention helpers ─────────────
+const USERNAME_RE = /^[a-z0-9_.]{3,20}$/;
+const makeUsernameBase = (raw: string): string => {
+  let b = (raw || '').toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 14);
+  if (b.length < 3) b = (b + 'user').slice(0, 14);
+  return b;
+};
+
+// Message text with @mentions highlighted
+const MentionText = ({ text, highlight, baseColor, mineColor, isMe }: any) => {
+  const str = String(text || '');
+  if (!highlight) return <Text style={{ color: baseColor, fontSize: 16, lineHeight: 23 }}>{str}</Text>;
+  const parts = str.split(/(@[a-zA-Z0-9_.]{3,20})/g);
+  return (
+    <Text style={{ color: baseColor, fontSize: 16, lineHeight: 23 }}>
+      {parts.map((part, i) =>
+        /^@[a-zA-Z0-9_.]{3,20}$/.test(part) ? (
+          <Text key={i} style={{ fontWeight: '800', color: isMe ? '#FFFFFF' : mineColor, textDecorationLine: isMe ? 'underline' : 'none' }}>{part}</Text>
+        ) : (
+          <Text key={i}>{part}</Text>
+        )
+      )}
+    </Text>
+  );
+};
+
 // ───────────── Members list modal (own component, so the big screen does not re-render with it) ─────────────
 const MemberRow = React.memo(function MemberRow({ item, isMe, isAdmin, now, colors, onKick }: any) {
   const online = isPresenceFresh(item, now);
@@ -364,6 +539,9 @@ const MemberRow = React.memo(function MemberRow({ item, isMe, isAdmin, now, colo
         <Text style={[styles.memberNameText, { color: colors.textPrimary }]}>
           {item.userName} {isMe ? '(You)' : ''}
         </Text>
+        {!!item.username && (
+          <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 1 }}>@{item.username}</Text>
+        )}
         <Text style={{ fontSize: 11, color: online ? '#10B981' : colors.textSecondary, marginTop: 1 }}>
           {online ? 'Online' : (item.lastActive ? `Last seen ${formatTimeAgo(item.lastActive, now)}` : 'Last seen unavailable')}
         </Text>
@@ -447,7 +625,7 @@ const MembersModal = React.memo(function MembersModal({ visible, onClose, member
   );
 });
 
-export default function CommunityScreen({ navigation }: any) {
+export default function CommunityScreen({ navigation, route }: any) {
   const themeContext = useTheme() as any;
   const isDarkMode = themeContext?.isDarkMode ?? false;
   const t = themeContext?.t;
@@ -495,7 +673,7 @@ export default function CommunityScreen({ navigation }: any) {
       .where('email', 'in', emails)
       .limit(1)
       .get()
-      .then((snap: any) => { if (alive) setIsFeedAdmin(!snap.empty); })
+      .then((snap: any) => { if (alive) { setIsFeedAdmin(!snap.empty); if (!snap.empty) setIsAdmin(true); } })
       .catch(() => { if (alive) setIsFeedAdmin(false); });
     return () => { alive = false; };
   }, [currentUser?.email]);
@@ -513,7 +691,9 @@ export default function CommunityScreen({ navigation }: any) {
     setShowKickConfirmModal(true);
   }, []);
   // Name / photo cache, so a heartbeat update does not re-read every user document
-  const memberProfileCache = useRef<Record<string, { userName: string; photoURL: string }>>({});
+  const memberProfileCache = useRef<Record<string, { userName: string; photoURL: string; username?: string }>>({});
+  // Member documents whose account no longer exists (leftover / duplicate documents)
+  const orphanMemberRef = useRef<Record<string, boolean>>({});
 
   const [selectedMessageIds, setSelectedMessageIds] = useState<string[]>([]);
   const isSelectionMode = selectedMessageIds.length > 0;
@@ -550,6 +730,14 @@ export default function CommunityScreen({ navigation }: any) {
 
   const [showMediaPicker, setShowMediaPicker] = useState(false);
   const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
+  const [pinnedIndex, setPinnedIndex] = useState(0);
+  const [highlightedMsgId, setHighlightedMsgId] = useState<string | null>(null);
+  const chatListRef = useRef<FlatList<any>>(null);
+  const [myUsername, setMyUsername] = useState('');
+  const [showUsernameModal, setShowUsernameModal] = useState(false);
+  const [usernameDraft, setUsernameDraft] = useState('');
+  const [usernameBusy, setUsernameBusy] = useState(false);
+  const pendingOpenMessageId = useRef<string | null>(null);
   const [selectedMessageForAction, setSelectedMessageForAction] = useState<any>(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
 
@@ -651,6 +839,26 @@ export default function CommunityScreen({ navigation }: any) {
         setCommunityMembersList(rawList);
         setTotalMembers(rawList.length);
 
+        // One person = one row: leftover documents of the same account are hidden
+        const finalize = (list: any[]) => {
+          const orphans = orphanMemberRef.current;
+          const nameOf = (m: any) => String(m.userName || '').trim().toLowerCase();
+          const emailOf = (m: any) => (typeof m.email === 'string' ? m.email.trim().toLowerCase() : '');
+          const realNames = new Set(list.filter((m) => !orphans[m.uid]).map(nameOf));
+          const ordered = [...list].sort((a, b) => (orphans[a.uid] ? 1 : 0) - (orphans[b.uid] ? 1 : 0));
+          const seen = new Set<string>();
+          const out: any[] = [];
+          ordered.forEach((m) => {
+            if (orphans[m.uid] && realNames.has(nameOf(m))) return; // leftover copy of an account that exists
+            const keys = [`u:${m.uid}`, ...(emailOf(m) ? [`e:${emailOf(m)}`] : [])];
+            if (keys.some((k) => seen.has(k))) return;
+            keys.forEach((k) => seen.add(k));
+            out.push(m);
+          });
+          setCommunityMembersList(out);
+          setTotalMembers(out.length);
+        };
+
         if (currentUser?.uid) {
           const me = rawList.find((member: any) => (member.uid || member.id) === currentUser.uid);
           setIsMember(!!me);
@@ -658,26 +866,14 @@ export default function CommunityScreen({ navigation }: any) {
           setIsMember(false);
         }
 
-        const now = Date.now();
-        const PRESENCE_TTL_MS = 90 * 1000;
-        let activeCount = 0;
-        rawList.forEach((data: any) => {
-          if (data?.isChatActive !== true) return;
-          const lastActiveMs = hasToDate(data?.lastActive)
-            ? data.lastActive.toDate().getTime()
-            : 0;
-          if (lastActiveMs > 0 && now - lastActiveMs <= PRESENCE_TTL_MS) activeCount += 1;
-        });
-        setOnlineMembers(activeCount);
-
         const cache = memberProfileCache.current;
         const withProfile = (member: any) => {
           const uid = member.uid || member.id;
           const c = uid ? cache[uid] : undefined;
-          return c ? { ...member, uid, userName: c.userName, photoURL: c.photoURL } : { ...member, uid };
+          return c ? { ...member, uid, userName: c.userName, photoURL: c.photoURL, username: c.username } : { ...member, uid };
         };
         // Show the list immediately with what we already know
-        setCommunityMembersList(rawList.map(withProfile));
+        finalize(rawList.map(withProfile));
 
         // Read profiles only for members we have not seen yet
         const missing = rawList.map((m: any) => m.uid || m.id).filter((uid: string) => uid && !cache[uid]);
@@ -692,17 +888,107 @@ export default function CommunityScreen({ navigation }: any) {
                 cache[uid] = {
                   userName: user.fullName || user.name || m.userName || 'Learner',
                   photoURL: user.photoURL || m.photoURL || '',
+                  username: user.username || '',
                 };
+              } else {
+                const m = rawList.find((x: any) => (x.uid || x.id) === uid) || {};
+                orphanMemberRef.current[uid] = true;
+                cache[uid] = { userName: m.userName || 'Learner', photoURL: m.photoURL || '', username: '' };
               }
             } catch (_) {}
           })
         )
-          .then(() => setCommunityMembersList(rawList.map(withProfile)))
+          .then(() => finalize(rawList.map(withProfile)))
           .catch(() => {});
       }, (err) => console.log('Members load error:', err));
 
     return () => unsubMembers();
   }, [currentUser?.uid]);
+
+  // The members list holds only approved member documents. An admin usually has none, so the admin's own
+  // row ("You") is added here, otherwise the admin never sees their own name in the list.
+  const membersForModal = React.useMemo(() => {
+    const me = currentUser;
+    if (!me || !(isMember || isAdmin)) return communityMembersList;
+    if (communityMembersList.some((m: any) => (m.uid || m.id) === me.uid)) return communityMembersList;
+    const nowDate = new Date();
+    return [
+      {
+        uid: me.uid,
+        id: me.uid,
+        userName: me.displayName || me.email?.split('@')[0] || 'Admin',
+        photoURL: me.photoURL || '',
+        username: myUsername,
+        isChatActive: true,
+        lastActive: nowDate,
+        appOnlineAt: nowDate,
+      },
+      ...communityMembersList,
+    ];
+  }, [communityMembersList, currentUser?.uid, isMember, isAdmin, myUsername]);
+
+  // ───────── ONLINE COUNT ─────────
+  // Recomputed every 30 seconds, so members who left drop out of the count even when nothing else changes.
+  const [presenceNow, setPresenceNow] = useState(Date.now());
+  useEffect(() => {
+    const timer = setInterval(() => setPresenceNow(Date.now()), 30 * 1000);
+    return () => clearInterval(timer);
+  }, []);
+
+  // ───────── "ONLINE" WHILE USING THE COMMUNITY SCREEN ─────────
+  // Before, a member counted as online only with the group chat open, so the card said "Offline" while
+  // people were using the Community tab. Now a member is online while this screen is in front.
+  // (isChatActive keeps its own meaning, "chat is open", which the chat push notifications rely on.)
+  const [screenFocused, setScreenFocused] = useState(true);
+  useEffect(() => {
+    if (!navigation?.addListener) return;
+    const unsubFocus = navigation.addListener('focus', () => setScreenFocused(true));
+    const unsubBlur = navigation.addListener('blur', () => setScreenFocused(false));
+    return () => {
+      unsubFocus();
+      unsubBlur();
+    };
+  }, [navigation]);
+
+  // Online count. "Me" is always counted from my own state (not from the list), because the list only holds
+  // members with membershipStatus "approved" and an admin may have no member document at all.
+  useEffect(() => {
+    const myUid = currentUser?.uid;
+    let count = 0;
+    communityMembersList.forEach((m: any) => {
+      if ((m.uid || m.id) === myUid) return;
+      if (isPresenceFresh(m, presenceNow)) count += 1;
+    });
+    const iAmOnline = !!myUid && (isMember || isAdmin) && (screenFocused || isChatModalVisible);
+    setOnlineMembers(count + (iAmOnline ? 1 : 0));
+  }, [communityMembersList, presenceNow, screenFocused, isChatModalVisible, isMember, isAdmin, currentUser?.uid]);
+
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid || !(isMember || isAdmin)) return;
+    const ref = firestore().collection('community_members').doc(uid);
+
+    const beat = () => {
+      if (AppState.currentState !== 'active') return;
+      ref.set({ appOnlineAt: firestore.FieldValue.serverTimestamp() }, { merge: true }).catch(() => {});
+    };
+
+    if (!screenFocused) {
+      ref.set({ appOnlineAt: firestore.FieldValue.delete() }, { merge: true }).catch(() => {});
+      return;
+    }
+
+    beat();
+    const timer = setInterval(beat, 30 * 1000);
+    const sub = AppState.addEventListener('change', (state) => {
+      if (state === 'active') beat();
+      else ref.set({ appOnlineAt: firestore.FieldValue.delete() }, { merge: true }).catch(() => {});
+    });
+    return () => {
+      clearInterval(timer);
+      sub.remove();
+    };
+  }, [screenFocused, isMember, isAdmin, currentUser?.uid]);
 
   useEffect(() => {
     const uid = currentUser?.uid;
@@ -891,6 +1177,30 @@ export default function CommunityScreen({ navigation }: any) {
     setEditingMessage(null);
   };
 
+  // Opened from a notification (e.g. @mention): open the group chat and jump to the message
+  const [pendingOpenGroup, setPendingOpenGroup] = useState<string | null>(null);
+  useEffect(() => {
+    const gid = route?.params?.openGroupId;
+    if (!gid) return;
+    pendingOpenMessageId.current = route?.params?.messageId || null;
+    setPendingOpenGroup(gid);
+  }, [route?.params?.openGroupId, route?.params?.messageId, route?.params?.openedAt]);
+
+  useEffect(() => {
+    if (!pendingOpenGroup) return;
+    if (!isMember && !isAdmin) return; // wait until membership is known
+    openChatModal({ id: pendingOpenGroup, title: 'ECC Community Chat' });
+    setPendingOpenGroup(null);
+  }, [pendingOpenGroup, isMember, isAdmin]);
+
+  useEffect(() => {
+    const id = pendingOpenMessageId.current;
+    if (!id || !isChatModalVisible) return;
+    if (!chatMessages.some((m: any) => m.id === id)) return;
+    pendingOpenMessageId.current = null;
+    setTimeout(() => scrollToMessage(id), 600);
+  }, [chatMessages, isChatModalVisible]);
+
   const closeChatModal = () => {
     Keyboard.dismiss();
 
@@ -931,7 +1241,16 @@ export default function CommunityScreen({ navigation }: any) {
     setPlayingAudioId(null);
   };
 
-  const canOpenDeleteForMessage = (item: any) => !!item;
+  // Lets the backend (Firestore/Storage rules) recognise admins/sub-admins from the `admins` lists.
+  // Safe to call repeatedly; it only registers this user if they really are in those lists.
+  useEffect(() => {
+    if (!isAdmin || !currentUser?.uid) return;
+    functions().httpsCallable('syncChatAdmin')({}).catch(() => {});
+  }, [isAdmin, currentUser?.uid]);
+
+  // Members can delete only their own messages. Admins can delete any message.
+  const isOwnChatMessage = (item: any) => !!item && !!currentUser?.uid && item.senderId === currentUser.uid;
+  const canOpenDeleteForMessage = (item: any) => !!item && (isAdmin || isOwnChatMessage(item));
 
   const canDeleteForEveryone = (item: any) => {
     if (!item) return false;
@@ -1024,6 +1343,29 @@ export default function CommunityScreen({ navigation }: any) {
     return () => {
       showSub.remove();
     };
+  }, []);
+
+  // Android (edge-to-edge) does not always resize a Modal when the keyboard opens, which hid the message box.
+  // We read the keyboard height ourselves, unless the window already shrank on its own.
+  const [kbInset, setKbInset] = useState(0);
+  const chatOuterH = useRef(0);
+  const chatBaseH = useRef(0);
+  const kbShown = useRef(false);
+  useEffect(() => {
+    if (Platform.OS !== 'android') return;
+    const showSub = Keyboard.addListener('keyboardDidShow', (e: any) => {
+      kbShown.current = true;
+      const h = e?.endCoordinates?.height || 0;
+      setTimeout(() => {
+        const resizedByWindow = chatBaseH.current - chatOuterH.current > 80;
+        setKbInset(kbShown.current && !resizedByWindow ? h : 0);
+      }, 120);
+    });
+    const hideSub = Keyboard.addListener('keyboardDidHide', () => {
+      kbShown.current = false;
+      setKbInset(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
   }, []);
 
   const handleToggleEmojiOrKeyboard = () => {
@@ -1328,6 +1670,10 @@ export default function CommunityScreen({ navigation }: any) {
     fileSize?: number;
     duration?: number;
   }) => {
+    if (!isAdmin && (p.type === 'image' || String(p.mimeType || '').toLowerCase().startsWith('image/') || IMAGE_FILE_REGEX.test(p.fileName))) {
+      Alert.alert('Admins only', 'Only admins can send images in the group chat.');
+      return;
+    }
     const uid = currentUser?.uid;
     const groupId = selectedGroup?.id || 'ecc_community_chat';
     const senderName = currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User';
@@ -1388,7 +1734,148 @@ export default function CommunityScreen({ navigation }: any) {
     }
   };
 
+  // ───────────── Pinned messages: jump to the original message ─────────────
+  const scrollToMessage = (messageId: string) => {
+    const idx = chatMessages.findIndex((m: any) => m.id === messageId);
+    if (idx < 0) {
+      Alert.alert('Message not found', 'This message is no longer available.');
+      return;
+    }
+    setHighlightedMsgId(messageId);
+    setTimeout(() => setHighlightedMsgId(prev => (prev === messageId ? null : prev)), 2200);
+    try {
+      chatListRef.current?.scrollToIndex({ index: idx, animated: true, viewPosition: 0.5 });
+    } catch (_) {}
+  };
+
+  const safePinnedIndex = pinnedMessages.length > 0 ? Math.min(pinnedIndex, pinnedMessages.length - 1) : 0;
+  const handlePinnedBannerPress = () => {
+    if (pinnedMessages.length === 0) return;
+    const current = pinnedMessages[safePinnedIndex];
+    if (current) scrollToMessage(current.id);
+    // next tap goes to the next pinned message (after the last one it starts again from the first)
+    setPinnedIndex((safePinnedIndex + 1) % pinnedMessages.length);
+  };
+
+  // ───────────── Username (unique @id) ─────────────
+  const claimUsername = async (candidate: string, previous?: string): Promise<void> => {
+    const uid = currentUser?.uid;
+    if (!uid) throw new Error('Please log in again.');
+    const db = firestore();
+    await db.runTransaction(async (tx: any) => {
+      const newRef = db.collection('usernames').doc(candidate);
+      const snap = await tx.get(newRef);
+      const already = snapshotExists(snap);
+      if (already && snap.data()?.uid !== uid) throw new Error('taken');
+      if (!already) tx.set(newRef, { uid, createdAt: firestore.FieldValue.serverTimestamp() });
+      tx.set(db.collection('users').doc(uid), { username: candidate }, { merge: true });
+      if (previous && previous !== candidate) tx.delete(db.collection('usernames').doc(previous));
+    });
+  };
+
+  useEffect(() => {
+    const uid = currentUser?.uid;
+    if (!uid) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const snap = await firestore().collection('users').doc(uid).get();
+        const data: any = snap.data() || {};
+        if (data.username) { if (!cancelled) setMyUsername(data.username); return; }
+        const base = makeUsernameBase(
+          data.fullName || data.name || currentUser?.displayName || (currentUser?.email || '').split('@')[0] || 'user'
+        );
+        for (let attempt = 0; attempt < 6; attempt++) {
+          const candidate = attempt === 0 ? base : `${base.slice(0, 15)}${Math.floor(100 + Math.random() * 900)}`;
+          try {
+            await claimUsername(candidate);
+            if (!cancelled) setMyUsername(candidate);
+            memberProfileCache.current[uid] = { ...(memberProfileCache.current[uid] || { userName: '', photoURL: '' }), username: candidate };
+            return;
+          } catch (e: any) {
+            if (String(e?.message || '').includes('taken')) continue;
+            return;
+          }
+        }
+      } catch (_) {}
+    })();
+    return () => { cancelled = true; };
+  }, [currentUser?.uid]);
+
+  const handleSaveUsername = async () => {
+    const name = usernameDraft.trim().toLowerCase().replace(/^@/, '');
+    if (!USERNAME_RE.test(name)) {
+      Alert.alert('Invalid username', 'Use 3-20 characters: lowercase letters, numbers, dot (.) or underscore (_).');
+      return;
+    }
+    if (name === myUsername) { setShowUsernameModal(false); return; }
+    setUsernameBusy(true);
+    try {
+      await claimUsername(name, myUsername);
+      setMyUsername(name);
+      const uid = currentUser?.uid;
+      if (uid) memberProfileCache.current[uid] = { ...(memberProfileCache.current[uid] || { userName: '', photoURL: '' }), username: name };
+      setShowUsernameModal(false);
+      Alert.alert('Username updated', `You are now @${name}`);
+    } catch (e: any) {
+      if (String(e?.message || '').includes('taken')) Alert.alert('Username taken', 'This username is already in use. Please try another one.');
+      else Alert.alert('Could not save', e?.message || 'Please try again.');
+    } finally {
+      setUsernameBusy(false);
+    }
+  };
+
+  // ───────────── @mention suggestions while typing ─────────────
+  // @handle -> uid for members who have not claimed a username yet (so they can still be tagged)
+  const mentionHandleMap = useRef<Record<string, string>>({});
+
+  const mentionQuery = useMemo(() => {
+    const m = /(^|\s)@([a-zA-Z0-9_.]*)$/.exec(chatInputText);
+    return m ? m[2].toLowerCase() : null;
+  }, [chatInputText]);
+
+  const mentionSuggestions = useMemo(() => {
+    if (mentionQuery === null || editingMessage) return [];
+    return communityMembersList
+      .filter((m: any) => {
+        if (!m.uid || m.uid === currentUser?.uid) return false;
+        const handle = m.username || makeUsernameBase(String(m.userName || ''));
+        return handle.includes(mentionQuery) || String(m.userName || '').toLowerCase().includes(mentionQuery);
+      })
+      .map((m: any) => ({ ...m, handle: m.username || makeUsernameBase(String(m.userName || '')) }))
+      .slice(0, 6);
+  }, [mentionQuery, communityMembersList, currentUser?.uid, editingMessage]);
+
+  const insertMention = (username: string, uid?: string) => {
+    if (uid) mentionHandleMap.current[username.toLowerCase()] = uid;
+    setChatInputText(prev => prev.replace(/(^|\s)@([a-zA-Z0-9_.]*)$/, (_m, lead) => `${lead}@${username} `));
+  };
+
+  // Finds the user ids for all @names in a message
+  const resolveMentions = async (text: string): Promise<string[]> => {
+    const names = Array.from(new Set((text.match(/@([a-zA-Z0-9_.]{3,20})/g) || []).map(x => x.slice(1).toLowerCase())));
+    if (names.length === 0) return [];
+    const uids: string[] = [];
+    await Promise.all(names.map(async (name) => {
+      const known = communityMembersList.find((m: any) => m.username === name);
+      if (known?.uid) { uids.push(known.uid); return; }
+      if (mentionHandleMap.current[name]) { uids.push(mentionHandleMap.current[name]); return; }
+      const byName = communityMembersList.find((m: any) => makeUsernameBase(String(m.userName || '')) === name);
+      if (byName?.uid) { uids.push(byName.uid); return; }
+      try {
+        const snap = await firestore().collection('usernames').doc(name).get();
+        const u = snap.data()?.uid;
+        if (u) uids.push(u);
+      } catch (_) {}
+    }));
+    return Array.from(new Set(uids.filter(u => u !== currentUser?.uid)));
+  };
+
   const handlePickImage = async (fromCamera: boolean) => {
+    if (!isAdmin) {
+      Alert.alert('Admins only', 'Only admins can send images in the group chat.');
+      return;
+    }
     if (!imagePicker) {
       Alert.alert('Not available', 'Image picker is not installed. Run: npm i react-native-image-picker, then rebuild the app.');
       return;
@@ -1442,6 +1929,14 @@ export default function CommunityScreen({ navigation }: any) {
         : await docPicker.pick(opts);
       const file: any = Array.isArray(result) ? result[0] : result;
       if (!file?.uri) return;
+      if (!isAdmin && (String(file.type || '').toLowerCase().startsWith('image/') || IMAGE_FILE_REGEX.test(String(file.name || '')))) {
+        Alert.alert('Admins only', 'Only admins can send images in the group chat.');
+        return;
+      }
+      if (!isAdmin && chatHasLink(file.name)) {
+        Alert.alert('Links not allowed', 'Please rename the file. Only admins can share links in the group chat.');
+        return;
+      }
       if (file.size && file.size > MAX_CHAT_FILE_BYTES) {
         Alert.alert('File too large', 'Maximum size is 20 MB.');
         return;
@@ -1548,6 +2043,11 @@ export default function CommunityScreen({ navigation }: any) {
   };
 
   const handleTogglePinMessage = async (message: any) => {
+    if (!isAdmin) {
+      setSelectedMessageForAction(null);
+      Alert.alert('Admins only', 'Only admins can pin or unpin messages.');
+      return;
+    }
     const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
     try {
       await firestore()
@@ -1754,6 +2254,10 @@ export default function CommunityScreen({ navigation }: any) {
     if (!chatInputText.trim()) return;
     const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
     const messageContent = chatInputText.trim();
+    if (!isAdmin && chatHasLink(messageContent)) {
+      Alert.alert('Links not allowed', 'Only admins can share links in the group chat.');
+      return;
+    }
     setChatInputText('');
     setShowEmojiPicker(false);
 
@@ -1779,6 +2283,7 @@ export default function CommunityScreen({ navigation }: any) {
 
     const tempId = `temp_${Date.now()}`;
     const messageType = isSingleEmojiText(messageContent) ? 'emoji' : 'text';
+    const mentionUids = await resolveMentions(messageContent);
     const optimisticMessage = {
       id: tempId,
       text: messageContent,
@@ -1790,6 +2295,7 @@ export default function CommunityScreen({ navigation }: any) {
       reactions: {},
       isPinned: false,
       createdAt: new Date(),
+      ...(mentionUids.length ? { mentions: mentionUids } : {}),
     };
 
     setChatMessages(prev => [optimisticMessage, ...prev]);
@@ -1804,6 +2310,7 @@ export default function CommunityScreen({ navigation }: any) {
         status: 'sent',
         reactions: {},
         isPinned: false,
+        ...(mentionUids.length ? { mentions: mentionUids } : {}),
         createdAt: firestore.FieldValue.serverTimestamp()
       });
     } catch (e: any) {
@@ -2136,9 +2643,9 @@ export default function CommunityScreen({ navigation }: any) {
                                 )}
                               </View>
                             ))}
-                            {totalMembers > 3 && (
+                            {membersForModal.length > 3 && (
                               <View style={[styles.memberCircleAvatarPlus, { marginLeft: -10, zIndex: 5 }]}>
-                                <Text style={styles.memberPlusText}>+{totalMembers - 3}</Text>
+                                <Text style={styles.memberPlusText}>+{membersForModal.length - 3}</Text>
                               </View>
                             )}
                           </TouchableOpacity>
@@ -2152,7 +2659,7 @@ export default function CommunityScreen({ navigation }: any) {
                       <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 8 }}>
                         <View style={styles.memberTagBadge}>
                           <Users size={11} color="#0F172A" />
-                          <Text style={styles.memberTagBadgeText}>{totalMembers} Members</Text>
+                          <Text style={styles.memberTagBadgeText}>{membersForModal.length} Members</Text>
                         </View>
                         <View style={styles.activeTagBadge}>
                           <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
@@ -2577,7 +3084,7 @@ export default function CommunityScreen({ navigation }: any) {
       </Modal>
 
       {/* 💬 GROUP CHAT MODAL */}
-      <Modal visible={isChatModalVisible} animationType="slide" onRequestClose={closeChatModal}>
+      <Modal visible={isChatModalVisible} animationType="slide" onRequestClose={closeChatModal} statusBarTranslucent>
         <SafeAreaView style={{ flex: 1, backgroundColor: colors.bgLight }}>
           {isSelectionMode ? (
             <View style={[styles.selectionTopBar, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderBottomColor: colors.border }]}>
@@ -2603,7 +3110,14 @@ export default function CommunityScreen({ navigation }: any) {
 
                 <TouchableOpacity 
                   style={styles.batchDeleteTopBtn} 
-                  onPress={() => setDeleteModalVisible(true)}
+                  onPress={() => {
+                    const picked = selectedMessageIds.map(id => chatMessages.find((m: any) => m.id === id)).filter(Boolean);
+                    if (!isAdmin && picked.some((m: any) => !isOwnChatMessage(m))) {
+                      Alert.alert('Not allowed', 'You can delete only your own messages. Only admins can delete other messages.');
+                      return;
+                    }
+                    setDeleteModalVisible(true);
+                  }}
                   activeOpacity={0.8}
                 >
                   <Trash2 size={20} color="#EF4444" />
@@ -2619,7 +3133,7 @@ export default function CommunityScreen({ navigation }: any) {
               backgroundColor: colors.bgCard, 
               borderBottomWidth: 1, 
               borderColor: colors.border,
-              paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 10 : 12
+              paddingTop: Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 6 : 12
             }}>
               <TouchableOpacity onPress={closeChatModal} hitSlop={{ top: 20, bottom: 20, left: 20, right: 20 }}>
                 <X size={24} color={colors.textPrimary} />
@@ -2635,7 +3149,7 @@ export default function CommunityScreen({ navigation }: any) {
                   )}
                 </View>
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8, marginTop: 2 }}>
-                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{totalMembers} Members</Text>
+                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{membersForModal.length} Members</Text>
                   <Text style={{ fontSize: 11, color: colors.textSecondary }}>•</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
                     <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
@@ -2674,9 +3188,9 @@ export default function CommunityScreen({ navigation }: any) {
                         )}
                       </View>
                     ))}
-                    {totalMembers > 2 && (
+                    {membersForModal.length > 2 && (
                       <View style={[styles.memberCircleAvatarPlus, { marginLeft: -8, zIndex: 5 }]}>
-                        <Text style={styles.memberPlusText}>+{totalMembers - 2}</Text>
+                        <Text style={styles.memberPlusText}>+{membersForModal.length - 2}</Text>
                       </View>
                     )}
                   </TouchableOpacity>
@@ -2712,6 +3226,19 @@ export default function CommunityScreen({ navigation }: any) {
                   <Text style={[styles.dropdownOptionText, { color: colors.textPrimary }]}>View Members List</Text>
                 </TouchableOpacity>
 
+                <TouchableOpacity
+                  style={styles.dropdownOptionRow}
+                  onPress={() => {
+                    setShowThreeDotsMenu(false);
+                    setUsernameDraft(myUsername);
+                    setShowUsernameModal(true);
+                  }}
+                  activeOpacity={0.75}
+                >
+                  <AtSign size={16} color={primaryColor} />
+                  <Text style={[styles.dropdownOptionText, { color: colors.textPrimary }]}>{myUsername ? `My username: @${myUsername}` : 'Set my username'}</Text>
+                </TouchableOpacity>
+
                 {isMember && (
                   <TouchableOpacity 
                     style={styles.dropdownOptionRow} 
@@ -2730,24 +3257,47 @@ export default function CommunityScreen({ navigation }: any) {
           )}
 
           {pinnedMessages.length > 0 && !isSelectionMode && (
-            <View style={[styles.pinnedBannerBar, { backgroundColor: isDarkMode ? '#1E293B' : '#EFF6FF', borderColor: colors.border }]}>
+            <TouchableOpacity
+              activeOpacity={0.8}
+              onPress={handlePinnedBannerPress}
+              style={[styles.pinnedBannerBar, { backgroundColor: isDarkMode ? '#1E293B' : '#EFF6FF', borderColor: colors.border }]}
+            >
               <Pin size={14} color={primaryColor} style={{ marginRight: 8 }} />
               <View style={{ flex: 1 }}>
-                <Text style={{ fontSize: 11, fontWeight: '800', color: primaryColor }}>Pinned Message</Text>
+                <Text style={{ fontSize: 11, fontWeight: '800', color: primaryColor }}>
+                  {pinnedMessages.length > 1
+                    ? `Pinned Message ${safePinnedIndex + 1} of ${pinnedMessages.length}`
+                    : 'Pinned Message'}
+                </Text>
                 <Text style={{ fontSize: 12, color: colors.textPrimary }} numberOfLines={1}>
-                  {pinnedMessages[0]?.text}
+                  {pinnedMessages[safePinnedIndex]?.type === 'image' ? '📷 Photo' : (pinnedMessages[safePinnedIndex]?.text || pinnedMessages[safePinnedIndex]?.fileName || '')}
                 </Text>
               </View>
-              <TouchableOpacity onPress={() => handleTogglePinMessage(pinnedMessages[0])}>
-                <PinOff size={14} color={colors.textSecondary} />
-              </TouchableOpacity>
-            </View>
+              {pinnedMessages.length > 1 && (
+                <View style={{ flexDirection: 'row', alignItems: 'center', marginRight: 10 }}>
+                  {pinnedMessages.slice(0, 6).map((_: any, i: number) => (
+                    <View key={i} style={{ width: 5, height: 5, borderRadius: 3, marginHorizontal: 2, backgroundColor: i === safePinnedIndex ? primaryColor : colors.border }} />
+                  ))}
+                </View>
+              )}
+              {isAdmin && (
+                <TouchableOpacity onPress={() => handleTogglePinMessage(pinnedMessages[safePinnedIndex])} hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}>
+                  <PinOff size={14} color={colors.textSecondary} />
+                </TouchableOpacity>
+              )}
+            </TouchableOpacity>
           )}
 
           <KeyboardAvoidingView 
-            style={{ flex: 1, backgroundColor: colors.bgLight }}
-            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ flex: 1, backgroundColor: colors.bgLight, paddingBottom: Platform.OS === 'android' ? kbInset : 0 }}
+            enabled={Platform.OS === 'ios'}
+            behavior="padding"
             keyboardVerticalOffset={Platform.OS === 'ios' ? 10 : 0}
+            onLayout={(e) => {
+              const h = e.nativeEvent.layout.height;
+              chatOuterH.current = h;
+              if (!kbShown.current) chatBaseH.current = h;
+            }}
           >
             <TouchableWithoutFeedback onPress={() => { 
               Keyboard.dismiss(); 
@@ -2755,9 +3305,17 @@ export default function CommunityScreen({ navigation }: any) {
             }}>
               <View style={{ flex: 1 }}>
                 <FlatList
+                  ref={chatListRef}
                   data={chatMessages}
+                  extraData={highlightedMsgId}
                   keyExtractor={(item) => item.id}
                   inverted
+                  onScrollToIndexFailed={(info) => {
+                    chatListRef.current?.scrollToOffset({ offset: info.averageItemLength * info.index, animated: false });
+                    setTimeout(() => {
+                      try { chatListRef.current?.scrollToIndex({ index: info.index, animated: true, viewPosition: 0.5 }); } catch (_) {}
+                    }, 150);
+                  }}
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, flexGrow: 1 }}
                   renderItem={({ item, index }) => {
@@ -2784,7 +3342,8 @@ export default function CommunityScreen({ navigation }: any) {
                         <View style={[
                           styles.messageRowWrap,
                           hasReaction && styles.messageRowWithReaction,
-                          isSelected && { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.22)' : '#EEF2FF', borderRadius: 16 }
+                          isSelected && { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.22)' : '#EEF2FF', borderRadius: 16 },
+                          highlightedMsgId === item.id && { backgroundColor: isDarkMode ? 'rgba(250, 204, 21, 0.28)' : 'rgba(250, 204, 21, 0.35)', borderRadius: 16 }
                         ]}>
                           <View style={[
                             styles.messageInnerRow, 
@@ -2875,7 +3434,13 @@ export default function CommunityScreen({ navigation }: any) {
                                     { textAlign: isMe ? 'right' : 'left' }
                                   ]}>{String(item.text).trim()}</Text>
                                 ) : (
-                                  <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontSize: 16, lineHeight: 23 }}>{item.text}</Text>
+                                  <MentionText
+                                    text={item.text}
+                                    highlight={Array.isArray(item.mentions) && item.mentions.length > 0}
+                                    baseColor={isMe ? '#FFF' : colors.textPrimary}
+                                    mineColor={primaryColor}
+                                    isMe={isMe}
+                                  />
                                 )}
 
                                 {!isSingleEmojiText(item.text) && (
@@ -2926,6 +3491,30 @@ export default function CommunityScreen({ navigation }: any) {
             )}
 
             <View style={styles.cleanBottomInputWrapper}>
+              {mentionSuggestions.length > 0 && (
+                <View style={{ backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF', borderColor: colors.border, borderWidth: 1, borderRadius: 14, marginHorizontal: 8, marginBottom: 6, overflow: 'hidden' }}>
+                  {mentionSuggestions.map((m: any) => (
+                    <TouchableOpacity
+                      key={m.uid}
+                      activeOpacity={0.7}
+                      onPress={() => insertMention(m.handle, m.uid)}
+                      style={{ flexDirection: 'row', alignItems: 'center', paddingHorizontal: 12, paddingVertical: 9, borderBottomWidth: StyleSheet.hairlineWidth, borderBottomColor: colors.border }}
+                    >
+                      <View style={[styles.chatAvatarThumb, { backgroundColor: getAvatarColor(m.userName), marginRight: 10 }]}>
+                        {m.photoURL ? (
+                          <Image source={{ uri: m.photoURL }} style={styles.chatAvatarImg} />
+                        ) : (
+                          <Text style={styles.chatAvatarThumbText}>{(m.userName || 'U').charAt(0).toUpperCase()}</Text>
+                        )}
+                      </View>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ fontWeight: '700', fontSize: 13, color: colors.textPrimary }} numberOfLines={1}>{m.userName}</Text>
+                        <Text style={{ fontSize: 11, color: colors.textSecondary }}>@{m.handle}</Text>
+                      </View>
+                    </TouchableOpacity>
+                  ))}
+                </View>
+              )}
               {editingMessage && (
                 <View style={[styles.inlineEditHeader, { backgroundColor: isDarkMode ? '#1E293B' : '#F1F5F9' }]}>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6 }}>
@@ -3073,6 +3662,7 @@ export default function CommunityScreen({ navigation }: any) {
                 </View>
 
                 <View style={[styles.actionOptionsRow, { borderTopColor: colors.border }]}>
+                  {isAdmin && (
                   <TouchableOpacity 
                     style={styles.actionOptionBtn}
                     onPress={() => handleTogglePinMessage(selectedMessageForAction)}
@@ -3089,6 +3679,7 @@ export default function CommunityScreen({ navigation }: any) {
                       </View>
                     )}
                   </TouchableOpacity>
+                  )}
 
                   {canOpenDeleteForMessage(selectedMessageForAction) && (
                     <TouchableOpacity 
@@ -3114,12 +3705,41 @@ export default function CommunityScreen({ navigation }: any) {
 
         {!!previewImageUrl && (
           <Modal transparent visible={true} animationType="fade" onRequestClose={() => setPreviewImageUrl(null)}>
-            <View style={styles.imagePreviewBackdrop}>
-              <Image source={{ uri: previewImageUrl }} style={styles.imagePreviewImage} resizeMode="contain" />
-              <TouchableOpacity style={styles.imagePreviewClose} onPress={() => setPreviewImageUrl(null)} activeOpacity={0.8}>
-                <X size={22} color="#FFFFFF" />
+            <ZoomableImage uri={previewImageUrl} onClose={() => setPreviewImageUrl(null)} />
+          </Modal>
+        )}
+
+        {showUsernameModal && (
+          <Modal transparent visible={true} animationType="fade" onRequestClose={() => setShowUsernameModal(false)}>
+            <TouchableOpacity style={styles.mediaOverlayBackdrop} activeOpacity={1} onPress={() => setShowUsernameModal(false)}>
+              <TouchableOpacity activeOpacity={1} style={[styles.premiumMediaSheet, { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' }]} onPress={(e) => e.stopPropagation()}>
+                <Text style={[styles.mediaSheetTitle, { color: colors.textPrimary, marginBottom: 6 }]}>Your username</Text>
+                <Text style={{ color: colors.textSecondary, fontSize: 12, marginBottom: 12 }}>
+                  Others can mention you with @{usernameDraft || 'username'}. 3-20 characters: letters, numbers, . or _
+                </Text>
+                <View style={{ flexDirection: 'row', alignItems: 'center', borderWidth: 1, borderColor: colors.border, borderRadius: 12, paddingHorizontal: 12, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }}>
+                  <Text style={{ color: colors.textSecondary, fontWeight: '800', fontSize: 16 }}>@</Text>
+                  <TextInput
+                    style={{ flex: 1, color: colors.textPrimary, paddingVertical: 10, paddingHorizontal: 6, fontSize: 15 }}
+                    value={usernameDraft}
+                    onChangeText={(v) => setUsernameDraft(v.toLowerCase().replace(/[^a-z0-9_.]/g, '').slice(0, 20))}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    maxLength={20}
+                    placeholder="username"
+                    placeholderTextColor={colors.textSecondary}
+                  />
+                </View>
+                <TouchableOpacity
+                  onPress={handleSaveUsername}
+                  disabled={usernameBusy}
+                  activeOpacity={0.85}
+                  style={{ marginTop: 16, backgroundColor: primaryColor, borderRadius: 12, paddingVertical: 12, alignItems: 'center', opacity: usernameBusy ? 0.6 : 1 }}
+                >
+                  {usernameBusy ? <ActivityIndicator color="#FFF" /> : <Text style={{ color: '#FFF', fontWeight: '800', fontSize: 14 }}>Save</Text>}
+                </TouchableOpacity>
               </TouchableOpacity>
-            </View>
+            </TouchableOpacity>
           </Modal>
         )}
 
@@ -3135,6 +3755,8 @@ export default function CommunityScreen({ navigation }: any) {
                 </View>
 
                 <View style={styles.mediaGridContainer}>
+                  {isAdmin && (
+                  <>
                   <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickImage(true); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#EC4899' }]}>
                       <Camera size={22} color="#FFFFFF" />
@@ -3148,6 +3770,9 @@ export default function CommunityScreen({ navigation }: any) {
                     </View>
                     <Text style={[styles.mediaActionLabel, { color: colors.textPrimary }]}>Gallery</Text>
                   </TouchableOpacity>
+
+                  </>
+                  )}
 
                   <TouchableOpacity style={styles.mediaActionItem} onPress={() => { closeMediaPicker(); handlePickDocument('document'); }}>
                     <View style={[styles.mediaIconCircle, { backgroundColor: '#3B82F6' }]}>
@@ -3225,8 +3850,8 @@ export default function CommunityScreen({ navigation }: any) {
       <MembersModal
         visible={showMembersListModal}
         onClose={closeMembersModal}
-        members={communityMembersList}
-        total={totalMembers}
+        members={membersForModal}
+        total={membersForModal.length}
         myUid={currentUser?.uid}
         isAdmin={isAdmin}
         isDarkMode={isDarkMode}

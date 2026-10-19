@@ -407,9 +407,11 @@ export const checkIsAdmin = async (): Promise<boolean> => {
   const email = auth().currentUser?.email;
   if (!email) return false;
 
+  // Match the email as typed and in lower case, so a difference in capital letters does not hide the admin tools
+  const emails = Array.from(new Set([email.trim(), email.trim().toLowerCase()]));
   const snap = await firestore()
     .collection('admins')
-    .where('email', '==', email)
+    .where('email', 'in', emails)
     .limit(1)
     .get();
 

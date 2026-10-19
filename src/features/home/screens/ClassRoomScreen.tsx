@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
+  InteractionManager,
   StyleSheet,
   Text,
   View,
@@ -24,6 +25,7 @@ import {
   useWindowDimensions,
   KeyboardAvoidingView,
   PanResponder,
+  Linking,
 } from 'react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
@@ -61,6 +63,12 @@ import {
   Monitor,
   ChevronDown,
   FileText,
+  Paperclip,
+  Image as ImageIcon,
+  Camera as CameraIcon,
+  Download,
+  ZoomIn,
+  ZoomOut,
 } from 'lucide-react-native';
 
 registerGlobals();
@@ -68,6 +76,160 @@ registerGlobals();
 const { width: SCREEN_WIDTH, height: SCREEN_HEIGHT } = Dimensions.get('window');
 const STATUSBAR_SAFE_HEIGHT =
   Platform.OS === 'android' ? (StatusBar.currentHeight || 24) + 14 : 14;
+
+
+// Optional native packages for sharing files in the class chat. If one is missing the app still runs,
+// and the user gets a clear message when they try to use that feature.
+//   npm i @react-native-firebase/storage react-native-image-picker @react-native-documents/picker
+let storageLib: any = null;
+try { storageLib = require('@react-native-firebase/storage').default; } catch (e) {}
+let imagePicker: any = null;
+try { imagePicker = require('react-native-image-picker'); } catch (e) {}
+let docPicker: any = null;
+try { docPicker = require('@react-native-documents/picker'); } catch (e) {
+  try { docPicker = require('react-native-document-picker'); } catch (e2) {}
+}
+
+const MAX_CHAT_FILE_BYTES = 20 * 1024 * 1024;
+
+const formatFileSize = (bytes?: number): string => {
+  if (!bytes || bytes <= 0) return '';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+};
+
+// ───────────── Full-screen image viewer with pinch / double-tap / button zoom ─────────────
+const MAX_ZOOM = 5;
+const ZoomableImage = ({ uri, onClose }: { uri: string; onClose: () => void }) => {
+  const scale = useRef(new Animated.Value(1)).current;
+  const tx = useRef(new Animated.Value(0)).current;
+  const ty = useRef(new Animated.Value(0)).current;
+  const st = useRef({
+    scale: 1, x: 0, y: 0,
+    startDist: 0, startScale: 1, pinching: false,
+    lastX: 0, lastY: 0, lastCount: 0, lastTap: 0, moved: false,
+  }).current;
+  const [zoomLabel, setZoomLabel] = useState(100);
+
+  const clampPos = () => {
+    const maxX = (SCREEN_WIDTH * (st.scale - 1)) / 2;
+    const maxY = (SCREEN_HEIGHT * (st.scale - 1)) / 2;
+    st.x = Math.max(-maxX, Math.min(maxX, st.x));
+    st.y = Math.max(-maxY, Math.min(maxY, st.y));
+  };
+  const apply = (animated: boolean) => {
+    clampPos();
+    setZoomLabel(Math.round(st.scale * 100));
+    if (animated) {
+      Animated.parallel([
+        Animated.timing(scale, { toValue: st.scale, duration: 160, useNativeDriver: false }),
+        Animated.timing(tx, { toValue: st.x, duration: 160, useNativeDriver: false }),
+        Animated.timing(ty, { toValue: st.y, duration: 160, useNativeDriver: false }),
+      ]).start();
+    } else {
+      scale.setValue(st.scale); tx.setValue(st.x); ty.setValue(st.y);
+    }
+  };
+  const zoomTo = (next: number) => {
+    st.scale = Math.max(1, Math.min(MAX_ZOOM, next));
+    if (st.scale <= 1.02) { st.scale = 1; st.x = 0; st.y = 0; }
+    apply(true);
+  };
+
+  const pan = useRef(
+    PanResponder.create({
+      onStartShouldSetPanResponder: () => true,
+      onMoveShouldSetPanResponder: () => true,
+      onPanResponderGrant: (e) => {
+        const t = e.nativeEvent.touches;
+        st.pinching = false; st.moved = false;
+        st.lastCount = t.length;
+        st.lastX = t[0]?.pageX || 0; st.lastY = t[0]?.pageY || 0;
+      },
+      onPanResponderMove: (e) => {
+        const t = e.nativeEvent.touches;
+        if (t.length >= 2) {
+          const dx = t[0].pageX - t[1].pageX;
+          const dy = t[0].pageY - t[1].pageY;
+          const dist = Math.sqrt(dx * dx + dy * dy);
+          if (!st.pinching || st.lastCount < 2) {
+            st.pinching = true; st.startDist = dist || 1; st.startScale = st.scale;
+          }
+          st.scale = Math.max(0.8, Math.min(MAX_ZOOM, st.startScale * (dist / st.startDist)));
+          st.moved = true;
+          st.lastCount = t.length;
+          clampPos();
+          setZoomLabel(Math.round(st.scale * 100));
+          scale.setValue(st.scale); tx.setValue(st.x); ty.setValue(st.y);
+          return;
+        }
+        const cx = t[0]?.pageX || 0; const cy = t[0]?.pageY || 0;
+        if (st.lastCount !== t.length) {
+          // finger count changed (pinch -> one finger): restart from this point
+          st.lastCount = t.length; st.lastX = cx; st.lastY = cy;
+          return;
+        }
+        const ddx = cx - st.lastX; const ddy = cy - st.lastY;
+        st.lastX = cx; st.lastY = cy;
+        if (Math.abs(ddx) + Math.abs(ddy) > 1) st.moved = true;
+        if (st.scale > 1) {
+          st.x += ddx; st.y += ddy;
+          clampPos();
+          tx.setValue(st.x); ty.setValue(st.y);
+        }
+      },
+      onPanResponderRelease: () => {
+        const wasPinch = st.pinching;
+        st.pinching = false; st.lastCount = 0;
+        if (st.scale < 1.02) { st.scale = 1; st.x = 0; st.y = 0; apply(true); }
+        else { apply(false); }
+        // double tap = toggle zoom
+        if (!st.moved && !wasPinch) {
+          const nowMs = Date.now();
+          if (nowMs - st.lastTap < 300) {
+            st.lastTap = 0;
+            if (st.scale > 1) { st.scale = 1; st.x = 0; st.y = 0; apply(true); }
+            else { st.scale = 2.5; apply(true); }
+          } else {
+            st.lastTap = nowMs;
+          }
+        }
+      },
+      onPanResponderTerminationRequest: () => false,
+    })
+  ).current;
+
+  return (
+    <View style={styles.imagePreviewBackdrop}>
+      <View style={{ flex: 1, width: '100%' }} {...pan.panHandlers}>
+        <Animated.Image
+          source={{ uri }}
+          resizeMode="contain"
+          style={{
+            width: '100%',
+            height: '100%',
+            transform: [{ translateX: tx }, { translateY: ty }, { scale }],
+          }}
+        />
+      </View>
+
+      <TouchableOpacity style={styles.imagePreviewClose} onPress={onClose} activeOpacity={0.8}>
+        <X size={22} color="#FFFFFF" />
+      </TouchableOpacity>
+
+      <View style={{ position: 'absolute', bottom: 36, alignSelf: 'center', flexDirection: 'row', alignItems: 'center', backgroundColor: 'rgba(255,255,255,0.16)', borderRadius: 28, paddingHorizontal: 8 }}>
+        <TouchableOpacity style={{ padding: 12 }} onPress={() => zoomTo(st.scale - 0.75)} activeOpacity={0.7}>
+          <ZoomOut size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+        <Text style={{ color: '#FFFFFF', fontWeight: '800', fontSize: 13, minWidth: 48, textAlign: 'center' }}>{zoomLabel}%</Text>
+        <TouchableOpacity style={{ padding: 12 }} onPress={() => zoomTo(st.scale + 0.75)} activeOpacity={0.7}>
+          <ZoomIn size={22} color="#FFFFFF" />
+        </TouchableOpacity>
+      </View>
+    </View>
+  );
+};
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
@@ -94,6 +256,8 @@ interface ChatAttachment {
   name?: string;
   mimeType?: string;
   durationMs?: number;
+  size?: number;
+  uploading?: boolean;
 }
 
 interface ChatMessage {
@@ -391,6 +555,8 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   // me chala jaata tha bina visible hue jab tak user khud scroll na kare.
   const chatListRef = useRef<FlatList<any>>(null);
   const [messageInput, setMessageInput] = useState('');
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [previewImageUrl, setPreviewImageUrl] = useState<string | null>(null);
   const [queueList, setQueueList] = useState<QueueUser[]>([]);
 
   const [handRaisedUsers, setHandRaisedUsers] = useState<Record<string, boolean>>({});
@@ -401,7 +567,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   >([]);
 
   const [incomingRequest, setIncomingRequest] = useState<PermissionRequest | null>(null);
-  const [selectedDuration, setSelectedDuration] = useState<number>(30);
+  const [selectedDuration, setSelectedDuration] = useState<number>(600); // default: 10 minutes
   const [timeRemaining, setTimeRemaining] = useState<number | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -549,6 +715,15 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 isLocal: false,
                 time: data.time || '',
                 createdAt: data.createdAt,
+                attachment: data.mediaUrl
+                  ? {
+                      type: data.type === 'image' ? 'image' : 'file',
+                      url: data.mediaUrl,
+                      name: data.fileName || data.text || 'File',
+                      mimeType: data.mimeType || '',
+                      size: data.fileSize || undefined,
+                    }
+                  : undefined,
               });
             });
             setChatMessages((prev) => {
@@ -709,6 +884,15 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     };
   }, [room, isHost, localParticipant]);
 
+  // 90 -> "1:30", 600 -> "10:00"
+  const formatTimer = (sec: number) => {
+    const m = Math.floor(sec / 60);
+    const r = sec % 60;
+    return `${m}:${r < 10 ? '0' : ''}${r}`;
+  };
+  // 30 -> "30s", 120 -> "2 min"
+  const formatDurationLabel = (sec: number) => (sec < 60 ? `${sec}s` : `${Math.round(sec / 60)} min`);
+
   const handleGrantedPermission = async (
     mediaType: 'audio' | 'video',
     duration: number,
@@ -723,7 +907,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
 
     Alert.alert(
       'Access Approved 🔊',
-      `Admin has granted permission for ${mediaType.toUpperCase()} for ${duration}s.`,
+      `Admin has granted permission for ${mediaType.toUpperCase()} for ${formatDurationLabel(duration)}.`,
     );
 
     setTimeRemaining(duration);
@@ -884,7 +1068,152 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     }
   };
 
-  // Photo / video / file sharing in chat has been removed (text, emoji and voice notes only).
+  // ─── Share photos, PDFs and documents in the class chat (students and teachers) ───
+  const uploadAndSendFile = async (p: {
+    type: 'image' | 'file';
+    localUri: string;
+    fileName: string;
+    mimeType: string;
+    fileSize?: number;
+  }) => {
+    if (!roomId) return;
+    const uid = auth().currentUser?.uid;
+    const formattedTime = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const tempId = `temp_${Date.now()}`;
+    setChatMessages((prev) => [
+      ...prev,
+      {
+        id: tempId,
+        sender: myIdentity,
+        senderId: uid || myIdentity,
+        text: p.fileName,
+        isLocal: true,
+        time: formattedTime,
+        attachment: { type: p.type, url: p.localUri, name: p.fileName, mimeType: p.mimeType, size: p.fileSize, uploading: true },
+      },
+    ]);
+    try {
+      if (!uid) throw new Error('Please log in again.');
+      if (!storageLib) {
+        throw new Error('File upload is not set up yet. Run: npm i @react-native-firebase/storage, then rebuild the app.');
+      }
+      const dot = p.fileName.lastIndexOf('.');
+      const ext = (dot >= 0 ? p.fileName.slice(dot + 1) : 'bin').toLowerCase().replace(/[^a-z0-9]/g, '') || 'bin';
+      const storagePath = `class_media/${roomId}/${uid}/${p.type}_${Date.now()}.${ext}`;
+      const ref = storageLib().ref(storagePath);
+      await ref.putFile(p.localUri, { contentType: p.mimeType });
+      const mediaUrl = await ref.getDownloadURL();
+      await firestore()
+        .collection('voice_rooms')
+        .doc(roomId)
+        .collection('class_messages')
+        .add({
+          sender: myIdentity,
+          senderId: uid,
+          text: p.fileName,
+          type: p.type,
+          mediaUrl,
+          storagePath,
+          fileName: p.fileName,
+          mimeType: p.mimeType,
+          fileSize: p.fileSize || null,
+          time: formattedTime,
+          createdAt: firestore.FieldValue.serverTimestamp(),
+        });
+    } catch (e: any) {
+      Alert.alert('Upload failed', e?.message || 'Could not send. Please try again.');
+    } finally {
+      setChatMessages((prev) => prev.filter((m) => m.id !== tempId));
+    }
+  };
+
+  const handlePickPhoto = async (fromCamera: boolean) => {
+    setShowAttachMenu(false);
+    if (!imagePicker) {
+      Alert.alert('Not available', 'Image picker is not installed. Run: npm i react-native-image-picker, then rebuild the app.');
+      return;
+    }
+    try {
+      const launch = fromCamera ? imagePicker.launchCamera : imagePicker.launchImageLibrary;
+      const res = await launch({
+        mediaType: 'photo',
+        quality: 0.85,
+        maxWidth: 2000,
+        maxHeight: 2000,
+        selectionLimit: 1,
+        saveToPhotos: false,
+      });
+      if (res?.didCancel) return;
+      if (res?.errorCode) {
+        Alert.alert('Error', res.errorMessage || String(res.errorCode));
+        return;
+      }
+      const asset = res?.assets?.[0];
+      if (!asset?.uri) return;
+      if (asset.fileSize && asset.fileSize > MAX_CHAT_FILE_BYTES) {
+        Alert.alert('File too large', 'Maximum size is 20 MB.');
+        return;
+      }
+      await uploadAndSendFile({
+        type: 'image',
+        localUri: asset.uri,
+        fileName: asset.fileName || `photo_${Date.now()}.jpg`,
+        mimeType: asset.type || 'image/jpeg',
+        fileSize: asset.fileSize,
+      });
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not open the picker.');
+    }
+  };
+
+  const handlePickDocument = async () => {
+    setShowAttachMenu(false);
+    if (!docPicker) {
+      Alert.alert('Not available', 'Document picker is not installed. Run: npm i @react-native-documents/picker, then rebuild the app.');
+      return;
+    }
+    try {
+      const T = docPicker.types || {};
+      const type = [T.pdf, T.doc, T.docx, T.xls, T.xlsx, T.ppt, T.pptx, T.plainText, T.zip].filter(Boolean);
+      const opts: any = type.length ? { type } : {};
+      const result = typeof docPicker.pickSingle === 'function'
+        ? await docPicker.pickSingle(opts)
+        : await docPicker.pick(opts);
+      const file: any = Array.isArray(result) ? result[0] : result;
+      if (!file?.uri) return;
+      if (file.size && file.size > MAX_CHAT_FILE_BYTES) {
+        Alert.alert('File too large', 'Maximum size is 20 MB.');
+        return;
+      }
+      await uploadAndSendFile({
+        type: 'file',
+        localUri: file.uri,
+        fileName: file.name || `file_${Date.now()}`,
+        mimeType: file.type || 'application/octet-stream',
+        fileSize: file.size || undefined,
+      });
+    } catch (e: any) {
+      const cancelled =
+        (typeof docPicker.isCancel === 'function' && docPicker.isCancel(e)) ||
+        e?.code === 'DOCUMENT_PICKER_CANCELED' ||
+        e?.code === 'OPERATION_CANCELED';
+      if (!cancelled) Alert.alert('Error', e?.message || 'Could not open the file picker.');
+    }
+  };
+
+  // Opens the file in the phone's viewer / browser, where it can be read, zoomed and downloaded
+  const openAttachment = (att?: ChatAttachment) => {
+    if (!att?.url || att.uploading) return;
+    if (att.type === 'image') {
+      setPreviewImageUrl(att.url);
+    } else {
+      Linking.openURL(att.url).catch(() => Alert.alert('Cannot open file', 'No app found to open this file.'));
+    }
+  };
+  const downloadAttachment = (att?: ChatAttachment) => {
+    if (!att?.url || att.uploading) return;
+    Linking.openURL(att.url).catch(() => Alert.alert('Cannot download', 'Could not open the download link.'));
+  };
 
   const toggleHandRaise = async () => {
     const currentStatus = !handRaisedUsers[myIdentity];
@@ -1010,7 +1339,32 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   // ek top-level "CallProvider" (App.tsx ke navigator ke upar) me rakhna
   // hoga, aur ye screen sirf us provider ke UI ko render kare. Wo restructure
   // is file ke bahar hai — bata dena to wo Provider bhi bana deta hoon.
+  // Remote video (other people's camera / screen share) is switched off while the room is minimized.
+  // Without this, with 2 or more people in the room, the native video surface of the other person
+  // could stay on top of the app as a solid black screen after minimize. Audio is not affected.
+  const setRemoteVideoSubscribed = (subscribed: boolean) => {
+    try {
+      room?.remoteParticipants?.forEach((rp: any) => {
+        const pubs = rp?.trackPublications || rp?.tracks;
+        pubs?.forEach((pub: any) => {
+          if (pub?.kind === 'video' || pub?.kind === Track.Kind.Video) {
+            try { pub.setSubscribed(subscribed); } catch (_) {}
+          }
+        });
+      });
+    } catch (e) {
+      console.log('Remote video subscription toggle error:', e);
+    }
+  };
+
+  // When the room screen is shown (first open or expand from the bubble), turn remote video back on
+  useEffect(() => {
+    setRemoteVideoSubscribed(true);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [room]);
+
   const handleMinimize = async () => {
+    setRemoteVideoSubscribed(false);
     // 🖤 MINIMIZE WHITE-SCREEN FIX: minimize karte waqt `ClassRoomView`
     // (jisme camera tile hota hai) unmount ho jaata hai, lekin
     // `LiveKitRoom` khud MOUNTED rehta hai (isliye ye camera SurfaceView
@@ -1035,6 +1389,8 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         // ke liye, jiska camera bina kisi restriction ke seedha ON ho
         // sakta hai. Thoda delay dekar surface ko properly release hone
         // ka time dete hain.
+        await new Promise(resolve => setTimeout(resolve, 400));
+      } else {
         await new Promise(resolve => setTimeout(resolve, 400));
       }
     } catch (e) {
@@ -1088,7 +1444,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
           {timeRemaining !== null && (
             <View style={styles.timerContainer}>
               <Clock color="#10B981" size={16} />
-              <Text style={styles.timerText}>{timeRemaining}s</Text>
+              <Text style={styles.timerText}>{formatTimer(timeRemaining)}</Text>
             </View>
           )}
 
@@ -1406,7 +1762,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
 
               <Text style={styles.timeLabel}>Select Duration:</Text>
               <View style={styles.timeOptionsRow}>
-                {[15, 30, 60, 120].map((duration) => (
+                {[30, 60, 120, 300, 600].map((duration) => (
                   <TouchableOpacity
                     key={duration}
                     style={[
@@ -1421,7 +1777,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                         selectedDuration === duration && styles.timeChipTextSelected,
                       ]}
                     >
-                      {duration}s
+                      {formatDurationLabel(duration)}
                     </Text>
                   </TouchableOpacity>
                 ))}
@@ -1516,7 +1872,53 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                         </Text>
 
 
-                        {!!item.text && <Text style={styles.chatText}>{item.text}</Text>}
+                        {item.attachment?.type === 'image' && (
+                          <TouchableOpacity activeOpacity={0.85} onPress={() => openAttachment(item.attachment)}>
+                            <Image
+                              source={{ uri: item.attachment.url }}
+                              style={styles.chatImageThumb}
+                              resizeMode="cover"
+                            />
+                            {item.attachment.uploading && (
+                              <View style={styles.chatUploadOverlay}>
+                                <ActivityIndicator color="#FFF" />
+                              </View>
+                            )}
+                          </TouchableOpacity>
+                        )}
+                        {item.attachment && item.attachment.type !== 'image' && (
+                          <View style={styles.chatFileCard}>
+                            <TouchableOpacity
+                              style={styles.chatFileMain}
+                              activeOpacity={0.8}
+                              onPress={() => openAttachment(item.attachment)}
+                            >
+                              <View style={styles.chatFileIcon}>
+                                {item.attachment.uploading ? (
+                                  <ActivityIndicator color="#FFF" size="small" />
+                                ) : (
+                                  <FileText color="#FFF" size={20} />
+                                )}
+                              </View>
+                              <View style={{ flex: 1 }}>
+                                <Text style={styles.chatFileName} numberOfLines={2}>{item.attachment.name}</Text>
+                                <Text style={styles.chatFileMeta}>
+                                  {item.attachment.uploading ? 'Sending...' : `Tap to open${item.attachment.size ? ' • ' + formatFileSize(item.attachment.size) : ''}`}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                            {!item.attachment.uploading && (
+                              <TouchableOpacity
+                                style={styles.chatFileDownload}
+                                onPress={() => downloadAttachment(item.attachment)}
+                                hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
+                              >
+                                <Download color="#FFF" size={18} />
+                              </TouchableOpacity>
+                            )}
+                          </View>
+                        )}
+                        {!!item.text && !item.attachment && <Text style={styles.chatText}>{item.text}</Text>}
                         <Text style={styles.chatTime}>{item.time}</Text>
                       </View>
                     </View>
@@ -1529,7 +1931,36 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 }
               />
 
+                {showAttachMenu && (
+                  <View style={styles.attachMenuRow}>
+                    <TouchableOpacity style={styles.attachMenuItem} onPress={() => handlePickPhoto(false)} activeOpacity={0.8}>
+                      <View style={[styles.attachMenuIcon, { backgroundColor: '#7C3AED' }]}>
+                        <ImageIcon color="#FFF" size={20} />
+                      </View>
+                      <Text style={styles.attachMenuLabel}>Photo</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.attachMenuItem} onPress={() => handlePickPhoto(true)} activeOpacity={0.8}>
+                      <View style={[styles.attachMenuIcon, { backgroundColor: '#0EA5E9' }]}>
+                        <CameraIcon color="#FFF" size={20} />
+                      </View>
+                      <Text style={styles.attachMenuLabel}>Camera</Text>
+                    </TouchableOpacity>
+                    <TouchableOpacity style={styles.attachMenuItem} onPress={handlePickDocument} activeOpacity={0.8}>
+                      <View style={[styles.attachMenuIcon, { backgroundColor: '#F59E0B' }]}>
+                        <FileText color="#FFF" size={20} />
+                      </View>
+                      <Text style={styles.attachMenuLabel}>PDF / Doc</Text>
+                    </TouchableOpacity>
+                  </View>
+                )}
                 <View style={styles.chatInputRow}>
+                  <TouchableOpacity
+                    style={styles.attachBtn}
+                    onPress={() => { Keyboard.dismiss(); setShowAttachMenu((v) => !v); }}
+                    activeOpacity={0.8}
+                  >
+                    {showAttachMenu ? <X color="#94A3B8" size={18} /> : <Paperclip color="#94A3B8" size={18} />}
+                  </TouchableOpacity>
                   <TextInput
                     style={styles.chatInput}
                     placeholder="Type a message..."
@@ -1550,6 +1981,28 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 </View>
             </View>
           </KeyboardAvoidingView>
+        </Modal>
+
+        {/* ─── IMAGE VIEWER (pinch / double-tap / button zoom) ─── */}
+        <Modal
+          visible={!!previewImageUrl}
+          transparent
+          animationType="fade"
+          statusBarTranslucent
+          onRequestClose={() => setPreviewImageUrl(null)}
+        >
+          {!!previewImageUrl && (
+            <View style={{ flex: 1 }}>
+              <ZoomableImage uri={previewImageUrl} onClose={() => setPreviewImageUrl(null)} />
+              <TouchableOpacity
+                style={styles.viewerDownloadBtn}
+                onPress={() => downloadAttachment({ type: 'image', url: previewImageUrl })}
+                activeOpacity={0.8}
+              >
+                <Download size={20} color="#FFFFFF" />
+              </TouchableOpacity>
+            </View>
+          )}
         </Modal>
 
         {/* ─── IN-ROOM AVATAR PICKER MODAL ─── */}
@@ -1886,6 +2339,29 @@ export default function ClassRoomScreen({ route, navigation }: any) {
     route?.params || {};
   const { startCall } = useCallSession();
   const hasStartedRef = useRef(false);
+  // Remove this thin "starter" route from the navigator once the call runs in the overlay.
+  // A plain goBack() right after navigate() can be ignored while the screen is still animating in,
+  // which left this dark "joining" screen behind the minimized call bubble. So we retry safely.
+  const leftRef = useRef(false);
+  const leaveRoute = () => {
+    leftRef.current = true;
+    const pop = () => {
+      try {
+        if (navigation.canGoBack()) navigation.goBack();
+        else navigation.navigate('Dashboard');
+      } catch (_) {}
+    };
+    InteractionManager.runAfterInteractions(pop);
+    setTimeout(() => { if (navigation.isFocused()) pop(); }, 700);
+    setTimeout(() => { if (navigation.isFocused()) pop(); }, 1600);
+  };
+  useEffect(() => {
+    const unsub = navigation.addListener('focus', () => {
+      if (leftRef.current) leaveRoute();
+    });
+    return unsub;
+  }, [navigation]);
+
   const [checkingAccess, setCheckingAccess] = useState(true);
 
   useEffect(() => {
@@ -1929,7 +2405,7 @@ export default function ClassRoomScreen({ route, navigation }: any) {
       if (isAdminUser) {
         setCheckingAccess(false);
         startCall({ serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl });
-        navigation.goBack();
+        leaveRoute();
         return;
       }
 
@@ -1963,9 +2439,8 @@ export default function ClassRoomScreen({ route, navigation }: any) {
 
       setCheckingAccess(false);
       startCall({ serverUrl, token, roomTitle, isHost, roomId, userAvatarUrl });
-      // Is route ko turant navigator se hata do — call ab provider ke overlay
-      // me chal rahi hai, is screen ki ab zaroorat nahi.
-      navigation.goBack();
+      // Remove this route from the navigator - the call now runs in the overlay.
+      leaveRoute();
     };
 
     proceed();
@@ -2763,6 +3238,113 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  imagePreviewBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.95)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  imagePreviewClose: {
+    position: 'absolute',
+    top: (StatusBar.currentHeight || 40) + 8,
+    right: 16,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  viewerDownloadBtn: {
+    position: 'absolute',
+    top: (StatusBar.currentHeight || 40) + 8,
+    right: 70,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.18)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatImageThumb: {
+    width: 210,
+    height: 160,
+    borderRadius: 12,
+    backgroundColor: '#0F172A',
+  },
+  chatUploadOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatFileCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    minWidth: 200,
+    backgroundColor: 'rgba(0,0,0,0.22)',
+    borderRadius: 12,
+    padding: 8,
+  },
+  chatFileMain: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  chatFileIcon: {
+    width: 40,
+    height: 40,
+    borderRadius: 10,
+    backgroundColor: '#F59E0B',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  chatFileName: {
+    color: '#FFFFFF',
+    fontSize: 12.5,
+    fontWeight: '700',
+  },
+  chatFileMeta: {
+    color: '#CBD5E1',
+    fontSize: 10,
+    marginTop: 2,
+  },
+  chatFileDownload: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255,255,255,0.16)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachMenuRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-around',
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    backgroundColor: '#0F172A',
+    borderTopWidth: 1,
+    borderTopColor: '#1E293B',
+  },
+  attachMenuItem: {
+    alignItems: 'center',
+    gap: 5,
+  },
+  attachMenuIcon: {
+    width: 46,
+    height: 46,
+    borderRadius: 23,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  attachMenuLabel: {
+    color: '#CBD5E1',
+    fontSize: 11,
+    fontWeight: '700',
   },
   attachBtn: {
     width: 36,

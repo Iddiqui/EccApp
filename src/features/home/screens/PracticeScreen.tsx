@@ -47,6 +47,7 @@ import {
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
+import storage from '@react-native-firebase/storage';
 import AudioRecord from 'react-native-audio-record';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
@@ -68,6 +69,39 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const STORAGE_KEY_READ_AUDIO = '@ecc_read_record_audio_path';
 const STORAGE_KEY_TWISTER_AUDIO = '@ecc_twister_recordings_map';
+const STORAGE_KEY_READ_SECONDS = '@ecc_read_record_audio_seconds';
+const STORAGE_KEY_READ_PENDING_UPLOAD = '@ecc_read_record_pending_upload';
+
+// ─── READ & RECORD RULES ───
+const MAX_PASSAGE_WORDS = 1000;     // admin passage limit
+const MAX_READ_MINUTES = 15;        // admin time limit (a 15 min WAV is about 29 MB, the Storage rule allows 40 MB)
+const READ_RECORD_SPEAKING_POINTS = 5; // added to the Speaking score on Home for every submitted Read & Record
+const RECORDING_KEEP_DAYS = 30;
+
+const countWords = (text: string): number => {
+  const m = (text || '').trim().match(/\S+/g);
+  return m ? m.length : 0;
+};
+
+// Cuts the text after the first `max` words (keeps line breaks and spacing of the kept part)
+const limitWords = (text: string, max: number): string => {
+  const re = /\S+/g;
+  let n = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    n += 1;
+    if (n === max) return text.slice(0, m.index + m[0].length);
+  }
+  return text;
+};
+
+// Monday of the current week (local time) as YYYY-MM-DD. Used to reset the weekly Speaking gain.
+const getWeekKey = (): string => {
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  const p = (n: number) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+};
 
 // ─── ADMIN EMAILS ───
 const KNOWN_ADMIN_EMAILS = [
@@ -125,7 +159,31 @@ export default function PracticeScreen({ navigation }: any) {
   // Admin Verification
   const currentUser = auth().currentUser;
   const currentEmailClean = (currentUser?.email || '').toLowerCase().trim();
-  const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean);
+  // Admin = the fixed email list OR any email listed in the Firestore `admins` / `sub_admins` collections
+  // (so an admin added in the Firebase console gets the admin tools in the app too).
+  const [listAdmin, setListAdmin] = useState(false);
+  useEffect(() => {
+    let alive = true;
+    const rawEmail = (currentUser?.email || '').trim();
+    if (!rawEmail) {
+      setListAdmin(false);
+      return;
+    }
+    const emails = Array.from(new Set([rawEmail.toLowerCase(), rawEmail]));
+    const inList = (col: string) =>
+      firestore()
+        .collection(col)
+        .where('email', 'in', emails)
+        .limit(1)
+        .get()
+        .then((snap: any) => !snap.empty)
+        .catch(() => false);
+    Promise.all([inList('admins'), inList('sub_admins')]).then(([a, b]) => {
+      if (alive) setListAdmin(a || b);
+    });
+    return () => { alive = false; };
+  }, [currentUser?.email]);
+  const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean) || listAdmin;
 
   // State Management
   const [userData, setUserData] = useState<any>(null);
@@ -174,6 +232,7 @@ export default function PracticeScreen({ navigation }: any) {
 
   // Local Storage Recordings
   const [readRecordAudio, setReadRecordAudio] = useState<string | null>(null);
+  const [readRecordSeconds, setReadRecordSeconds] = useState(0);
   const [twisterRecordingsMap, setTwisterRecordingsMap] = useState<{ [key: string]: string }>({});
 
   // Active Recording & Timer States
@@ -189,6 +248,7 @@ export default function PracticeScreen({ navigation }: any) {
   const [speakingWord, setSpeakingWord] = useState<string | null>(null);
 
   const timerRef = useRef<any>(null);
+  const elapsedRef = useRef(0);
   const soundRef = useRef<any>(null);
   const ttsSoundRef = useRef<any>(null);
 
@@ -205,9 +265,18 @@ export default function PracticeScreen({ navigation }: any) {
       try {
         const savedRead = await AsyncStorage.getItem(STORAGE_KEY_READ_AUDIO);
         if (savedRead) setReadRecordAudio(savedRead);
+        const savedSecs = await AsyncStorage.getItem(STORAGE_KEY_READ_SECONDS);
+        if (savedSecs) setReadRecordSeconds(Number(savedSecs) || 0);
 
         const savedTwisters = await AsyncStorage.getItem(STORAGE_KEY_TWISTER_AUDIO);
         if (savedTwisters) setTwisterRecordingsMap(JSON.parse(savedTwisters));
+
+        // A Read & Record whose upload failed earlier is sent again now
+        const pending = await AsyncStorage.getItem(STORAGE_KEY_READ_PENDING_UPLOAD);
+        if (pending) {
+          const job = JSON.parse(pending);
+          if (job?.path) uploadReadRecording(job);
+        }
       } catch (err) {
         console.log('Error loading saved recordings:', err);
       }
@@ -399,9 +468,11 @@ export default function PracticeScreen({ navigation }: any) {
       AudioRecord.start();
 
       let elapsed = 0;
+      elapsedRef.current = 0;
       if (timerRef.current) clearInterval(timerRef.current);
       timerRef.current = setInterval(() => {
         elapsed += 1;
+        elapsedRef.current = elapsed;
         setRecordingTime(elapsed);
         const left = Math.max(totalAllowedSeconds - elapsed, 0);
         setRemainingTimer(left);
@@ -424,7 +495,9 @@ export default function PracticeScreen({ navigation }: any) {
 
       if (type === 'read_record') {
         setReadRecordAudio(audioPath);
+        setReadRecordSeconds(elapsedRef.current);
         await AsyncStorage.setItem(STORAGE_KEY_READ_AUDIO, audioPath);
+        await AsyncStorage.setItem(STORAGE_KEY_READ_SECONDS, String(elapsedRef.current));
       } else {
         const currentTwister = tongueTwisters[activeTwisterIdx];
         const currentTwisterId = currentTwister?.id || `${activeTwisterIdx}`;
@@ -448,8 +521,10 @@ export default function PracticeScreen({ navigation }: any) {
     setIsPlayingAudio(false);
     setActivePlayingTarget(null);
     setReadRecordAudio(null);
+    setReadRecordSeconds(0);
     setRecordingTime(0);
     await AsyncStorage.removeItem(STORAGE_KEY_READ_AUDIO);
+    await AsyncStorage.removeItem(STORAGE_KEY_READ_SECONDS);
   };
 
   const handleDeleteTwisterAudio = async (twisterId: string) => {
@@ -540,13 +615,24 @@ export default function PracticeScreen({ navigation }: any) {
       Alert.alert('Required', 'Please fill in both title and passage content.');
       return;
     }
+    const words = countWords(adminReadPassage);
+    if (words > MAX_PASSAGE_WORDS) {
+      Alert.alert('Passage Too Long', `The passage can have at most ${MAX_PASSAGE_WORDS} words. It has ${words} words now.`);
+      return;
+    }
+    const minutes = Math.round(Number(adminReadMinutes));
+    if (!minutes || minutes < 1 || minutes > MAX_READ_MINUTES) {
+      Alert.alert('Invalid Time', `Please enter the reading time between 1 and ${MAX_READ_MINUTES} minutes.`);
+      return;
+    }
 
     setSavingAdminRead(true);
     try {
       await firestore().collection('practice_content').doc('read_record').set({
         title: adminReadTitle.trim(),
         difficulty: adminReadDifficulty.trim() || 'Intermediate',
-        estMinutes: Number(adminReadMinutes) || 3,
+        estMinutes: minutes,
+        wordCount: words,
         passage: adminReadPassage.trim(),
         updatedAt: firestore.FieldValue.serverTimestamp()
       }, { merge: true });
@@ -609,6 +695,71 @@ export default function PracticeScreen({ navigation }: any) {
     }
   };
 
+  // ⭐ Adds Speaking points (Home "Speaking" card) and the weekly gain ("+N this week").
+  // The weekly gain restarts from 0 every Monday (it is stored together with the week it belongs to).
+  const addSpeakingPoints = async (uid: string, points: number) => {
+    try {
+      const ref = firestore().collection('users').doc(uid);
+      const weekKey = getWeekKey();
+      await firestore().runTransaction(async (tx) => {
+        const snap = await tx.get(ref);
+        const d: any = (snap && snap.data && snap.data()) || {};
+        const sameWeek = d.weeklyGainWeek === weekKey;
+        tx.set(ref, {
+          speakingScore: (Number(d.speakingScore) || 0) + points,
+          weeklySpeakingGain: (sameWeek ? (Number(d.weeklySpeakingGain) || 0) : 0) + points,
+          weeklyGainWeek: weekKey,
+        }, { merge: true });
+      });
+    } catch (e) {
+      console.log('Speaking score update failed:', e);
+    }
+  };
+
+  // ☁️ Uploads a submitted Read & Record to Firebase Storage and keeps it for 30 days.
+  // It uses the same place as the daily-challenge recordings, so the existing daily cleanup
+  // function deletes it (file + record) after 30 days. If the upload fails (no internet),
+  // the details are kept on the phone and it is tried again the next time this screen opens.
+  const uploadReadRecording = async (job: { path: string; seconds: number; title: string; words: number }) => {
+    const user = auth().currentUser;
+    if (!user) return;
+    try {
+      let uploadUri = job.path;
+      if (Platform.OS === 'android') {
+        if (!uploadUri.startsWith('file://')) uploadUri = `file://${uploadUri}`;
+      } else {
+        uploadUri = uploadUri.replace('file://', '');
+      }
+
+      const storagePath = `challenges_recordings/${user.uid}/readrecord_${user.uid}_${Date.now()}.wav`;
+      const reference = storage().ref(storagePath);
+      await reference.putFile(uploadUri, { contentType: 'audio/wav' });
+      const downloadUrl = await reference.getDownloadURL();
+
+      const name = user.displayName || user.email?.split('@')[0] || 'Learner';
+      await firestore().collection('challenge_recordings').add({
+        source: 'read_record',
+        challengeTitle: `Read & Record: ${job.title}`,
+        wordCount: job.words,
+        uid: user.uid,
+        studentName: name,
+        userName: name,
+        userPhoto: user.photoURL || null,
+        audioUrl: downloadUrl,
+        storagePath,
+        durationSeconds: job.seconds || 1,
+        createdAt: firestore.FieldValue.serverTimestamp(),
+        expiresAt: firestore.Timestamp.fromDate(new Date(Date.now() + RECORDING_KEEP_DAYS * 24 * 60 * 60 * 1000)),
+      });
+      await AsyncStorage.removeItem(STORAGE_KEY_READ_PENDING_UPLOAD);
+    } catch (e) {
+      console.log('Read & Record upload failed, will retry later:', e);
+      try {
+        await AsyncStorage.setItem(STORAGE_KEY_READ_PENDING_UPLOAD, JSON.stringify(job));
+      } catch (err) {}
+    }
+  };
+
   // 🔒 STRICT COMPLETION: ALL 3 TONGUE TWISTERS MUST BE RECORDED FOR XP
   const handleCompletePracticeSession = async (
     type: 'read_record' | 'tongue_twisters', 
@@ -634,6 +785,17 @@ export default function PracticeScreen({ navigation }: any) {
     }
 
     const currentStreak = (userData?.streak || 1);
+
+    // Read & Record: remember what is needed to store the recording before the local state is cleared
+    const readAudioPath = readRecordAudio;
+    const readSeconds = readRecordSeconds;
+    const readTitle = readRecordContent?.title || 'Reading passage';
+    const readWords = countWords(readRecordContent?.passage || '');
+    if (type === 'read_record' && readSeconds > 0) {
+      // Count the minutes really spoken (never more than the passage time)
+      minutesToAdd = Math.min(Number(readRecordContent?.estMinutes) || 3, Math.max(1, Math.round(readSeconds / 60)));
+    }
+
     closeModalOnly();
 
     let sessionTitle = 'Challenge Completed!';
@@ -642,7 +804,9 @@ export default function PracticeScreen({ navigation }: any) {
 
     setRewardDetails({
       title: sessionTitle,
-      subtitle: `You earned +${xpToAdd} XP and completed today's challenge!`,
+      subtitle: type === 'read_record'
+        ? `You earned +${xpToAdd} XP and +${READ_RECORD_SPEAKING_POINTS} Speaking points!`
+        : `You earned +${xpToAdd} XP and completed today's challenge!`,
       xpEarned: xpToAdd,
       streakCount: currentStreak,
     });
@@ -657,11 +821,27 @@ export default function PracticeScreen({ navigation }: any) {
           lastPracticedAt: firestore.FieldValue.serverTimestamp()
         }, { merge: true });
       } catch (err) {}
+
+      if (type === 'read_record') {
+        // Speaking score + weekly gain shown on the Home screen
+        addSpeakingPoints(currentUser.uid, READ_RECORD_SPEAKING_POINTS);
+        // Keep the recording for 30 days (runs in the background, retried later if it fails)
+        if (readAudioPath) {
+          uploadReadRecording({
+            path: readAudioPath,
+            seconds: readSeconds,
+            title: readTitle,
+            words: readWords,
+          });
+        }
+      }
     }
 
     if (type === 'read_record') {
       setReadRecordAudio(null);
+      setReadRecordSeconds(0);
       await AsyncStorage.removeItem(STORAGE_KEY_READ_AUDIO);
+      await AsyncStorage.removeItem(STORAGE_KEY_READ_SECONDS);
     } else if (type === 'tongue_twisters') {
       setTwisterRecordingsMap({});
       await AsyncStorage.removeItem(STORAGE_KEY_TWISTER_AUDIO);
@@ -985,7 +1165,7 @@ export default function PracticeScreen({ navigation }: any) {
                 </Text>
                 <View style={{ flexDirection: 'row', alignItems: 'center', marginTop: 4, gap: 8 }}>
                   <Text style={{ fontSize: 12, color: colors.textSecondary }}>
-                    ⏱️ {readRecordContent.estMinutes || 3} min • {readRecordContent.difficulty || 'Intermediate'}
+                    ⏱️ {readRecordContent.estMinutes || 3} min • {countWords(readRecordContent.passage)} words • {readRecordContent.difficulty || 'Intermediate'}
                   </Text>
                   {isAdmin && (
                     <TouchableOpacity 
@@ -1074,6 +1254,9 @@ export default function PracticeScreen({ navigation }: any) {
                     <CheckCircle size={18} color="#FFFFFF" />
                     <Text style={styles.primaryActionBtnText}>Submit & Claim +30 XP</Text>
                   </TouchableOpacity>
+                  <Text style={{ fontSize: 11.5, textAlign: 'center', color: colors.textSecondary }}>
+                    Your recording is saved for {RECORDING_KEEP_DAYS} days and adds +{READ_RECORD_SPEAKING_POINTS} to your Speaking score.
+                  </Text>
                 </View>
               ) : (
                 <TouchableOpacity style={[styles.recordStartBtn, { backgroundColor: primaryColor }]} onPress={() => handleStartRecord('read_record')}>
@@ -1098,9 +1281,10 @@ export default function PracticeScreen({ navigation }: any) {
         >
           <TouchableOpacity 
             activeOpacity={1} 
-            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border }]}
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border, maxHeight: '92%' }]}
             onPress={(e) => e.stopPropagation()}
           >
+            <ScrollView keyboardShouldPersistTaps="handled" showsVerticalScrollIndicator={false}>
             <View style={styles.adminModalHeader}>
               <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                 <Edit3 size={18} color="#8B5CF6" />
@@ -1132,27 +1316,35 @@ export default function PracticeScreen({ navigation }: any) {
                 />
               </View>
               <View style={{ flex: 1 }}>
-                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Est. Minutes</Text>
+                <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Time (minutes, max {MAX_READ_MINUTES})</Text>
                 <TextInput
                   style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
                   value={adminReadMinutes}
-                  onChangeText={setAdminReadMinutes}
+                  onChangeText={(v) => setAdminReadMinutes(v.replace(/[^0-9]/g, '').slice(0, 2))}
                   keyboardType="numeric"
-                  placeholder="e.g. 3"
+                  placeholder="e.g. 8"
                   placeholderTextColor="#64748B"
                 />
               </View>
             </View>
 
-            <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Paragraph / Passage</Text>
+            <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+              <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>Paragraph / Passage</Text>
+              <Text style={{ fontSize: 11.5, fontWeight: '800', marginTop: 6, color: countWords(adminReadPassage) >= MAX_PASSAGE_WORDS ? '#EF4444' : colors.textSecondary }}>
+                {countWords(adminReadPassage)} / {MAX_PASSAGE_WORDS} words
+              </Text>
+            </View>
             <TextInput
-              style={[styles.adminInput, { height: 110, textAlignVertical: 'top', color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+              style={[styles.adminInput, { height: 190, textAlignVertical: 'top', color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
               value={adminReadPassage}
-              onChangeText={setAdminReadPassage}
-              placeholder="Type or paste the reading passage here..."
+              onChangeText={(v) => setAdminReadPassage(limitWords(v, MAX_PASSAGE_WORDS))}
+              placeholder="Type or paste the reading passage here (up to 1000 words)..."
               placeholderTextColor="#64748B"
               multiline
             />
+            <Text style={{ fontSize: 11, color: colors.textSecondary, marginTop: 6 }}>
+              Tip: normal reading speed is about 130 words per minute, so 1000 words take about 8 minutes.
+            </Text>
 
             <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
               <TouchableOpacity 
@@ -1174,6 +1366,7 @@ export default function PracticeScreen({ navigation }: any) {
                 )}
               </TouchableOpacity>
             </View>
+            </ScrollView>
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
@@ -1584,9 +1777,12 @@ export default function PracticeScreen({ navigation }: any) {
             <View style={[styles.sparkleCircle, { backgroundColor: primaryColor + '18', borderColor: primaryColor + '30' }]}>
               <Sparkles size={30} color={primaryColor} />
             </View>
+            <View style={{ alignSelf: 'center', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 999, backgroundColor: primaryColor + '1F', marginBottom: 8 }}>
+              <Text style={{ fontSize: 11, fontWeight: '900', letterSpacing: 1, color: primaryColor }}>COMING SOON</Text>
+            </View>
             <Text style={[styles.comingSoonHeading, { color: colors.textPrimary }]}>{comingSoonTitle}</Text>
             <Text style={[styles.comingSoonSub, { color: colors.textSecondary }]}>
-              Our AI engine and mentor coordination system are being optimized for flawless real-time speech assessment.
+              This feature is coming soon. We are working hard to bring it to you. Stay tuned!
             </Text>
             <TouchableOpacity style={[styles.gotItBtn, { backgroundColor: primaryColor }]} onPress={closeModalOnly}>
               <Text style={styles.gotItBtnText}>Got it</Text>

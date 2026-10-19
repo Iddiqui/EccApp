@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useRef } from 'react';
 
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 
@@ -7,12 +7,13 @@ import {
   View,
   TouchableOpacity,
   Text,
+  Animated,
+  Easing,
 } from 'react-native';
 
 import {
   Home,
   GraduationCap,
-  Plus,
   UsersRound,
   UserRound,
 } from 'lucide-react-native';
@@ -26,6 +27,53 @@ import ProfileScreen from '../features/home/screens/ProfileScreen';
 import { useTheme } from '../hooks/useTheme';
 
 const Tab = createBottomTabNavigator();
+
+// Animated sound-wave icon for the centre button (bars move up and down like a live voice wave)
+const WAVE_BARS = [
+  { h: 12, delay: 0, dur: 520 },
+  { h: 22, delay: 140, dur: 460 },
+  { h: 30, delay: 60, dur: 560 },
+  { h: 22, delay: 200, dur: 480 },
+  { h: 12, delay: 100, dur: 540 },
+];
+
+function WaveBar({ h, delay, dur, color }: { h: number; delay: number; dur: number; color: string }) {
+  const v = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.delay(delay),
+        Animated.timing(v, { toValue: 1, duration: dur, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+        Animated.timing(v, { toValue: 0, duration: dur, easing: Easing.inOut(Easing.quad), useNativeDriver: true }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [v, delay, dur]);
+
+  return (
+    <Animated.View
+      style={{
+        width: 4,
+        height: h,
+        borderRadius: 2,
+        marginHorizontal: 1.6,
+        backgroundColor: color,
+        transform: [{ scaleY: v.interpolate({ inputRange: [0, 1], outputRange: [0.35, 1.15] }) }],
+      }}
+    />
+  );
+}
+
+function SoundWaveIcon({ color = '#FFFFFF' }: { color?: string }) {
+  return (
+    <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', height: 34 }}>
+      {WAVE_BARS.map((b, i) => (
+        <WaveBar key={i} h={b.h} delay={b.delay} dur={b.dur} color={color} />
+      ))}
+    </View>
+  );
+}
 
 export default function TabNavigator() {
   const { theme, isDarkMode, t } = useTheme() as any;
@@ -113,7 +161,7 @@ export default function TabNavigator() {
         }}
       />
 
-      {/* CENTER PLUS BUTTON */}
+      {/* CENTER SOUND WAVE BUTTON */}
       <Tab.Screen
         name="Voice"
         component={VoiceRoomScreen}
@@ -145,11 +193,7 @@ export default function TabNavigator() {
                     },
                   ]}
                 >
-                  <Plus
-                    color="#FFFFFF"
-                    size={32}
-                    strokeWidth={2.8}
-                  />
+                  <SoundWaveIcon color="#FFFFFF" />
                 </View>
               </TouchableOpacity>
             </View>

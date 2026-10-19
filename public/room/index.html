@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Join the room on ECC</title>
+<style>
+  body{margin:0;font-family:Arial,sans-serif;background:#EEF2FF;display:flex;min-height:100vh;align-items:center;justify-content:center}
+  .card{background:#fff;border-radius:24px;padding:32px 24px;max-width:360px;width:calc(100% - 32px);text-align:center;box-shadow:0 12px 32px rgba(83,86,255,.15)}
+  h1{margin:0 0 8px;color:#0F172A;font-size:24px}
+  p{color:#64748B;font-size:14px;line-height:1.5;margin:0 0 20px}
+  a.btn{display:block;background:#5356FF;color:#fff;text-decoration:none;font-weight:800;border-radius:28px;padding:15px}
+</style>
+</head>
+<body>
+<div class="card">
+  <h1>ECC Study Room 🎧</h1>
+  <p>You were invited to a live room. Opening the ECC app…</p>
+  <a class="btn" id="open" href="#">Open in ECC app</a>
+</div>
+<script>
+  // /room/<id>  ->  eccapp://room/<id>  (Android opens the app; the button is a fallback)
+  var m = location.pathname.match(/\/room\/([A-Za-z0-9_-]+)/);
+  var id = m ? m[1] : '';
+  var app = 'eccapp://room/' + id;
+  var intent = 'intent://room/' + id + '#Intent;scheme=eccapp;package=com.eccapp;end';
+  var isAndroid = /android/i.test(navigator.userAgent);
+  var link = isAndroid ? intent : app;
+  document.getElementById('open').href = link;
+  if (id) setTimeout(function () { location.href = link; }, 400);
+</script>
+</body>
+</html>

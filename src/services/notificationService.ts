@@ -23,11 +23,12 @@ export type NotificationType =
   | 'audio'
   | 'payment'
   | 'community'
+  | 'mention'
   | 'challenge'
   | 'review';
 
 const NOTIFICATION_TYPES: NotificationType[] = [
-  'streak', 'room', 'badge', 'like', 'session', 'audio', 'payment', 'community', 'challenge', 'review',
+  'streak', 'room', 'badge', 'like', 'session', 'audio', 'payment', 'community', 'mention', 'challenge', 'review',
 ];
 
 export interface AppNotification {
@@ -40,6 +41,8 @@ export interface AppNotification {
   targetRoomId?: string;
   targetBadgeId?: string;
   targetScreen?: string;
+  targetGroupId?: string; // mention: the community group
+  targetMessageId?: string; // mention: the message to open
   targetTab?: string; // VoiceRoomScreen: public | official, Dashboard: Home | Practice | Community | Profile
 }
 
@@ -79,6 +82,8 @@ const normalize = (raw: any): AppNotification => {
     targetBadgeId: raw.targetBadgeId,
     targetScreen: raw.targetScreen,
     targetTab: raw.targetTab,
+    targetGroupId: raw.targetGroupId,
+    targetMessageId: raw.targetMessageId,
   };
 };
 
@@ -146,10 +151,13 @@ export const markNotificationRead = (id: string) =>
   notificationsCollection().doc(id).update({ isRead: true });
 
 export async function markAllNotificationsRead() {
-  const snap = await notificationsCollection().where('isRead', '==', false).limit(500).get();
-  if (snap.empty) return;
+  // Not `where('isRead', '==', false)`: notifications that have no isRead field at all would be missed
+  // and the red dot on Home would never go away. Take the latest ones and mark every unread one.
+  const snap = await notificationsCollection().orderBy('createdAt', 'desc').limit(200).get();
+  const unread = snap.docs.filter(d => d.data()?.isRead !== true);
+  if (unread.length === 0) return;
   const batch = firestore().batch();
-  snap.docs.forEach(d => batch.update(d.ref, { isRead: true }));
+  unread.forEach(d => batch.update(d.ref, { isRead: true }));
   await batch.commit();
 }
 
@@ -227,15 +235,25 @@ const fromRemoteMessage = (msg: FirebaseMessagingTypes.RemoteMessage): AppNotifi
     targetBadgeId: msg.data?.targetBadgeId,
     targetScreen: msg.data?.targetScreen,
     targetTab: msg.data?.targetTab,
+    targetGroupId: msg.data?.targetGroupId,
+    targetMessageId: msg.data?.targetMessageId,
   });
 
 // ─────────────────────────────────────────────
 // DISPLAY AND NAVIGATION
 // ─────────────────────────────────────────────
 export async function displayLocalNotification(msg: FirebaseMessagingTypes.RemoteMessage) {
+  const title = String(msg.notification?.title ?? msg.data?.title ?? '').trim();
+  const body = String(msg.notification?.body ?? msg.data?.body ?? '').trim();
+
+  // A silent push with no text must never show up as an empty notification
+  if (!title && !body) return;
+
   await notifee.displayNotification({
-    title: msg.notification?.title ?? (msg.data?.title as string),
-    body: msg.notification?.body ?? (msg.data?.body as string),
+    // Same id for the same notification, so one push can never show twice
+    id: msg.data?.notificationId ? String(msg.data.notificationId) : undefined,
+    title: title || 'ECC',
+    body,
     data: (msg.data as Record<string, string>) ?? {},
     android: { channelId: CHANNEL_ID, pressAction: { id: 'default' } },
   });
@@ -260,6 +278,19 @@ export function navigateFromData(navigation: any, data?: Record<string, any>) {
 
   const screen = data.targetScreen as string | undefined;
   const tab = data.targetTab as string | undefined;
+
+  // 0. @mention: open the Community tab, the group chat and the mentioned message
+  if (data.type === 'mention') {
+    navigation.navigate('Dashboard', {
+      screen: 'Community',
+      params: {
+        openGroupId: data.targetGroupId || 'ecc_community_chat',
+        messageId: data.targetMessageId || undefined,
+        openedAt: Date.now(),
+      },
+    });
+    return;
+  }
 
   // 1. Explicit target screen sent by the backend
   if (screen && ALLOWED_SCREENS.includes(screen)) {

@@ -9,6 +9,7 @@ import {
   FlatList,
   TextInput,
   Alert,
+  Share,
   ActivityIndicator,
   Pressable,
   ScrollView,
@@ -41,6 +42,7 @@ import {
   ChevronRight,
   Volume2,
   Users,
+  Share2,
   Sparkles,
   X,
   UserCheck,
@@ -88,6 +90,8 @@ interface VoiceRoom {
   createdAt?: any;
 }
 
+const AnimatedTouchable = Animated.createAnimatedComponent(TouchableOpacity);
+
 export default function VoiceRoomScreen({ navigation, route }: any) {
   const themeHook = useTheme() as any;
   const t = themeHook?.t;
@@ -102,6 +106,24 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const pagerRef = useRef<ScrollView>(null);
 
   const [rooms, setRooms] = useState<VoiceRoom[]>([]);
+
+  // Real number of people inside each room (from the presence heartbeat written by the room screen)
+  const [liveCounts, setLiveCounts] = useState<Record<string, number>>({});
+  const presenceDocsRef = useRef<Record<string, Record<string, number | null>>>({});
+  const [presenceTick, setPresenceTick] = useState(0);
+
+  // One shared blink value: drives the red LIVE dot and the card border pulse
+  const blinkAnim = useRef(new Animated.Value(0)).current;
+  useEffect(() => {
+    const loop = Animated.loop(
+      Animated.sequence([
+        Animated.timing(blinkAnim, { toValue: 1, duration: 750, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
+        Animated.timing(blinkAnim, { toValue: 0, duration: 750, easing: Easing.inOut(Easing.ease), useNativeDriver: false }),
+      ])
+    );
+    loop.start();
+    return () => loop.stop();
+  }, [blinkAnim]);
   const [loadingRooms, setLoadingRooms] = useState<boolean>(true);
   const [isAdminOrSubAdmin, setIsAdminOrSubAdmin] = useState<boolean>(false);
   const [checkingRole, setCheckingRole] = useState<boolean>(true);
@@ -112,7 +134,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
   const [creating, setCreating] = useState<boolean>(false);
 
   const [showAvatarPickerModal, setShowAvatarPickerModal] = useState<boolean>(false);
-  const [selectedAvatarUrl, setSelectedAvatarUrl] = useState<string>(ILLUSTRATED_AVATARS[0].url);
+  const [selectedAvatarUrl, setSelectedAvatarUrl] = useState<string>(''); // optional: nothing is pre-selected
   const [pendingJoinRoom, setPendingJoinRoom] = useState<VoiceRoom | null>(null);
   const [isJoiningPending, setIsJoiningPending] = useState<boolean>(false);
 
@@ -446,6 +468,50 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     return () => unsubscribeRooms();
   }, [currentUser]);
 
+  // Listen to who is inside every listed room
+  const roomIdsKey = rooms.map(r => r.id).join('|');
+  useEffect(() => {
+    if (!currentUser || !roomIdsKey) return;
+    const ids = roomIdsKey.split('|');
+    const unsubs = ids.map(id =>
+      firestore()
+        .collection('voice_rooms')
+        .doc(id)
+        .collection('participants')
+        .onSnapshot(
+          snap => {
+            const map: Record<string, number | null> = {};
+            snap?.docs?.forEach(d => {
+              const ls: any = d.data()?.lastSeen;
+              // lastSeen is null for a write that has not reached the server yet = just joined
+              map[d.id] = ls && typeof ls.toMillis === 'function' ? ls.toMillis() : null;
+            });
+            presenceDocsRef.current[id] = map;
+            setPresenceTick(n => n + 1);
+          },
+          () => {}
+        )
+    );
+    return () => unsubs.forEach(u => u());
+  }, [roomIdsKey, currentUser]);
+
+  // Recount every 20 seconds so people who closed the app drop out
+  useEffect(() => {
+    const recount = () => {
+      const now = Date.now();
+      const next: Record<string, number> = {};
+      Object.keys(presenceDocsRef.current).forEach(id => {
+        next[id] = Object.values(presenceDocsRef.current[id]).filter(
+          ms => ms === null || now - (ms as number) < 70 * 1000
+        ).length;
+      });
+      setLiveCounts(next);
+    };
+    recount();
+    const timer = setInterval(recount, 20 * 1000);
+    return () => clearInterval(timer);
+  }, [presenceTick]);
+
   useEffect(() => {
     const targetRoomId = route?.params?.roomId;
     if (targetRoomId) {
@@ -577,8 +643,21 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     }
   };
 
+  // Share a public room through the phone's share sheet
+  const handleShareRoom = async (item: VoiceRoom) => {
+    try {
+      await Share.share({
+        message:
+          `Join "${item.title}" live on ECC - English Conversation Club 🎧\n` +
+          `https://ecc-master-english-fa596.web.app/room/${item.id}`,
+      });
+    } catch (e) {
+      console.log('Share room error:', e);
+    }
+  };
+
   const handleInitiateJoinRoom = (item: VoiceRoom) => {
-    if (item.type === 'public' && (item.totalParticipants || 0) >= 10) {
+    if (item.type === 'public' && (liveCounts[item.id] || 0) >= 10) {
       Alert.alert('Room Full', 'This public study room has reached its maximum limit of 10 users.');
       return;
     }
@@ -641,7 +720,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         roomTitle: pendingJoinRoom.title,
         isHost: pendingJoinRoom.createdBy === currentUser?.uid,
         roomId: pendingJoinRoom.id,
-        userAvatarUrl: chosenAvatarUrl,
+        userAvatarUrl: chosenAvatarUrl || currentUser?.photoURL || '',
       });
     } catch (error: any) {
       setIsJoiningPending(false);
@@ -664,18 +743,23 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         contentContainerStyle={styles.scrollContent}
         showsVerticalScrollIndicator={false}
         renderItem={({ item }) => {
-          const isFull = item.type === 'public' && (item.totalParticipants || 0) >= 10;
+          const liveCount = liveCounts[item.id] || 0;
+          const isFull = item.type === 'public' && liveCount >= 10;
           const isTargeted = item.id === highlightedRoomId;
+          const borderBlink = blinkAnim.interpolate({
+            inputRange: [0, 1],
+            outputRange: isDarkMode
+              ? ['rgba(56, 189, 248, 0.25)', 'rgba(56, 189, 248, 1)']
+              : ['#E2E8F0', '#38BDF8'],
+          });
 
           return (
-            <TouchableOpacity
+            <AnimatedTouchable
               style={[
                 styles.roomCardGlow,
                 {
                   backgroundColor: colors.bgCard,
-                  borderColor: isTargeted
-                    ? '#0284C7'
-                    : (isDarkMode ? 'rgba(56, 189, 248, 0.28)' : '#E2E8F0'),
+                  borderColor: isTargeted ? '#0284C7' : borderBlink,
                 },
                 isTargeted && styles.roomCardTargetedGlow,
               ]}
@@ -689,7 +773,16 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                     { backgroundColor: isFull ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
                   ]}
                 >
-                  <Volume2 color={isFull ? '#EF4444' : '#10B981'} size={13} style={{ marginRight: 4 }} />
+                  <Animated.View
+                    style={{
+                      width: 8,
+                      height: 8,
+                      borderRadius: 4,
+                      backgroundColor: isFull ? '#EF4444' : '#EF4444',
+                      marginRight: 6,
+                      opacity: blinkAnim.interpolate({ inputRange: [0, 1], outputRange: [0.2, 1] }),
+                    }}
+                  />
                   <Text
                     style={[
                       styles.liveBadgeText,
@@ -699,6 +792,17 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                     {isFull ? 'FULL' : (currentLang === 'hi' ? 'लाइव' : 'LIVE')}
                   </Text>
                 </View>
+
+                {item.type === 'public' && (
+                  <TouchableOpacity
+                    onPress={() => handleShareRoom(item)}
+                    hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
+                    style={{ marginLeft: 'auto', marginRight: 8, padding: 4 }}
+                    activeOpacity={0.7}
+                  >
+                    <Share2 color={isDarkMode ? '#38BDF8' : '#0284C7'} size={17} />
+                  </TouchableOpacity>
+                )}
 
                 <View
                   style={[
@@ -711,7 +815,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 >
                   <Users color={isDarkMode ? '#38BDF8' : '#0284C7'} size={13} />
                   <Text style={[styles.listenerCountText, { color: colors.textPrimary }]}>
-                    {item.totalParticipants || 1}{item.type === 'public' ? '/10' : ''} {t?.rooms?.listening || 'listening'}
+                    {liveCount}{item.type === 'public' ? '/10' : ''} {t?.rooms?.listening || 'listening'}
                   </Text>
                 </View>
               </View>
@@ -757,7 +861,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                   <ChevronRight color="#FFFFFF" size={17} strokeWidth={2.8} />
                 </View>
               </View>
-            </TouchableOpacity>
+            </AnimatedTouchable>
           );
         }}
         ListEmptyComponent={
@@ -1150,7 +1254,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                   <Sparkles size={20} color="#38BDF8" />
                   <Text style={[styles.avatarModalTitle, { color: colors.textPrimary }]}>
-                    Select Profile Avatar
+                    Select Profile Avatar (Optional)
                   </Text>
                 </View>
                 <TouchableOpacity onPress={() => setShowAvatarPickerModal(false)}>
@@ -1159,7 +1263,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
               </View>
 
               <Text style={{ fontSize: 13, color: colors.textSecondary, marginBottom: 14 }}>
-                Choose your illustrated avatar. This avatar cannot be changed during the room session.
+                Choosing an avatar is optional - you can skip it. Tap a selected avatar again to remove it.
               </Text>
 
               <ScrollView contentContainerStyle={styles.avatarGridContainer}>
@@ -1176,7 +1280,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                         },
                         isSelected && styles.avatarPickTileActive,
                       ]}
-                      onPress={() => setSelectedAvatarUrl(item.url)}
+                      onPress={() => setSelectedAvatarUrl(isSelected ? '' : item.url)}
                       activeOpacity={0.75}
                     >
                       <Image source={{ uri: item.url }} style={styles.avatarVectorImg} resizeMode="contain" />
@@ -1209,7 +1313,9 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                   <ActivityIndicator size="small" color="#FFF" />
                 ) : (
                   <Text style={styles.confirmAvatarBtnText}>
-                    {pendingJoinRoom ? 'Enter Voice Room 🚀' : 'Create & Join Room 🚀'}
+                    {pendingJoinRoom
+                      ? (selectedAvatarUrl ? 'Enter Voice Room 🚀' : 'Skip & Enter Room 🚀')
+                      : 'Create & Join Room 🚀'}
                   </Text>
                 )}
               </TouchableOpacity>

@@ -11,6 +11,7 @@ import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
 import { ClassRoomView, FloatingCallBubble } from './ClassRoomScreen';
 import { VideoSessionView } from '../../sessions/VideoSessionScreen';
+import { StudyRoomView, StudyRoomController, RoomPresenceReporter } from './StudyRoomScreen';
 
 // ─── DEBUG ERROR BOUNDARY ───
 // 🐛 WHITE-SCREEN DEBUGGER: Class Room leave karne ke baad kabhi-kabhi
@@ -97,7 +98,7 @@ const debugErrorStyles = StyleSheet.create({
 });
 
 // ─── TYPES ───
-type RoomType = 'class' | 'one_to_one';
+type RoomType = 'class' | 'one_to_one' | 'study';
 
 interface CallParams {
   serverUrl: string;
@@ -315,16 +316,19 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
           // camera+mic default ON. Class/Study room me students khud
           // manually camera/mic on karte hain, isliye wahan false hi
           // rehta hai (jaisa pehle tha).
-          audio={activeCall.roomType === 'one_to_one'}
+          // Study (public) room: only the host's mic starts ON. Everyone else needs the host's permission.
+          audio={activeCall.roomType === 'one_to_one' || activeCall.roomType === 'study'}
           video={activeCall.roomType === 'one_to_one'}
           options={{
             adaptiveStream: true,
             dynacast: true,
-            // @ts-ignore
-autoSubscribe: true,
-            
+            autoSubscribe: true,
           }}
         >
+          {/* Always-mounted helpers (they keep working while the room is minimized) */}
+          {activeCall.roomType === 'study' && <StudyRoomController isHost={!!activeCall.isHost} userAvatarUrl={activeCall.userAvatarUrl} roomId={activeCall.roomId} />}
+          {activeCall.roomType !== 'one_to_one' && <RoomPresenceReporter roomId={activeCall.roomId} />}
+
           {/* Full call UI — minimize hote hi genuinely 0x0 + clipped ho
               jaata hai (sirf transparent nahi), taaki koi bhi leftover
               native camera/video surface bhi saath me hide ho jaaye. */}
@@ -343,6 +347,15 @@ autoSubscribe: true,
                   onMinimize={minimizeCall}
                   otherPersonName={activeCall.otherPersonName}
                   otherPersonAvatarUrl={activeCall.otherPersonAvatarUrl}
+                  userAvatarUrl={activeCall.userAvatarUrl}
+                />
+              ) : activeCall.roomType === 'study' ? (
+                <StudyRoomView
+                  safeExit={endCall}
+                  onMinimize={minimizeCall}
+                  roomTitle={activeCall.roomTitle}
+                  isHost={activeCall.isHost}
+                  roomId={activeCall.roomId}
                   userAvatarUrl={activeCall.userAvatarUrl}
                 />
               ) : (
