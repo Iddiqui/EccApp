@@ -48,6 +48,7 @@ import {
   UserCheck,
   Plus,
   Radio,
+  GraduationCap,
 } from 'lucide-react-native';
 import { useTheme } from '../../../hooks/useTheme';
 
@@ -544,7 +545,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       pagerRef.current?.scrollTo({ x: targetIndex * SCREEN_WIDTH, animated: true });
     });
     return () => cancelAnimationFrame(frame);
-  }, [activeTab]);
+  }, [activeTab, remountSignal]);
 
   const handleScrollEnd = (e: any) => {
     const xOffset = e.nativeEvent.contentOffset.x;
@@ -711,12 +712,15 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
       }
       if (!data.token) throw new Error('Failed to get the room token.');
 
-      const targetScreen = pendingJoinRoom.type === 'official' ? 'ClassRoomScreen' : 'StudyRoomScreen';
       setIsJoiningPending(false);
 
-      navigation.navigate(targetScreen, {
+      // Start the call directly (no extra "starter" screen). Pushing a screen and popping it again
+      // right away left the app on a blank white screen behind the minimized bubble.
+      // The server already checked the Audio plan when it gave the token.
+      startCall({
         serverUrl: data.serverUrl || LIVEKIT_FALLBACK_URL,
         token: data.token,
+        roomType: pendingJoinRoom.type === 'official' ? 'class' : 'study',
         roomTitle: pendingJoinRoom.title,
         isHost: pendingJoinRoom.createdBy === currentUser?.uid,
         roomId: pendingJoinRoom.id,
@@ -957,70 +961,63 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
             {t?.rooms?.subtitle || 'Connect with learners & speak fluently in real time'}
           </Text>
 
-          {/* Tab Control */}
+          {/* Tab Control: Talk Rooms (public) / Trainer Room (private) */}
           <View
             style={[
               styles.tabBarContainer,
               {
-                backgroundColor: isDarkMode ? 'rgba(15, 23, 42, 0.85)' : 'rgba(241, 245, 249, 0.88)',
-                borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.2)' : '#E2E8F0',
+                backgroundColor: isDarkMode ? 'rgba(15, 23, 42, 0.85)' : '#F3F7FD',
+                borderColor: isDarkMode ? 'rgba(56, 189, 248, 0.2)' : '#DCE6F5',
               },
             ]}
           >
-            <TouchableOpacity
-              style={[
-                styles.tabButton,
-                activeTab === 'public' && [
-                  styles.activeTabButton,
-                  { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' },
-                ],
-              ]}
-              onPress={() => handleTabChange('public')}
-              activeOpacity={0.8}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  { color: colors.textSecondary },
-                  activeTab === 'public' && { color: isDarkMode ? '#38BDF8' : '#0284C7', fontWeight: '800' },
-                ]}
-              >
-                Study Rooms (Max 10)
-              </Text>
-            </TouchableOpacity>
-
-            <TouchableOpacity
-              style={[
-                styles.tabButton,
-                activeTab === 'official' && [
-                  styles.activeTabButton,
-                  { backgroundColor: isDarkMode ? '#1E293B' : '#FFFFFF' },
-                ],
-              ]}
-              onPress={() => handleTabChange('official')}
-              activeOpacity={0.8}
-            >
-              <Text
-                style={[
-                  styles.tabText,
-                  { color: colors.textSecondary },
-                  activeTab === 'official' && { color: isDarkMode ? '#38BDF8' : '#0284C7', fontWeight: '800' },
-                ]}
-              >
-                Class Rooms
-              </Text>
-            </TouchableOpacity>
+            {([
+              { key: 'public', title: 'Talk Rooms', sub: 'Public rooms', Icon: Users },
+              { key: 'official', title: 'Trainer Room', sub: 'Private rooms', Icon: GraduationCap },
+            ] as const).map(({ key, title, sub, Icon }) => {
+              const active = activeTab === key;
+              return (
+                <TouchableOpacity
+                  key={key}
+                  style={[
+                    styles.tabButton,
+                    styles.tabButtonRow,
+                    active && [styles.activeTabButton, { backgroundColor: isDarkMode ? '#2563EB' : '#0A6CF2' }],
+                  ]}
+                  onPress={() => handleTabChange(key)}
+                  activeOpacity={0.85}
+                >
+                  <Icon size={20} color={active ? '#FFFFFF' : isDarkMode ? '#93C5FD' : '#1E3A5F'} />
+                  <View style={{ marginLeft: 8, flexShrink: 1 }}>
+                    <Text
+                      numberOfLines={1}
+                      adjustsFontSizeToFit
+                      minimumFontScale={0.8}
+                      style={[styles.tabTitleText, { color: active ? '#FFFFFF' : colors.textPrimary }]}
+                    >
+                      {title}
+                    </Text>
+                    <Text
+                      numberOfLines={1}
+                      style={[styles.tabSubText, { color: active ? 'rgba(255,255,255,0.85)' : colors.textSecondary }]}
+                    >
+                      {sub}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
           </View>
         </View>
 
         {/* ─── SECTION HEADER BAR ─── */}
         <View style={styles.sectionHeaderRow}>
-          <View>
+          <View style={{ flex: 1, paddingRight: 8 }}>
             <Text style={[styles.sectionHeading, { color: colors.textPrimary }]}>
-              {activeTab === 'public' ? 'Active Study Rooms' : 'Official Live Classes'}
+              {activeTab === 'public' ? 'Active Talk Rooms' : 'Active Trainer Rooms'}
             </Text>
-            <Text style={{ fontSize: 11.5, color: colors.textSecondary, marginTop: 1 }}>
-              Tap or swipe between rooms
+            <Text style={{ fontSize: 11.5, color: colors.textSecondary, marginTop: 2 }}>
+              {activeTab === 'public' ? 'Join live conversations and meet other learners' : 'Join live classes led by your trainer'}
             </Text>
           </View>
 
@@ -1031,7 +1028,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 onPress={openCreateModal}
                 activeOpacity={0.85}
               >
-                <Plus size={15} color="#FFFFFF" strokeWidth={3} />
+                <Plus size={15} color="#FFFFFF" strokeWidth={2.5} />
                 <Text style={styles.glowingCreateBtnText}>{activeTab === 'official' && audioRole === 'teacher' && !isAdminOrSubAdmin ? 'Create Class' : 'Create Room'}</Text>
               </TouchableOpacity>
             </Animated.View>
@@ -1053,6 +1050,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
             ref={pagerRef}
             horizontal
             pagingEnabled
+            contentOffset={{ x: activeTab === 'official' ? SCREEN_WIDTH : 0, y: 0 }}
             showsHorizontalScrollIndicator={false}
             onMomentumScrollEnd={handleScrollEnd}
             scrollEventThrottle={16}
@@ -1350,7 +1348,7 @@ const styles = StyleSheet.create({
   },
   headerTopRow: {
     flexDirection: 'row',
-    alignItems: 'center',
+    alignItems: 'flex-end', // back button sits on the same line as the title text
     gap: 12,
   },
   headerBadgePill: {
@@ -1370,9 +1368,10 @@ const styles = StyleSheet.create({
     letterSpacing: 0.6,
   },
   backButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 19,
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    marginBottom: 1,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1.2,
@@ -1389,9 +1388,9 @@ const styles = StyleSheet.create({
   },
   tabBarContainer: {
     flexDirection: 'row',
-    borderRadius: 16,
+    borderRadius: 18,
     padding: 4,
-    marginTop: 14,
+    marginTop: 10,
     borderWidth: 1,
   },
   tabButton: {
@@ -1411,8 +1410,25 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontWeight: '600',
   },
+  tabButtonRow: {
+    flexDirection: 'row',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    borderRadius: 16,
+  },
+  tabTitleText: {
+    fontSize: 14,
+    fontWeight: '800',
+    letterSpacing: -0.2,
+  },
+  tabSubText: {
+    fontSize: 11,
+    fontWeight: '500',
+    marginTop: 1,
+  },
   scrollContent: {
-    paddingBottom: 40,
+    paddingBottom: 150, // keeps the last card clear of the floating bottom tab bar
     paddingTop: 4,
   },
   sectionHeaderRow: {
@@ -1430,10 +1446,10 @@ const styles = StyleSheet.create({
   glowingCreateBtn: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 6,
-    backgroundColor: '#0284C7',
-    paddingHorizontal: 14,
-    paddingVertical: 9,
+    gap: 5,
+    backgroundColor: '#0A6CF2',
+    paddingHorizontal: 13,
+    paddingVertical: 8,
     borderRadius: 22,
     shadowColor: '#38BDF8',
     shadowOffset: { width: 0, height: 3 },

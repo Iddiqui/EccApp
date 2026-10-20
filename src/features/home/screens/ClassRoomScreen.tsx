@@ -11,6 +11,7 @@ import {
   ActivityIndicator,
   Platform,
   PermissionsAndroid,
+  ToastAndroid,
   Modal,
   TextInput,
   Alert,
@@ -69,6 +70,7 @@ import {
   Download,
   ZoomIn,
   ZoomOut,
+  Volume2,
 } from 'lucide-react-native';
 
 registerGlobals();
@@ -85,6 +87,9 @@ let storageLib: any = null;
 try { storageLib = require('@react-native-firebase/storage').default; } catch (e) {}
 let imagePicker: any = null;
 try { imagePicker = require('react-native-image-picker'); } catch (e) {}
+// In-app file download (npm i react-native-blob-util). Without it the download falls back to the browser.
+let BlobUtil: any = null;
+try { BlobUtil = require('react-native-blob-util').default; } catch (e) {}
 let docPicker: any = null;
 try { docPicker = require('@react-native-documents/picker'); } catch (e) {
   try { docPicker = require('react-native-document-picker'); } catch (e2) {}
@@ -234,6 +239,88 @@ const ZoomableImage = ({ uri, onClose }: { uri: string; onClose: () => void }) =
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
 
+// ─── SHARED AVATARS (same idea as the public room) ───
+// Everybody tells everybody their chosen avatar. The list lives outside React and the sender runs in an
+// always-mounted controller, so it keeps working while the room is minimized and when it is opened again.
+let classProfiles: Record<string, string> = {};
+const classProfileListeners = new Set<() => void>();
+const notifyClassProfiles = () => classProfileListeners.forEach((l) => l());
+const setClassProfile = (identity: string, url: string) => {
+  if (classProfiles[identity] === url) return;
+  classProfiles = { ...classProfiles, [identity]: url };
+  notifyClassProfiles();
+};
+const resetClassProfiles = () => {
+  classProfiles = {};
+  notifyClassProfiles();
+};
+const useClassProfiles = (): Record<string, string> => {
+  const [, force] = useState(0);
+  useEffect(() => {
+    const l = () => force((n) => n + 1);
+    classProfileListeners.add(l);
+    return () => {
+      classProfileListeners.delete(l);
+    };
+  }, []);
+  return classProfiles;
+};
+
+export const ClassRoomController = ({ userAvatarUrl }: { userAvatarUrl?: string }) => {
+  const room = useRoomContext();
+  const connectionState = useConnectionState();
+  const { localParticipant } = useLocalParticipant();
+  const lpRef = useRef<any>(null);
+  lpRef.current = localParticipant;
+  const myAvatar = userAvatarUrl || '';
+
+  // Receive
+  useEffect(() => {
+    if (!room) return;
+    const onData = (payload: Uint8Array, participant: any) => {
+      try {
+        const data = JSON.parse(textDecoder.decode(payload));
+        if (String(data?.type || '').toUpperCase() === 'PROFILE' && participant?.identity) {
+          setClassProfile(participant.identity, typeof data.avatarUrl === 'string' ? data.avatarUrl : '');
+        }
+      } catch (e) {}
+    };
+    room.on(RoomEvent.DataReceived, onData);
+    return () => {
+      room.off(RoomEvent.DataReceived, onData);
+    };
+  }, [room]);
+
+  // Send: now, 1.5 s later, every 15 s, and whenever somebody joins
+  const connectedNow = String(connectionState).toLowerCase() === 'connected';
+  useEffect(() => {
+    if (!room || !connectedNow) return;
+    const announce = async () => {
+      const lp = lpRef.current;
+      if (!lp) return;
+      try {
+        const data = textEncoder.encode(JSON.stringify({ type: 'PROFILE', avatarUrl: myAvatar }));
+        await lp.publishData(data, { reliable: true });
+      } catch (e) {}
+    };
+    announce();
+    const first = setTimeout(announce, 1500);
+    const timer = setInterval(announce, 15 * 1000);
+    const onJoined = () => setTimeout(announce, 1200);
+    room.on(RoomEvent.ParticipantConnected, onJoined);
+    return () => {
+      clearTimeout(first);
+      clearInterval(timer);
+      room.off(RoomEvent.ParticipantConnected, onJoined);
+    };
+  }, [room, connectedNow, myAvatar]);
+
+  // Forget everybody when the call ends
+  useEffect(() => () => resetClassProfiles(), []);
+
+  return null;
+};
+
 export const IN_ROOM_AVATARS = [
   { id: 'm1', label: 'Boy 1', url: 'https://api.dicebear.com/7.x/adventurer/png?seed=Oliver&backgroundColor=ffd5dc' },
   { id: 'f1', label: 'Girl 1', url: 'https://api.dicebear.com/7.x/adventurer/png?seed=Zoe&backgroundColor=ffdfbf' },
@@ -361,7 +448,13 @@ const ClassTrackTile = ({
   liveLocalAvatar,
   columns,
   compact,
+  hostIdentity,
+  viewerIsHost,
+  sharedAvatars,
 }: {
+  sharedAvatars?: Record<string, string>;
+  hostIdentity?: string;
+  viewerIsHost?: boolean;
   participant: any;
   trackReference?: any;
   handRaisedUsers: Record<string, boolean>;
@@ -378,14 +471,19 @@ const ClassTrackTile = ({
   const isHandRaised = Boolean(handRaisedUsers[identity]);
   const activeReaction = reactions[identity];
   const isSpeaking = Boolean(participant?.isSpeaking && participant?.isMicrophoneEnabled);
+  const isMicOn = Boolean(participant?.isMicrophoneEnabled);
+  const isHostTile = (isLocal && !!viewerIsHost) || (!!hostIdentity && identity === hostIdentity);
 
-  let avatarUrl = isLocal && liveLocalAvatar ? liveLocalAvatar : DEFAULT_FALLBACK_AVATAR;
+  // No avatar chosen = empty: the first letter of the name is shown (no default cartoon for other people)
+  let avatarUrl = isLocal && liveLocalAvatar ? liveLocalAvatar : '';
   try {
     if (!isLocal && participant?.metadata) {
       const meta = JSON.parse(participant.metadata);
       if (meta?.avatarUrl) avatarUrl = meta.avatarUrl;
     }
   } catch (e) {}
+  // The avatar sent by the person (data packet) wins over the metadata
+  if (!isLocal && sharedAvatars && sharedAvatars[identity]) avatarUrl = sharedAvatars[identity];
 
   const hasActiveVideo =
     trackReference &&
@@ -447,10 +545,22 @@ const ClassTrackTile = ({
         styles.participantTile,
         dynamicTileSize,
         compact && styles.compactParticipantTile,
+        isHostTile && styles.hostTileBorder,
         isSpeaking && styles.speakingBorderGlow,
         isHandRaised && styles.handRaisedBorderGlow,
       ]}
     >
+      {isSpeaking && !compact && (
+        <View style={styles.speakingBadge}>
+          <Volume2 size={10} color="#10B981" />
+          <Text style={styles.speakingBadgeText}>Speaking</Text>
+        </View>
+      )}
+      {!compact && (
+        <View style={[styles.tileMicBadge, isMicOn ? styles.tileMicActive : styles.tileMicMuted]}>
+          {isMicOn ? <Mic size={11} color="#FFF" /> : <MicOff size={11} color="#FFF" />}
+        </View>
+      )}
       {hasActiveVideo ? (
         <VideoTrack
           trackRef={trackReference}
@@ -467,11 +577,19 @@ const ClassTrackTile = ({
               isSpeaking && styles.avatarSpeakingGlow,
             ]}
           >
-            <Image
-              source={{ uri: avatarUrl }}
-              style={styles.avatarImage}
-              resizeMode="contain"
-            />
+            {avatarUrl ? (
+              <Image
+                source={{ uri: avatarUrl }}
+                style={styles.avatarImage}
+                resizeMode="contain"
+              />
+            ) : (
+              <View style={[styles.avatarImage, { backgroundColor: '#0B5CAB', alignItems: 'center', justifyContent: 'center' }]}>
+                <Text style={{ color: '#FFF', fontSize: 30, fontWeight: '700' }}>
+                  {String(identity).trim().charAt(0).toUpperCase() || '?'}
+                </Text>
+              </View>
+            )}
           </View>
         </View>
       )}
@@ -502,6 +620,11 @@ const ClassTrackTile = ({
         <Text style={styles.tileName} numberOfLines={1}>
           {isLocal ? `${identity} (You)` : identity}
         </Text>
+        {isHostTile && (
+          <View style={styles.hostPill}>
+            <Text style={styles.hostPillText} numberOfLines={1} allowFontScaling={false}>👑 HOST</Text>
+          </View>
+        )}
       </View>
     </View>
   );
@@ -527,6 +650,18 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   
   const remoteParticipants = useRemoteParticipants();
 
+  // Who is the host: the room's host name (saved when the room was created) is the same as the host's identity
+  const [hostIdentity, setHostIdentity] = useState('');
+  useEffect(() => {
+    if (!roomId) return;
+    firestore()
+      .collection('voice_rooms')
+      .doc(roomId)
+      .get()
+      .then((d) => setHostIdentity(String((d.data() as any)?.hostName || '')))
+      .catch(() => {});
+  }, [roomId]);
+
   const participantList = useMemo(() => {
     const list: any[] = [];
     if (localParticipant) {
@@ -537,15 +672,59 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         list.push(p);
       }
     });
+    // Host first, then everyone else
+    list.sort((a: any, b: any) => {
+      const ah = (a.isLocal && isHost) || (!!hostIdentity && a.identity === hostIdentity) ? 1 : 0;
+      const bh = (b.isLocal && isHost) || (!!hostIdentity && b.identity === hostIdentity) ? 1 : 0;
+      return bh - ah;
+    });
     return list;
-  }, [localParticipant, remoteParticipants]);
+  }, [localParticipant, remoteParticipants, hostIdentity, isHost]);
 
   const currentUser = auth().currentUser;
 
   const [currentAvatar, setCurrentAvatar] = useState(userAvatarUrl || DEFAULT_FALLBACK_AVATAR);
+  // true only when the user really chose / has an avatar (otherwise other people see a letter)
+  const [avatarChosen, setAvatarChosen] = useState(!!userAvatarUrl);
+  // Avatars of the other people (sent by ClassRoomController)
+  const sharedAvatars = useClassProfiles();
   const [isAvatarPickerVisible, setIsAvatarPickerVisible] = useState(false);
 
   const [isChatVisible, setIsChatVisible] = useState(false);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const showChatRef = useRef(false);
+  showChatRef.current = isChatVisible;
+  // Keyboard handling for the chat card (same as the public room): the card sits above the keyboard and shrinks to fit
+  const [kbHeight, setKbHeight] = useState(0);
+  const [kbOpen, setKbOpen] = useState(false);
+  const [chatBackdropH, setChatBackdropH] = useState(SCREEN_HEIGHT);
+  const kbOnRef = useRef(false);
+  const chatBackdropRef = useRef<any>(null);
+  useEffect(() => {
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSub = Keyboard.addListener(showEvent, (e: any) => {
+      kbOnRef.current = true;
+      setKbOpen(true);
+      const h = e?.endCoordinates?.height || 0;
+      if (Platform.OS === 'ios') { setKbHeight(h); return; }
+      const kbTop = e?.endCoordinates?.screenY;
+      setTimeout(() => {
+        if (!kbOnRef.current) return;
+        const node = chatBackdropRef.current;
+        if (!node || !node.measureInWindow || typeof kbTop !== 'number') { setKbHeight(0); return; }
+        node.measureInWindow((_x: number, y: number, _w: number, height: number) => {
+          setKbHeight(Math.max(0, Math.round(y + height - kbTop)));
+        });
+      }, 150);
+    });
+    const hideSub = Keyboard.addListener(hideEvent, () => {
+      kbOnRef.current = false;
+      setKbOpen(false);
+      setKbHeight(0);
+    });
+    return () => { showSub.remove(); hideSub.remove(); };
+  }, []);
   const [isEmojiVisible, setIsEmojiVisible] = useState(false);
   const [isQueueVisible, setIsQueueVisible] = useState(false);
 
@@ -696,6 +875,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   // Firestore Chat Sync
   useEffect(() => {
     if (!roomId) return;
+    const chatJoinedAt = Date.now() - 3000;
     const unsubscribe = firestore()
       .collection('voice_rooms')
       .doc(roomId)
@@ -726,6 +906,16 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                   : undefined,
               });
             });
+            // Unread badge: only NEW messages from other people that arrive while the chat is closed
+            let fresh = 0;
+            snapshot.docChanges().forEach((ch) => {
+              if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+              const d: any = ch.doc.data();
+              if (d?.senderId === auth().currentUser?.uid) return;
+              const ms = d?.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+              if (ms >= chatJoinedAt) fresh += 1;
+            });
+            if (fresh > 0 && !showChatRef.current) setUnreadCount((c) => c + fresh);
             setChatMessages((prev) => {
               const firestoreIds = new Set(list.map((m) => m.id));
               const nonFirestore = prev.filter((m) => !firestoreIds.has(m.id));
@@ -750,8 +940,8 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     const syncMetadata = async () => {
       try {
         const isConnected = String(connectionState).toLowerCase() === 'connected';
-        if (!isCancelled && isConnected && localParticipant && currentAvatar) {
-          await localParticipant.setMetadata(JSON.stringify({ avatarUrl: currentAvatar }));
+        if (!isCancelled && isConnected && localParticipant) {
+          await localParticipant.setMetadata(JSON.stringify({ avatarUrl: avatarChosen ? currentAvatar : '' }));
         }
       } catch (e) {}
     };
@@ -760,10 +950,11 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     return () => {
       isCancelled = true;
     };
-  }, [connectionState, localParticipant, currentAvatar]);
+  }, [connectionState, localParticipant, currentAvatar, avatarChosen]);
 
   const handleUpdateAvatar = async (newUrl: string) => {
     setCurrentAvatar(newUrl);
+    setAvatarChosen(true);
     setIsAvatarPickerVisible(false);
     if (localParticipant && String(connectionState).toLowerCase() === 'connected') {
       try {
@@ -807,6 +998,8 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         }
 
         const packetType = String(data.type || '').toUpperCase();
+
+        if (packetType === 'PROFILE') return; // handled by ClassRoomController
 
         // 🎯 FIX: DUPLICATE MESSAGES
         // Pehle CHAT type packets yahan bhi setChatMessages() se seedhe add
@@ -1033,11 +1226,11 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     }
   };
 
-  const handleSendMessage = async () => {
-    const text = messageInput.trim();
+  const handleSendMessage = async (textToSend?: string) => {
+    const text = (typeof textToSend === 'string' ? textToSend : messageInput).trim();
     if (!text) return;
     if (!roomId) return;
-    setMessageInput('');
+    if (typeof textToSend !== 'string') setMessageInput('');
 
     const formattedTime = new Date().toLocaleTimeString([], {
       hour: '2-digit',
@@ -1210,9 +1403,71 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
       Linking.openURL(att.url).catch(() => Alert.alert('Cannot open file', 'No app found to open this file.'));
     }
   };
-  const downloadAttachment = (att?: ChatAttachment) => {
+  // Download a shared photo / PDF / document INSIDE the app (saved in the phone's Downloads folder)
+  const downloadAttachment = async (att?: ChatAttachment) => {
     if (!att?.url || att.uploading) return;
-    Linking.openURL(att.url).catch(() => Alert.alert('Cannot download', 'Could not open the download link.'));
+
+    // Fallback when the download library is not installed yet
+    if (!BlobUtil) {
+      Linking.openURL(att.url).catch(() => Alert.alert('Cannot download', 'Could not open the download link.'));
+      return;
+    }
+
+    try {
+      // File name: the shared name, or the name inside the Firebase link
+      let name = (att.name || '').trim();
+      if (!name) {
+        try {
+          const raw = decodeURIComponent(att.url.split('?')[0]);
+          name = raw.substring(raw.lastIndexOf('/') + 1);
+        } catch (e) {}
+      }
+      if (!name) name = att.type === 'image' ? 'image.jpg' : 'file';
+      name = name.replace(/[\\/:*?"<>|]/g, '_');
+      const mime = att.mimeType || (att.type === 'image' ? 'image/jpeg' : 'application/octet-stream');
+
+      if (Platform.OS === 'android') {
+        // Android 9 and older need the storage permission (newer versions save to Downloads without it)
+        if (Number(Platform.Version) <= 28) {
+          const granted = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.WRITE_EXTERNAL_STORAGE);
+          if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+            Alert.alert('Permission needed', 'Please allow storage access to download files.');
+            return;
+          }
+        }
+        // Never overwrite an older file with the same name
+        const dir = BlobUtil.fs.dirs.DownloadDir;
+        const dot = name.lastIndexOf('.');
+        const base = dot > 0 ? name.slice(0, dot) : name;
+        const ext = dot > 0 ? name.slice(dot) : '';
+        let finalName = name;
+        let n = 1;
+        while (await BlobUtil.fs.exists(`${dir}/${finalName}`)) {
+          finalName = `${base} (${n})${ext}`;
+          n += 1;
+        }
+        ToastAndroid.show('Downloading...', ToastAndroid.SHORT);
+        await BlobUtil.config({
+          addAndroidDownloads: {
+            useDownloadManager: true,
+            notification: true,
+            title: finalName,
+            description: 'ECC class file',
+            mime,
+            mediaScannable: true,
+            path: `${dir}/${finalName}`,
+          },
+        }).fetch('GET', att.url);
+        ToastAndroid.show('Saved in your Downloads folder', ToastAndroid.LONG);
+      } else {
+        const path = `${BlobUtil.fs.dirs.DocumentDir}/${name}`;
+        await BlobUtil.config({ path }).fetch('GET', att.url);
+        BlobUtil.ios.previewDocument(path); // iPhone: opens the share / save sheet
+      }
+    } catch (e: any) {
+      console.log('Download error:', e);
+      Alert.alert('Download failed', e?.message || 'Could not download this file. Please check your internet and try again.');
+    }
   };
 
   const toggleHandRaise = async () => {
@@ -1364,6 +1619,15 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   }, [room]);
 
   const handleMinimize = async () => {
+    // Close the chat / emoji / queue popups and the keyboard first. A popup that is still open while
+    // the room screen unmounts can leave a blank white window behind the minimized bubble.
+    Keyboard.dismiss();
+    setIsChatVisible(false);
+    setIsEmojiVisible(false);
+    setIsQueueVisible(false);
+    setShowAttachMenu(false);
+    setIsAvatarPickerVisible(false);
+    await new Promise(resolve => setTimeout(resolve, 350));
     setRemoteVideoSubscribed(false);
     // 🖤 MINIMIZE WHITE-SCREEN FIX: minimize karte waqt `ClassRoomView`
     // (jisme camera tile hota hai) unmount ho jaata hai, lekin
@@ -1448,16 +1712,18 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
             </View>
           )}
 
-          <TouchableOpacity
-            style={styles.headerAvatarButton}
-            onPress={() => setIsAvatarPickerVisible(true)}
-            activeOpacity={0.8}
-          >
-            <Image source={{ uri: currentAvatar }} style={styles.headerAvatarImg} resizeMode="contain" />
-            <View style={styles.avatarEditPill}>
-              <Sparkles size={9} color="#FFF" />
-            </View>
-          </TouchableOpacity>
+          {/* Avatar is chosen only when joining (like the public room): no change option inside the room */}
+          <View style={styles.headerAvatarButton}>
+            {avatarChosen && !!currentAvatar ? (
+              <Image source={{ uri: currentAvatar }} style={styles.headerAvatarImg} resizeMode="contain" />
+            ) : (
+              <View style={[styles.headerAvatarImg, { backgroundColor: '#0B5CAB', alignItems: 'center', justifyContent: 'center' }]}>
+                <Text style={{ color: '#FFF', fontSize: 18, fontWeight: '700' }}>
+                  {String(myIdentity || 'U').trim().charAt(0).toUpperCase()}
+                </Text>
+              </View>
+            )}
+          </View>
         </View>
 
         {/* 📺 SCREEN SHARE — now fills the ENTIRE remaining screen area
@@ -1546,7 +1812,10 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                       handRaisedUsers={handRaisedUsers}
                       reactions={reactions}
                       totalCount={2}
-                      liveLocalAvatar={currentAvatar}
+                      liveLocalAvatar={avatarChosen ? currentAvatar : ''}
+                      hostIdentity={hostIdentity}
+                      sharedAvatars={sharedAvatars}
+                      viewerIsHost={!!isHost}
                       compact
                     />
                   </View>
@@ -1578,7 +1847,10 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                     handRaisedUsers={handRaisedUsers}
                     reactions={reactions}
                     totalCount={participantList.length}
-                    liveLocalAvatar={currentAvatar}
+                    liveLocalAvatar={avatarChosen ? currentAvatar : ''}
+                      hostIdentity={hostIdentity}
+                      sharedAvatars={sharedAvatars}
+                      viewerIsHost={!!isHost}
                   />
                 );
               }}
@@ -1661,10 +1933,15 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 styles.controlBtn,
                 isChatVisible ? styles.btnActive3D : styles.btnMuted3D,
               ]}
-              onPress={() => setIsChatVisible(true)}
+              onPress={() => { setIsChatVisible(true); setUnreadCount(0); }}
               activeOpacity={0.75}
             >
               <MessageSquare color={isChatVisible ? "#FFF" : "#94A3B8"} size={21} />
+              {unreadCount > 0 && (
+                <View style={styles.chatNotificationDot}>
+                  <Text style={styles.chatNotificationText}>{unreadCount}</Text>
+                </View>
+              )}
             </TouchableOpacity>
 
             <TouchableOpacity
@@ -1810,11 +2087,12 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
             deta tha. Ab KeyboardAvoidingView use karte hain jo card ko
             hamesha visible area ke andar hi rakhta hai — mobile aur tablet
             dono par, chahe portrait ho ya landscape. */}
-        <Modal visible={isChatVisible} animationType="fade" transparent onRequestClose={() => setIsChatVisible(false)}>
-          <KeyboardAvoidingView
+        <Modal visible={isChatVisible} animationType="fade" transparent statusBarTranslucent onRequestClose={() => setIsChatVisible(false)}>
+          <View
+            ref={chatBackdropRef}
+            collapsable={false}
             style={styles.chatCenterBackdrop}
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
+            onLayout={(e) => setChatBackdropH(e.nativeEvent.layout.height)}
           >
             <TouchableWithoutFeedback onPress={() => { Keyboard.dismiss(); setIsChatVisible(false); }}>
               <View style={StyleSheet.absoluteFill} />
@@ -1823,7 +2101,15 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
             <View
               style={[
                 styles.chatCenterCard,
-                { width: chatCardWidth, height: chatCardHeight },
+                {
+                  width: Math.min(winWidth * 0.95, 460),
+                  height: Math.min(winHeight * 0.58, Math.max(260, chatBackdropH - kbHeight - 90)),
+                  marginBottom: kbOpen ? 8 + kbHeight : 88,
+                  borderRadius: 28,
+                  borderWidth: 1.5,
+                  borderColor: '#334155',
+                  overflow: 'hidden',
+                },
               ]}
             >
               <View style={styles.sheetHeader}>
@@ -1931,6 +2217,21 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 }
               />
 
+                <View style={styles.quickEmojiBar}>
+                  <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ paddingHorizontal: 12, gap: 10 }}>
+                    {['👍', '❤️', '🔥', '👏', '😂', '💡', '🎉', '👋'].map((emoji) => (
+                      <TouchableOpacity
+                        key={emoji}
+                        onPress={() => handleSendMessage(emoji)}
+                        activeOpacity={0.7}
+                        style={styles.emojiQuickBubble}
+                      >
+                        <Text style={{ fontSize: 19 }}>{emoji}</Text>
+                      </TouchableOpacity>
+                    ))}
+                  </ScrollView>
+                </View>
+
                 {showAttachMenu && (
                   <View style={styles.attachMenuRow}>
                     <TouchableOpacity style={styles.attachMenuItem} onPress={() => handlePickPhoto(false)} activeOpacity={0.8}>
@@ -1980,7 +2281,7 @@ export const ClassRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                   </TouchableOpacity>
                 </View>
             </View>
-          </KeyboardAvoidingView>
+          </View>
         </Modal>
 
         {/* ─── IMAGE VIEWER (pinch / double-tap / button zoom) ─── */}
@@ -2716,6 +3017,76 @@ const styles = StyleSheet.create({
   },
   speakingBorderGlow: {
     borderColor: '#10B981',
+  },
+  hostTileBorder: {
+    borderColor: '#FBBF24',
+    borderWidth: 2,
+  },
+  hostPill: {
+    alignSelf: 'center',
+    minWidth: 64,
+    alignItems: 'center',
+    marginTop: 2,
+    paddingHorizontal: 8,
+    paddingVertical: 1,
+    borderRadius: 10,
+    backgroundColor: 'rgba(251, 191, 36, 0.2)',
+    borderWidth: 1,
+    borderColor: 'rgba(251, 191, 36, 0.6)',
+  },
+  hostPillText: { color: '#FBBF24', fontSize: 9, lineHeight: 13, fontWeight: '800' },
+  speakingBadge: {
+    position: 'absolute',
+    top: 8,
+    left: 8,
+    zIndex: 11,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 3,
+    backgroundColor: 'rgba(16, 185, 129, 0.25)',
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 10,
+  },
+  speakingBadgeText: { color: '#10B981', fontSize: 9, fontWeight: '800' },
+  tileMicBadge: {
+    position: 'absolute',
+    top: 8,
+    right: 8,
+    zIndex: 11,
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  tileMicActive: { backgroundColor: '#10B981' },
+  tileMicMuted: { backgroundColor: 'rgba(239, 68, 68, 0.85)' },
+  chatNotificationDot: {
+    position: 'absolute',
+    top: -4,
+    right: -4,
+    minWidth: 18,
+    height: 18,
+    borderRadius: 9,
+    paddingHorizontal: 4,
+    backgroundColor: '#EF4444',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  chatNotificationText: { color: '#FFF', fontSize: 10, fontWeight: '800' },
+  quickEmojiBar: {
+    paddingVertical: 8,
+    borderTopWidth: 1,
+    borderTopColor: 'rgba(51, 65, 85, 0.6)',
+  },
+  emojiQuickBubble: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: 'rgba(30, 41, 59, 0.9)',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   handRaisedBorderGlow: {
     borderColor: '#F59E0B',

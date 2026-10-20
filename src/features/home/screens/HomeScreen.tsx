@@ -66,6 +66,7 @@ import { launchAudioRoom } from '../../sessions/audioRoomLauncher';
 import { getMySubscriptions } from '../../payments/paymentService';
 import type { ProgramAccess } from '../../payments/paymentTypes';
 import type { Booking } from '../../sessions/sessionTypes';
+import { recordPracticeActivity, getEffectiveStreak } from '../../../services/streakService';
 
 // Sound module for playback
 let SoundPlayer: any = null;
@@ -97,6 +98,7 @@ const IMG_HERO_AUDIO = require('../../../assets/audiogroup.png');
 const IMG_HERO_AI = require('../../../assets/ai.png');
 const IMG_CHALLENGE_BANNER = require('../../../assets/challenge.png');
 const IMG_CALENDER_OBJECT = require('../../../assets/calender.png');
+
 
 const AVATAR_COLORS = ['#8B5CF6', '#6366F1', '#EC4899', '#F59E0B', '#10B981', '#06B6D4', '#F97316', '#3B82F6', '#D946EF'];
 const DURATION_OPTIONS = [15, 30, 45, 60];
@@ -1517,6 +1519,7 @@ export default function HomeScreen() {
           xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
         }, { merge: true }),
       ]);
+      recordPracticeActivity('daily_topic'); // counts as today's challenge for the streak
 
       setIsSavingAudio(false);
       setLocalRecordedAudioUri(null);
@@ -1657,7 +1660,7 @@ export default function HomeScreen() {
   const greetingText = t?.home?.[greetingKey] || 
     (greetingKey === 'goodMorning' ? 'Good morning,' : greetingKey === 'goodAfternoon' ? 'Good afternoon,' : 'Good evening,');
 
-  const userStreak = typeof userData?.streak === 'number' ? userData.streak : 0;
+  const userStreak = getEffectiveStreak(userData);
   const longestStreak = userData?.longestStreak ?? userStreak;
   const bestStreak = userData?.bestStreak ?? userStreak;
   const streakEmoji = getStreakEmoji(userStreak);
@@ -2297,6 +2300,7 @@ export default function HomeScreen() {
         )}
 
         {/* Admin Panel: teacher access, plan prices, demo class price (admins only) */}
+        {/* Shown for anyone on the admin lists. The panel and the server still re-check every action. */}
         {(isPanelAdmin || isAdmin) && (
           <TouchableOpacity
             style={[

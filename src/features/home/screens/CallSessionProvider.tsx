@@ -1,4 +1,5 @@
 import React, {
+  useEffect,
   createContext,
   useContext,
   useState,
@@ -6,12 +7,14 @@ import React, {
   useCallback,
 } from 'react';
 import { View, StyleSheet, Platform, PermissionsAndroid, Text, TouchableOpacity } from 'react-native';
-import { LiveKitRoom, AudioSession } from '@livekit/react-native';
+import { LiveKitRoom, AudioSession, useConnectionState } from '@livekit/react-native';
 import firestore from '@react-native-firebase/firestore';
 import auth from '@react-native-firebase/auth';
-import { ClassRoomView, FloatingCallBubble } from './ClassRoomScreen';
+import { ClassRoomView, FloatingCallBubble, ClassRoomController } from './ClassRoomScreen';
 import { VideoSessionView } from '../../sessions/VideoSessionScreen';
 import { StudyRoomView, StudyRoomController, RoomPresenceReporter } from './StudyRoomScreen';
+import { RoomVolumeControl } from './RoomVolumeControl';
+import { startCallForegroundService, stopCallForegroundService } from './callForegroundService';
 
 // ─── DEBUG ERROR BOUNDARY ───
 // 🐛 WHITE-SCREEN DEBUGGER: Class Room leave karne ke baad kabhi-kabhi
@@ -96,6 +99,21 @@ const debugErrorStyles = StyleSheet.create({
     fontWeight: '700',
   },
 });
+
+// Starts the background (foreground-service) notification only AFTER the room is connected,
+// so it can never disturb the connection or the audio setup.
+const CallServiceStarter = ({ title }: { title?: string }) => {
+  const cs = useConnectionState();
+  const connected = String(cs).toLowerCase() === 'connected';
+  useEffect(() => {
+    if (!connected) return;
+    const t = setTimeout(() => {
+      try { startCallForegroundService(title); } catch (e) {}
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [connected, title]);
+  return null;
+};
 
 // ─── TYPES ───
 type RoomType = 'class' | 'one_to_one' | 'study';
@@ -186,14 +204,18 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
         ]);
       }
 
-      await AudioSession.startAudioSession();
+      // Configure first, then start (the settings are read when the session starts)
       if (AudioSession.configureAudio) {
-        await AudioSession.configureAudio({
-          android: { preferredOutputList: ['speaker'] },
-          forceSpeakerOutput: true,
-          speakerphone: true,
-        } as any);
+        try {
+          await AudioSession.configureAudio({
+            android: { preferredOutputList: ['speaker', 'earpiece', 'headset', 'bluetooth'] },
+            ios: { defaultOutput: 'speaker' },
+          } as any);
+        } catch (e) {
+          console.log('configureAudio error:', e);
+        }
       }
+      await AudioSession.startAudioSession();
 
       setCanConnect(true);
     } catch (err) {
@@ -262,6 +284,7 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
     // Native-surface residue workaround — see remountSignal doc comment above.
     setRemountSignal(s => s + 1);
     await AudioSession.stopAudioSession().catch(() => {});
+    stopCallForegroundService();
   }, [activeCall]);
 
   return (
@@ -317,7 +340,7 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
           // manually camera/mic on karte hain, isliye wahan false hi
           // rehta hai (jaisa pehle tha).
           // Study (public) room: only the host's mic starts ON. Everyone else needs the host's permission.
-          audio={activeCall.roomType === 'one_to_one' || activeCall.roomType === 'study'}
+          audio={activeCall.roomType === 'one_to_one'}
           video={activeCall.roomType === 'one_to_one'}
           options={{
             adaptiveStream: true,
@@ -325,8 +348,10 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
             autoSubscribe: true,
           }}
         >
+          <CallServiceStarter title={activeCall.roomTitle || activeCall.otherPersonName} />
           {/* Always-mounted helpers (they keep working while the room is minimized) */}
           {activeCall.roomType === 'study' && <StudyRoomController isHost={!!activeCall.isHost} userAvatarUrl={activeCall.userAvatarUrl} roomId={activeCall.roomId} />}
+          {(activeCall.roomType === 'class' || !activeCall.roomType) && <ClassRoomController userAvatarUrl={activeCall.userAvatarUrl} />}
           {activeCall.roomType !== 'one_to_one' && <RoomPresenceReporter roomId={activeCall.roomId} />}
 
           {/* Full call UI — minimize hote hi genuinely 0x0 + clipped ho
@@ -369,6 +394,9 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
                 />
               ))}
           </View>
+
+          {/* Volume control (0-300%) for every room type, hidden while minimized */}
+          {!isMinimized && <RoomVolumeControl />}
 
           {/* Bubble — apna ALAG, normal-size container, isliye
               call-content wale container ke collapse se bilkul unaffected

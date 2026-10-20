@@ -381,6 +381,28 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [room, isHost]);
 
+  // Host: switch the mic ON once the room is connected (students start with the mic off, so nobody
+  // depends on a mic that was opened while the connection was still starting)
+  const hostMicInitRef = useRef(false);
+  useEffect(() => {
+    if (!isHost || hostMicInitRef.current) return;
+    if (String(connectionState).toLowerCase() !== 'connected') return;
+    hostMicInitRef.current = true;
+    (async () => {
+      // Give the audio engine a moment after connecting (a mic opened too early records silence on some phones)
+      await new Promise((r) => setTimeout(r, 2000));
+      for (let i = 0; i < 4; i++) {
+        try {
+          await lpRef.current?.setMicrophoneEnabled(true);
+          return;
+        } catch (e) {
+          console.log('Host mic start failed (attempt ' + (i + 1) + '):', e);
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+    })();
+  }, [connectionState, isHost]);
+
   // A student who is not allowed to speak must start muted
   useEffect(() => {
     if (isHost || String(connectionState).toLowerCase() !== 'connected') return;
@@ -685,28 +707,43 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   }, [connectionState, localParticipant, userAvatarUrl, isHandRaised, isHost]);
 
   // Firestore Realtime Chat
+  // The unread badge counts only NEW messages from other people that arrive while the chat is closed.
+  // (It used to add 1 on every snapshot - also the first load and the "sent" confirmation of your own
+  // message - so the badge always showed 1 and one message could count twice.)
+  const showChatRef = useRef(false);
+  showChatRef.current = showChatModal;
   useEffect(() => {
     if (!roomId) return;
+    const joinedAt = Date.now() - 3000;
     const unsub = firestore()
       .collection('voice_rooms')
       .doc(roomId)
       .collection('messages')
       .orderBy('createdAt', 'asc')
       .onSnapshot((snap) => {
-        if (snap) {
-          const list: any[] = [];
-          snap.forEach((doc) => {
-            list.push({ id: doc.id, ...doc.data() });
-          });
-          setMessages(list);
-          if (!showChatModal && list.length > 0) {
-            setUnreadCount((c) => c + 1);
-          }
-        }
+        if (!snap) return;
+        const list: any[] = [];
+        const seen = new Set<string>();
+        snap.forEach((doc) => {
+          if (seen.has(doc.id)) return;
+          seen.add(doc.id);
+          list.push({ id: doc.id, ...doc.data() });
+        });
+        setMessages(list);
+
+        let fresh = 0;
+        snap.docChanges().forEach((ch) => {
+          if (ch.type !== 'added' || ch.doc.metadata.hasPendingWrites) return;
+          const d: any = ch.doc.data();
+          if (d?.senderId === auth().currentUser?.uid) return;
+          const ms = d?.createdAt && typeof d.createdAt.toMillis === 'function' ? d.createdAt.toMillis() : 0;
+          if (ms >= joinedAt) fresh += 1;
+        });
+        if (fresh > 0 && !showChatRef.current) setUnreadCount((c) => c + fresh);
       });
 
     return () => unsub();
-  }, [roomId, showChatModal]);
+  }, [roomId]);
 
   const handleSendMessage = async (textToSend?: string) => {
     const text = (textToSend || chatInputText).trim();
@@ -760,8 +797,13 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
 
   // Minimize: the room stays connected (audio keeps playing) and the user goes back to the app.
   const handleMinimize = React.useCallback(() => {
-    if (typeof onMinimize === 'function') onMinimize();
-    else safeExit();
+    // Close the chat popup and the keyboard first, so no blank window is left behind the bubble
+    Keyboard.dismiss();
+    setShowChatModal(false);
+    setTimeout(() => {
+      if (typeof onMinimize === 'function') onMinimize();
+      else safeExit();
+    }, 300);
   }, [onMinimize, safeExit]);
 
   // The phone's Back button minimizes the room instead of leaving it

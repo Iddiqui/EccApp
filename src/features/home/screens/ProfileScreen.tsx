@@ -215,7 +215,7 @@ export default function ProfileScreen({ navigation }: any) {
             </Text>
           )}
           <Text style={[styles.profileSubText, { color: isDarkMode ? '#94A3B8' : '#64748B' }]}>
-            Level <Text style={{ color: '#818CF8', fontWeight: '800' }}>B2</Text> • Intermediate • Joined <Text style={{ color: '#818CF8', fontWeight: '800' }}>2026</Text>
+            Joined <Text style={{ color: '#818CF8', fontWeight: '800' }}>2026</Text>
           </Text>
         </View>
 

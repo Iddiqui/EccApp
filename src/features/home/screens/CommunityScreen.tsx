@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useMemo } from 'react';
+import React, { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { 
   StyleSheet,
   PanResponder, 
@@ -36,6 +36,7 @@ import {
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
 import functions from '@react-native-firebase/functions';
+import { recordPracticeActivity } from '../../../services/streakService';
 import AudioRecord from 'react-native-audio-record';
 
 let SoundPlayer: any = null;
@@ -506,8 +507,38 @@ const makeUsernameBase = (raw: string): string => {
 };
 
 // Message text with @mentions highlighted
-const MentionText = ({ text, highlight, baseColor, mineColor, isMe }: any) => {
+// Links in a message. Only ADMIN messages are shown as tappable links; a member's text stays plain text.
+const LINK_SPLIT_REGEX = /((?:https?:\/\/|www\.)[^\s]+|\b[a-z0-9-]+(?:\.[a-z0-9-]+)*\.(?:com|net|org|in|io|co|me|app|ly|link|xyz|info|biz|us|uk|tv|gl|be|to|cc|ai|dev|site|online|store|shop|live|club|top|page|gle)\b(?:\/[^\s]*)?)/gi;
+const openChatLink = (raw: string) => {
+  let url = raw.trim().replace(/[.,;:!?)]+$/, '');
+  if (!/^[a-z]+:\/\//i.test(url)) url = 'https://' + url;
+  Linking.openURL(url).catch(() => Alert.alert('Cannot open link', 'No app found to open this link.'));
+};
+
+const MentionText = ({ text, highlight, baseColor, mineColor, isMe, linkify }: any) => {
   const str = String(text || '');
+  if (linkify) {
+    const pieces = str.split(LINK_SPLIT_REGEX);
+    return (
+      <Text style={{ color: baseColor, fontSize: 16, lineHeight: 23 }}>
+        {pieces.map((part, i) => {
+          if (!part) return null;
+          const isLink = i % 2 === 1; // split() with a capture group puts the links at the odd positions
+          return isLink ? (
+            <Text
+              key={i}
+              onPress={() => openChatLink(part)}
+              style={{ color: isMe ? '#FFFFFF' : '#2563EB', textDecorationLine: 'underline', fontWeight: '700' }}
+            >
+              {part}
+            </Text>
+          ) : (
+            <Text key={i}>{part}</Text>
+          );
+        })}
+      </Text>
+    );
+  }
   if (!highlight) return <Text style={{ color: baseColor, fontSize: 16, lineHeight: 23 }}>{str}</Text>;
   const parts = str.split(/(@[a-zA-Z0-9_.]{3,20})/g);
   return (
@@ -716,6 +747,8 @@ export default function CommunityScreen({ navigation, route }: any) {
   const [isChatModalVisible, setIsChatModalVisible] = useState(false);
   const [chatMessages, setChatMessages] = useState<any[]>([]);
   const [pinnedMessages, setPinnedMessages] = useState<any[]>([]);
+  const [msgLimit, setMsgLimit] = useState(80); // only the newest messages are loaded; older ones load while scrolling up
+  const pendingJumpRef = useRef<string | null>(null);
   const [chatInputText, setChatInputText] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
 
@@ -1481,8 +1514,9 @@ export default function CommunityScreen({ navigation, route }: any) {
       setZipConfetti(true);
       playQuizSound(true);
 
-      // Streak untouched: Streak only increments from daily lectures
+      // A solved puzzle counts as today's challenge for the streak (the server decides if it goes up)
       if (currentUser?.uid) {
+        recordPracticeActivity('puzzle');
         firestore().collection('users').doc(currentUser.uid).set({
           xp: firestore.FieldValue.increment(20),
           lastPuzzlePlayedAt: firestore.FieldValue.serverTimestamp()
@@ -1572,15 +1606,19 @@ export default function CommunityScreen({ navigation, route }: any) {
   }, [currentUser?.uid]);
 
   useEffect(() => {
+    setMsgLimit(80);
+  }, [selectedGroup?.id]);
+
+  useEffect(() => {
     const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
     return firestore()
       .collection('community_groups')
       .doc(targetGroupId)
       .collection('messages')
       .orderBy('createdAt', 'desc')
+      .limit(msgLimit)
       .onSnapshot((snap: any) => {
         let msgs: any[] = [];
-        let pinned: any[] = [];
         snap?.forEach((doc: any) => {
           const item: any = { id: doc.id, ...doc.data() };
           const deletedFor = Array.isArray(item?.deletedFor) ? item.deletedFor : [];
@@ -1588,12 +1626,29 @@ export default function CommunityScreen({ navigation, route }: any) {
             return;
           }
           msgs.push(item);
-          if (item?.isPinned) pinned.push(item);
         });
         // keep files that are still uploading so they don't vanish when another message arrives
         setChatMessages(prev => [...prev.filter((m: any) => m.uploading), ...msgs]);
-        setPinnedMessages(pinned);
       });
+  }, [selectedGroup?.id, msgLimit]);
+
+  // Pinned messages have their own query, so an old pinned message still shows even when it is not in the newest messages
+  useEffect(() => {
+    const targetGroupId = selectedGroup?.id || 'ecc_community_chat';
+    return firestore()
+      .collection('community_groups')
+      .doc(targetGroupId)
+      .collection('messages')
+      .where('isPinned', '==', true)
+      .onSnapshot((snap: any) => {
+        const pinned: any[] = [];
+        snap?.forEach((doc: any) => pinned.push({ id: doc.id, ...doc.data() }));
+        pinned.sort((x: any, y: any) => {
+          const ms = (v: any) => (v && typeof v.toMillis === 'function' ? v.toMillis() : 0);
+          return ms(y.createdAt) - ms(x.createdAt);
+        });
+        setPinnedMessages(pinned);
+      }, () => {});
   }, [selectedGroup?.id]);
 
   useEffect(() => {
@@ -1734,10 +1789,25 @@ export default function CommunityScreen({ navigation, route }: any) {
     }
   };
 
+  useEffect(() => {
+    const id = pendingJumpRef.current;
+    if (!id) return;
+    if (chatMessages.some((m: any) => m.id === id)) {
+      pendingJumpRef.current = null;
+      setTimeout(() => scrollToMessage(id), 350);
+    }
+  }, [chatMessages]);
+
   // ───────────── Pinned messages: jump to the original message ─────────────
   const scrollToMessage = (messageId: string) => {
     const idx = chatMessages.findIndex((m: any) => m.id === messageId);
     if (idx < 0) {
+      if (msgLimit < 1000) {
+        // The message is older than what is loaded: load more, then jump to it
+        pendingJumpRef.current = messageId;
+        setMsgLimit(1000);
+        return;
+      }
       Alert.alert('Message not found', 'This message is no longer available.');
       return;
     }
@@ -2291,6 +2361,7 @@ export default function CommunityScreen({ navigation, route }: any) {
       senderId: currentUser?.uid || 'guest_user',
       senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
       senderPhoto: currentUser?.photoURL || null,
+      senderIsAdmin: !!isAdmin,
       status: 'sending',
       reactions: {},
       isPinned: false,
@@ -2307,6 +2378,7 @@ export default function CommunityScreen({ navigation, route }: any) {
         senderId: currentUser?.uid || 'guest_user',
         senderName: currentUser?.displayName || currentUser?.email?.split('@')[0] || 'User',
         senderPhoto: currentUser?.photoURL || null,
+        senderIsAdmin: !!isAdmin,
         status: 'sent',
         reactions: {},
         isPinned: false,
@@ -2449,7 +2521,7 @@ export default function CommunityScreen({ navigation, route }: any) {
         completedAt: firestore.FieldValue.serverTimestamp()
       });
 
-      // Strictly awards XP only. No streak increments.
+      recordPracticeActivity('quiz'); // counts as today's challenge for the streak
       await firestore().collection('users').doc(currentUser.uid).set({
         xp: firestore.FieldValue.increment(earnedXP)
       }, { merge: true });
@@ -2468,6 +2540,180 @@ export default function CommunityScreen({ navigation, route }: any) {
       return <Check size={13} color="rgba(255,255,255,0.7)" style={{ marginLeft: 4 }} />;
     }
   };
+
+  // Only MY own status is shown on the card and in the chat header (no count). Other members' status is in the members list.
+  const myOnline = !!currentUser?.uid && (isMember || isAdmin) && (screenFocused || isChatModalVisible);
+
+  // The chat row renderer. Its identity is STABLE (renderChatItem), so typing in the input box or any other
+  // screen state change does not re-render every message. The list refreshes through `chatListExtra` below.
+  const renderChatItemRef = useRef<any>(null);
+  renderChatItemRef.current = ({ item, index }: any) => {
+            const isMe = item.senderId === (currentUser?.uid || 'guest_user');
+            const isPlaying = playingAudioId === item.id;
+            const isSelected = selectedMessageIds.includes(item.id);
+            const hasReaction = Object.keys(item?.reactions || {}).length > 0;
+            const currentDateHeader = getMessageDateHeader(item.createdAt);
+            const nextMessage = chatMessages[index + 1];
+            const nextDateHeader = nextMessage ? getMessageDateHeader(nextMessage.createdAt) : null;
+            const showDateHeader = currentDateHeader !== nextDateHeader;
+            const showSenderHeader = !isMe && (!nextMessage || nextMessage.senderId !== item.senderId);
+
+            return (
+              <View style={{ width: '100%' }}>
+                {showDateHeader && (
+                  <View style={{ alignItems: 'center', marginVertical: 12 }}>
+                    <View style={{ backgroundColor: isDarkMode ? '#2A2A2A' : '#E2E8F0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
+                      <Text style={{ fontSize: 10, fontWeight: '700', color: colors.textSecondary }}>{currentDateHeader}</Text>
+                    </View>
+                  </View>
+                )}
+
+                <View style={[
+                  styles.messageRowWrap,
+                  hasReaction && styles.messageRowWithReaction,
+                  isSelected && { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.22)' : '#EEF2FF', borderRadius: 16 },
+                  highlightedMsgId === item.id && { backgroundColor: isDarkMode ? 'rgba(250, 204, 21, 0.28)' : 'rgba(250, 204, 21, 0.35)', borderRadius: 16 }
+                ]}>
+                  <View style={[
+                    styles.messageInnerRow, 
+                    isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }
+                  ]}>
+                    
+                    {isMe && !isSelectionMode && (
+                      <TouchableOpacity 
+                        style={styles.messageReactionSideBtn} 
+                        onPress={() => handleOpenReactionTray(item)}
+                        activeOpacity={0.7}
+                      >
+                        <Smile size={16} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    )}
+
+                    <View style={{ maxWidth: '85%' }}>
+                      {showSenderHeader && (
+                        <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3, marginLeft: 2 }}>
+                          <View style={[styles.chatAvatarThumb, { backgroundColor: getAvatarColor(item.senderName) }]}>
+                            {item.senderPhoto ? (
+                              <Image source={{ uri: item.senderPhoto }} style={styles.chatAvatarImg} />
+                            ) : (
+                              <Text style={styles.chatAvatarThumbText}>{(item.senderName || 'U').charAt(0).toUpperCase()}</Text>
+                            )}
+                          </View>
+                          <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '700' }}>{item.senderName}</Text>
+                        </View>
+                      )}
+                      
+                      <TouchableOpacity 
+                        activeOpacity={0.92} 
+                        delayLongPress={180}
+                        onPress={() => handleMessagePress(item)}
+                        onLongPress={() => handleMessageLongPress(item)}
+                        style={{ 
+                          backgroundColor: isSingleEmojiText(item.text) ? 'transparent' : (isMe ? primaryColor : colors.bgCard), 
+                          padding: isSingleEmojiText(item.text) ? 0 : (item.type === 'image' ? 4 : 14),
+                          paddingBottom: isSingleEmojiText(item.text) ? 0 : (hasReaction ? 28 : 14),
+                          borderRadius: isSingleEmojiText(item.text) ? 10 : 18,
+                          borderWidth: isSingleEmojiText(item.text) ? 0 : (isSelected ? 2 : (isMe ? 0 : 1)), 
+                          borderColor: isSelected ? '#4F46E5' : colors.border,
+                          position: 'relative'
+                        }}
+                      >
+                        {item?.isPinned && (
+                          <View style={styles.messagePinIconAnchor}>
+                            <Pin size={10} color={isMe ? '#FFF' : primaryColor} />
+                          </View>
+                        )}
+
+                        {item.type === 'voice' ? (
+                          <TouchableOpacity onPress={() => handleTogglePlayAudio(item.id, item.duration, item.mediaUrl)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 140 }}>
+                            <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isMe ? '#FFF' : primaryColor, justifyContent: 'center', alignItems: 'center' }}>
+                              {isPlaying ? <Pause size={18} color={isMe ? primaryColor : '#FFF'} /> : <Play size={18} color={isMe ? primaryColor : '#FFF'} style={{ marginLeft: 2 }} />}
+                            </View>
+                            <View>
+                              <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '800', fontSize: 13 }}>Voice Note</Text>
+                              <Text style={{ color: isMe ? 'rgba(255,255,255,0.85)' : colors.textSecondary, fontSize: 11 }}>{item.duration || 2}s</Text>
+                            </View>
+                          </TouchableOpacity>
+                        ) : item.type === 'image' ? (
+                          <View>
+                            <Image source={{ uri: item.mediaUrl }} style={styles.chatImageMessage} resizeMode="cover" />
+                            {item.uploading && (
+                              <View style={styles.chatImageUploading}>
+                                <ActivityIndicator color="#FFF" />
+                              </View>
+                            )}
+                          </View>
+                        ) : item.type === 'file' ? (
+                          <View style={styles.chatFileRow}>
+                            <View style={[styles.chatFileIcon, { backgroundColor: isMe ? 'rgba(255,255,255,0.22)' : primaryColor + '18' }]}>
+                              {item.uploading
+                                ? <ActivityIndicator size="small" color={isMe ? '#FFF' : primaryColor} />
+                                : <FileText size={20} color={isMe ? '#FFF' : primaryColor} />}
+                            </View>
+                            <View style={{ flex: 1 }}>
+                              <Text numberOfLines={2} style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '700', fontSize: 13 }}>{item.fileName || item.text}</Text>
+                              <Text style={{ color: isMe ? 'rgba(255,255,255,0.8)' : colors.textSecondary, fontSize: 11, marginTop: 2 }}>
+                                {item.uploading ? 'Uploading...' : (formatFileSize(item.fileSize) || 'Tap to open')}
+                              </Text>
+                            </View>
+                          </View>
+                        ) : isSingleEmojiText(item.text) ? (
+                          <Text style={[
+                            styles.standaloneEmojiMessage,
+                            { textAlign: isMe ? 'right' : 'left' }
+                          ]}>{String(item.text).trim()}</Text>
+                        ) : (
+                          <MentionText
+                            text={item.text}
+                            highlight={Array.isArray(item.mentions) && item.mentions.length > 0}
+                            baseColor={isMe ? '#FFF' : colors.textPrimary}
+                            mineColor={primaryColor}
+                            isMe={isMe}
+                            linkify={item.senderIsAdmin === true || (isMe && isAdmin)}
+                          />
+                        )}
+
+                        {!isSingleEmojiText(item.text) && (
+                          <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 5 }}>
+                            {item.isEdited && (
+                              <Text style={{ color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary, fontSize: 9, fontStyle: 'italic', marginRight: 4 }}>
+                                (edited)
+                              </Text>
+                            )}
+                            <Text style={{ color: isMe ? 'rgba(255,255,255,0.75)' : colors.textSecondary, fontSize: 9.5, fontWeight: '500' }}>
+                              {formatMessageTime(item.createdAt)}
+                            </Text>
+                            {isMe && renderMessageTicks(item)}
+                          </View>
+                        )}
+                        
+                        <AnimatedReactionBadge item={item} onRemove={handleRemoveMyReaction} />
+                      </TouchableOpacity>
+                    </View>
+
+                    {!isMe && !isSelectionMode && (
+                      <TouchableOpacity 
+                        style={styles.messageReactionSideBtn} 
+                        onPress={() => handleOpenReactionTray(item)}
+                        activeOpacity={0.7}
+                      >
+                        <Smile size={16} color={colors.textSecondary} />
+                      </TouchableOpacity>
+                    )}
+
+                  </View>
+                </View>
+              </View>
+            );
+  };
+  const renderChatItem = useCallback((info: any) => renderChatItemRef.current(info), []);
+  const chatListExtra = useMemo(
+    () => ({ highlightedMsgId, selectedMessageIds, playingAudioId, isDarkMode, primaryColor, onlineMembers }),
+    [highlightedMsgId, selectedMessageIds, playingAudioId, isDarkMode, primaryColor, onlineMembers]
+  );
+
+  // Reaction picker: every emoji gets a fixed equal width, so all of them always stay inside the card
+  const reactionItemW = Math.floor((Math.min(SCREEN_WIDTH * 0.92, 360) - 20) / QUICK_REACTIONS.length);
 
   const currentHeaderImage = activeTab === 2 ? IMG_CHILD_CHALLENGES : IMG_CHILDREN_DEFAULT;
   const editableMsg = getSingleSelectedEditableMessage();
@@ -2662,9 +2908,9 @@ export default function CommunityScreen({ navigation, route }: any) {
                           <Text style={styles.memberTagBadgeText}>{membersForModal.length} Members</Text>
                         </View>
                         <View style={styles.activeTagBadge}>
-                          <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
-                          <Text style={[styles.activeTagBadgeText, { color: onlineMembers > 0 ? '#059669' : '#64748B' }]}>
-                            {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
+                          <View style={[styles.greenDot, { backgroundColor: myOnline ? '#10B981' : '#64748B' }]} />
+                          <Text style={[styles.activeTagBadgeText, { color: myOnline ? '#059669' : '#64748B' }]}>
+                            {myOnline ? 'Online' : 'Offline'}
                           </Text>
                         </View>
                       </View>
@@ -3152,9 +3398,9 @@ export default function CommunityScreen({ navigation, route }: any) {
                   <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '600' }}>{membersForModal.length} Members</Text>
                   <Text style={{ fontSize: 11, color: colors.textSecondary }}>•</Text>
                   <View style={{ flexDirection: 'row', alignItems: 'center', gap: 4 }}>
-                    <View style={[styles.greenDot, { backgroundColor: onlineMembers > 0 ? '#10B981' : '#64748B' }]} />
-                    <Text style={{ fontSize: 11, color: onlineMembers > 0 ? '#10B981' : '#64748B', fontWeight: '700' }}>
-                      {onlineMembers > 0 ? `${onlineMembers} Online` : 'Offline'}
+                    <View style={[styles.greenDot, { backgroundColor: myOnline ? '#10B981' : '#64748B' }]} />
+                    <Text style={{ fontSize: 11, color: myOnline ? '#10B981' : '#64748B', fontWeight: '700' }}>
+                      {myOnline ? 'Online' : 'Offline'}
                     </Text>
                   </View>
                 </View>
@@ -3307,7 +3553,13 @@ export default function CommunityScreen({ navigation, route }: any) {
                 <FlatList
                   ref={chatListRef}
                   data={chatMessages}
-                  extraData={highlightedMsgId}
+                  extraData={chatListExtra}
+                  initialNumToRender={14}
+                  maxToRenderPerBatch={8}
+                  windowSize={9}
+                  updateCellsBatchingPeriod={40}
+                  onEndReachedThreshold={0.4}
+                  onEndReached={() => { if (chatMessages.length >= msgLimit) setMsgLimit((n) => Math.min(n + 60, 1000)); }}
                   keyExtractor={(item) => item.id}
                   inverted
                   onScrollToIndexFailed={(info) => {
@@ -3318,164 +3570,7 @@ export default function CommunityScreen({ navigation, route }: any) {
                   }}
                   keyboardShouldPersistTaps="handled"
                   contentContainerStyle={{ paddingHorizontal: 16, paddingVertical: 12, flexGrow: 1 }}
-                  renderItem={({ item, index }) => {
-                    const isMe = item.senderId === (currentUser?.uid || 'guest_user');
-                    const isPlaying = playingAudioId === item.id;
-                    const isSelected = selectedMessageIds.includes(item.id);
-                    const hasReaction = Object.keys(item?.reactions || {}).length > 0;
-                    const currentDateHeader = getMessageDateHeader(item.createdAt);
-                    const nextMessage = chatMessages[index + 1];
-                    const nextDateHeader = nextMessage ? getMessageDateHeader(nextMessage.createdAt) : null;
-                    const showDateHeader = currentDateHeader !== nextDateHeader;
-                    const showSenderHeader = !isMe && (!nextMessage || nextMessage.senderId !== item.senderId);
-
-                    return (
-                      <View style={{ width: '100%' }}>
-                        {showDateHeader && (
-                          <View style={{ alignItems: 'center', marginVertical: 12 }}>
-                            <View style={{ backgroundColor: isDarkMode ? '#2A2A2A' : '#E2E8F0', paddingHorizontal: 12, paddingVertical: 4, borderRadius: 12 }}>
-                              <Text style={{ fontSize: 10, fontWeight: '700', color: colors.textSecondary }}>{currentDateHeader}</Text>
-                            </View>
-                          </View>
-                        )}
-
-                        <View style={[
-                          styles.messageRowWrap,
-                          hasReaction && styles.messageRowWithReaction,
-                          isSelected && { backgroundColor: isDarkMode ? 'rgba(99, 102, 241, 0.22)' : '#EEF2FF', borderRadius: 16 },
-                          highlightedMsgId === item.id && { backgroundColor: isDarkMode ? 'rgba(250, 204, 21, 0.28)' : 'rgba(250, 204, 21, 0.35)', borderRadius: 16 }
-                        ]}>
-                          <View style={[
-                            styles.messageInnerRow, 
-                            isMe ? { justifyContent: 'flex-end' } : { justifyContent: 'flex-start' }
-                          ]}>
-                            
-                            {isMe && !isSelectionMode && (
-                              <TouchableOpacity 
-                                style={styles.messageReactionSideBtn} 
-                                onPress={() => handleOpenReactionTray(item)}
-                                activeOpacity={0.7}
-                              >
-                                <Smile size={16} color={colors.textSecondary} />
-                              </TouchableOpacity>
-                            )}
-
-                            <View style={{ maxWidth: '85%' }}>
-                              {showSenderHeader && (
-                                <View style={{ flexDirection: 'row', alignItems: 'center', gap: 6, marginBottom: 3, marginLeft: 2 }}>
-                                  <View style={[styles.chatAvatarThumb, { backgroundColor: getAvatarColor(item.senderName) }]}>
-                                    {item.senderPhoto ? (
-                                      <Image source={{ uri: item.senderPhoto }} style={styles.chatAvatarImg} />
-                                    ) : (
-                                      <Text style={styles.chatAvatarThumbText}>{(item.senderName || 'U').charAt(0).toUpperCase()}</Text>
-                                    )}
-                                  </View>
-                                  <Text style={{ fontSize: 11, color: colors.textSecondary, fontWeight: '700' }}>{item.senderName}</Text>
-                                </View>
-                              )}
-                              
-                              <TouchableOpacity 
-                                activeOpacity={0.92} 
-                                delayLongPress={180}
-                                onPress={() => handleMessagePress(item)}
-                                onLongPress={() => handleMessageLongPress(item)}
-                                style={{ 
-                                  backgroundColor: isSingleEmojiText(item.text) ? 'transparent' : (isMe ? primaryColor : colors.bgCard), 
-                                  padding: isSingleEmojiText(item.text) ? 0 : (item.type === 'image' ? 4 : 14),
-                                  paddingBottom: isSingleEmojiText(item.text) ? 0 : (hasReaction ? 28 : 14),
-                                  borderRadius: isSingleEmojiText(item.text) ? 10 : 18,
-                                  borderWidth: isSingleEmojiText(item.text) ? 0 : (isSelected ? 2 : (isMe ? 0 : 1)), 
-                                  borderColor: isSelected ? '#4F46E5' : colors.border,
-                                  position: 'relative'
-                                }}
-                              >
-                                {item?.isPinned && (
-                                  <View style={styles.messagePinIconAnchor}>
-                                    <Pin size={10} color={isMe ? '#FFF' : primaryColor} />
-                                  </View>
-                                )}
-
-                                {item.type === 'voice' ? (
-                                  <TouchableOpacity onPress={() => handleTogglePlayAudio(item.id, item.duration, item.mediaUrl)} style={{ flexDirection: 'row', alignItems: 'center', gap: 10, minWidth: 140 }}>
-                                    <View style={{ width: 36, height: 36, borderRadius: 18, backgroundColor: isMe ? '#FFF' : primaryColor, justifyContent: 'center', alignItems: 'center' }}>
-                                      {isPlaying ? <Pause size={18} color={isMe ? primaryColor : '#FFF'} /> : <Play size={18} color={isMe ? primaryColor : '#FFF'} style={{ marginLeft: 2 }} />}
-                                    </View>
-                                    <View>
-                                      <Text style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '800', fontSize: 13 }}>Voice Note</Text>
-                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.85)' : colors.textSecondary, fontSize: 11 }}>{item.duration || 2}s</Text>
-                                    </View>
-                                  </TouchableOpacity>
-                                ) : item.type === 'image' ? (
-                                  <View>
-                                    <Image source={{ uri: item.mediaUrl }} style={styles.chatImageMessage} resizeMode="cover" />
-                                    {item.uploading && (
-                                      <View style={styles.chatImageUploading}>
-                                        <ActivityIndicator color="#FFF" />
-                                      </View>
-                                    )}
-                                  </View>
-                                ) : item.type === 'file' ? (
-                                  <View style={styles.chatFileRow}>
-                                    <View style={[styles.chatFileIcon, { backgroundColor: isMe ? 'rgba(255,255,255,0.22)' : primaryColor + '18' }]}>
-                                      {item.uploading
-                                        ? <ActivityIndicator size="small" color={isMe ? '#FFF' : primaryColor} />
-                                        : <FileText size={20} color={isMe ? '#FFF' : primaryColor} />}
-                                    </View>
-                                    <View style={{ flex: 1 }}>
-                                      <Text numberOfLines={2} style={{ color: isMe ? '#FFF' : colors.textPrimary, fontWeight: '700', fontSize: 13 }}>{item.fileName || item.text}</Text>
-                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.8)' : colors.textSecondary, fontSize: 11, marginTop: 2 }}>
-                                        {item.uploading ? 'Uploading...' : (formatFileSize(item.fileSize) || 'Tap to open')}
-                                      </Text>
-                                    </View>
-                                  </View>
-                                ) : isSingleEmojiText(item.text) ? (
-                                  <Text style={[
-                                    styles.standaloneEmojiMessage,
-                                    { textAlign: isMe ? 'right' : 'left' }
-                                  ]}>{String(item.text).trim()}</Text>
-                                ) : (
-                                  <MentionText
-                                    text={item.text}
-                                    highlight={Array.isArray(item.mentions) && item.mentions.length > 0}
-                                    baseColor={isMe ? '#FFF' : colors.textPrimary}
-                                    mineColor={primaryColor}
-                                    isMe={isMe}
-                                  />
-                                )}
-
-                                {!isSingleEmojiText(item.text) && (
-                                  <View style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'flex-end', marginTop: 5 }}>
-                                    {item.isEdited && (
-                                      <Text style={{ color: isMe ? 'rgba(255,255,255,0.7)' : colors.textSecondary, fontSize: 9, fontStyle: 'italic', marginRight: 4 }}>
-                                        (edited)
-                                      </Text>
-                                    )}
-                                    <Text style={{ color: isMe ? 'rgba(255,255,255,0.75)' : colors.textSecondary, fontSize: 9.5, fontWeight: '500' }}>
-                                      {formatMessageTime(item.createdAt)}
-                                    </Text>
-                                    {isMe && renderMessageTicks(item)}
-                                  </View>
-                                )}
-                                
-                                <AnimatedReactionBadge item={item} onRemove={handleRemoveMyReaction} />
-                              </TouchableOpacity>
-                            </View>
-
-                            {!isMe && !isSelectionMode && (
-                              <TouchableOpacity 
-                                style={styles.messageReactionSideBtn} 
-                                onPress={() => handleOpenReactionTray(item)}
-                                activeOpacity={0.7}
-                              >
-                                <Smile size={16} color={colors.textSecondary} />
-                              </TouchableOpacity>
-                            )}
-
-                          </View>
-                        </View>
-                      </View>
-                    );
-                  }}
+                  renderItem={renderChatItem}
                 />
               </View>
             </TouchableWithoutFeedback>
@@ -3652,15 +3747,16 @@ export default function CommunityScreen({ navigation, route }: any) {
                   {QUICK_REACTIONS.map((emoji) => (
                     <TouchableOpacity 
                       key={emoji} 
-                      style={styles.reactionEmojiItem} 
+                      style={[styles.reactionEmojiItem, { flex: 0, width: reactionItemW }]} 
                       onPress={() => handleAddReaction(selectedMessageForAction.id, emoji)}
                       activeOpacity={0.7}
                     >
-                      <Text style={{ fontSize: 24 }}>{emoji}</Text>
+                      <Text allowFontScaling={false} style={{ fontSize: 22 }}>{emoji}</Text>
                     </TouchableOpacity>
                   ))}
                 </View>
 
+                {(isAdmin || canOpenDeleteForMessage(selectedMessageForAction)) && (
                 <View style={[styles.actionOptionsRow, { borderTopColor: colors.border }]}>
                   {isAdmin && (
                   <TouchableOpacity 
@@ -3698,6 +3794,7 @@ export default function CommunityScreen({ navigation, route }: any) {
                     </TouchableOpacity>
                   )}
                 </View>
+                )}
               </View>
             </TouchableOpacity>
           </Modal>
@@ -5203,16 +5300,20 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     elevation: 8,
     padding: 10,
-    width: '86%',
-    maxWidth: 330,
+    width: '92%',
+    maxWidth: 360,
   },
   reactionPickerBar: { 
     flexDirection: 'row', 
-    justifyContent: 'space-around', 
+    justifyContent: 'space-between', 
     paddingVertical: 8, 
   },
+  // Each emoji takes an equal share of the card width, so all 8 always stay INSIDE the card
   reactionEmojiItem: { 
-    padding: 6, 
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 6, 
+    paddingHorizontal: 0,
     borderRadius: 12, 
   },
   actionOptionsRow: { 

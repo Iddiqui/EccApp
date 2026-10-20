@@ -11,6 +11,7 @@ import {
 import { X, ChevronLeft, ChevronRight, Check } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
 import firestore from '@react-native-firebase/firestore';
+import { getEffectiveStreak } from '../../../services/streakService';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -48,25 +49,18 @@ export default function StreakCalendarModal({ visible, onClose }: StreakCalendar
       .onSnapshot((doc) => {
         const isDocExist = typeof doc?.exists === 'function' ? doc.exists() : Boolean(doc?.exists);
         if (isDocExist) {
-          const data = doc.data();
-          const currentStreak = data?.streak || 0;
+          const data: any = doc.data() || {};
+          // Real values from the backend (no made-up numbers). A broken streak shows 0.
+          const currentStreak = getEffectiveStreak(data);
           setUserStreak(currentStreak);
-          setLongestStreak(data?.longestStreak || (currentStreak > 0 ? currentStreak + 9 : 0));
-          setBestStreak(data?.bestStreak || (currentStreak > 0 ? currentStreak + 16 : 0));
+          setLongestStreak(Math.max(Number(data?.longestStreak) || 0, currentStreak));
+          setBestStreak(Math.max(Number(data?.bestStreak) || 0, currentStreak));
 
-          if (data?.activeDays && Array.isArray(data.activeDays)) {
-            setActiveDates(data.activeDays);
-          } else if (currentStreak > 0) {
-            const days: string[] = [];
-            for (let i = 0; i < currentStreak; i++) {
-              const d = new Date();
-              d.setDate(today.getDate() - i);
-              days.push(d.toISOString().split('T')[0]);
-            }
-            setActiveDates(days);
-          } else {
-            setActiveDates([]);
-          }
+          // Days the student completed a challenge (written by the streak backend)
+          const fromList = (v: any) =>
+            Array.isArray(v) ? v.filter((x: any) => typeof x === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(x)) : [];
+          const days = Array.from(new Set([...fromList(data?.completedLectureDates), ...fromList(data?.activeDays)]));
+          setActiveDates(days);
         }
       });
 
@@ -135,6 +129,9 @@ export default function StreakCalendarModal({ visible, onClose }: StreakCalendar
     const cellDate = new Date(year, month, dayNum);
     const todayZeroTime = new Date(today.getFullYear(), today.getMonth(), today.getDate());
     const isPast = cellDate < todayZeroTime;
+    // Days before the student's first active day are not "missed"
+    const firstActive = activeDates.length ? [...activeDates].sort()[0] : null;
+    if (!firstActive || dateStr < firstActive) return false;
     return isPast && !activeDates.includes(dateStr);
   };
 

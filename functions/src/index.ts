@@ -224,3 +224,4 @@ import './globalOptions';
   export { sendEmailCode, verifyEmailCode, completeProfile, resetPasswordWithEmailCode, resetPasswordWithPhone } from './auth/accountAuth';
      export { onCommunityMention } from './notifications/mentionNotifications';
      export { syncChatAdmin, onAdminListDeleted, onSubAdminListDeleted } from './admin/chatModeration';
+        export { recordPracticeActivity, breakMissedStreaks, sendStreakFinalWarning } from './practice/streak';

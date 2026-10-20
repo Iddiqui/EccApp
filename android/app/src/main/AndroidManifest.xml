@@ -1,6 +1,10 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!-- Network and Internet Permissions -->
+    <!-- Download class files (photos, PDFs) into the Downloads folder -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE" android:maxSdkVersion="28"/>
+    <uses-permission android:name="android.permission.DOWNLOAD_WITHOUT_NOTIFICATION"/>
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
@@ -13,30 +17,25 @@
     <!-- Bluetooth Permissions (For Wireless Earphones/Headsets) -->
     <uses-permission android:name="android.permission.BLUETOOTH" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
-    <!-- Android 12 (API 31) aur higher ke liye -->
+    <!-- Android 12 (API 31) and higher -->
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
 
     <!-- Background Audio/Call Permissions -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CAMERA" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.WAKE_LOCK" />
 
     <!--
-      🖥️ SCREEN SHARE FIX — YE MISSING THA!
-      Android 14 (API 34) se screen share ke liye ye permission MANDATORY hai.
-      LiveKit React Native SDK (v2.4.0+) foreground service ko internally
-      handle karta hai, lekin permission app ke manifest me khud declare
-      karni padti hai. Iske bina, screen capture locally start ho jaata hai
-      (isliye aapko apna "sharing" UI dikh raha tha) lekin actual video track
-      publish/encode nahi ho pata — isiliye doosre users ko kuch nahi dikhta.
+      SCREEN SHARE FIX
+      Android 14 (API 34) requires this permission for screen share. The LiveKit React Native SDK
+      handles the foreground service itself, but the app must declare the permission.
     -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
 
     <!--
-      Android 13 (API 33) se foreground service ka notification dikhane ke
-      liye runtime permission chahiye. Iske bina bhi service kabhi-kabhi
-      fail/crash ho sakti hai kyunki foreground service ko notification
-      dikhana mandatory hai.
+      Android 13 (API 33)+ needs this runtime permission to show the foreground service notification.
     -->
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
@@ -54,8 +53,8 @@
       android:theme="@style/AppTheme"
       android:usesCleartextTraffic="true"
       android:supportsRtl="true">
-      
-         <activity
+
+      <activity
         android:name=".MainActivity"
         android:label="@string/app_name"
         android:configChanges="keyboard|keyboardHidden|orientation|screenLayout|screenSize|smallestScreenSize|uiMode"
@@ -75,5 +74,12 @@
             <data android:scheme="eccapp" android:host="room" />
         </intent-filter>
       </activity>
+
+      <!-- Keeps the microphone and speaker alive while the app is in the background during a call -->
+      <service
+        android:name="app.notifee.core.ForegroundService"
+        android:foregroundServiceType="microphone|mediaPlayback"
+        android:exported="false"
+        tools:replace="android:foregroundServiceType" />
     </application>
 </manifest>

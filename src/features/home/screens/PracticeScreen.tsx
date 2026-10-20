@@ -42,10 +42,13 @@ import {
   Check, 
   TrendingUp,
   Edit3,
+  Plus,
   CheckCircle2,
   Lock
 } from 'lucide-react-native';
 import auth from '@react-native-firebase/auth';
+import functions from '@react-native-firebase/functions';
+import { recordPracticeActivity, getEffectiveStreak, practicedToday } from '../../../services/streakService';
 import firestore from '@react-native-firebase/firestore';
 import storage from '@react-native-firebase/storage';
 import AudioRecord from 'react-native-audio-record';
@@ -53,6 +56,10 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import { useTheme } from '../../../hooks/useTheme';
 import XpRewardModal from './XpRewardModal';
+
+// Optional: saves a cloud recording on the phone once, so Play / Pause is smooth (npm i react-native-blob-util)
+let BlobUtil: any = null;
+try { BlobUtil = require('react-native-blob-util').default; } catch (e) {}
 
 let SoundPlayer: any = null;
 try {
@@ -142,6 +149,14 @@ const DEFAULT_MINIMAL_PAIRS = [
   { id: '9', wordA: 'Pen', wordB: 'Pan', ipaA: '/pɛn/', ipaB: '/pæn/', soundRule: 'Mid /ɛ/ vs Open /æ/', tip: 'Half-open mouth for Pen; drop jaw widely for Pan.' }
 ];
 
+// Short fingerprint of a challenge's content. A challenge gives XP only once per content: when the admin
+// changes the passage / twisters, the fingerprint changes and the challenge opens again.
+const hashStr = (str: string): string => {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return String(h >>> 0);
+};
+
 export default function PracticeScreen({ navigation }: any) {
   const { theme, isDarkMode, t } = useTheme() as any;
   const colors = theme?.colors || {
@@ -185,6 +200,12 @@ export default function PracticeScreen({ navigation }: any) {
   }, [currentUser?.email]);
   const isAdmin = KNOWN_ADMIN_EMAILS.includes(currentEmailClean) || listAdmin;
 
+  // Lets the backend rules recognise this admin / sub-admin (needed to save practice content)
+  useEffect(() => {
+    if (!isAdmin || !currentUser?.uid) return;
+    functions().httpsCallable('syncChatAdmin')({}).catch(() => {});
+  }, [isAdmin, currentUser?.uid]);
+
   // State Management
   const [userData, setUserData] = useState<any>(null);
   const [loading, setLoading] = useState(true);
@@ -192,6 +213,10 @@ export default function PracticeScreen({ navigation }: any) {
   // Firestore Content
   const [readRecordContent, setReadRecordContent] = useState<any>(DEFAULT_READ_RECORD);
   const [tongueTwisters, setTongueTwisters] = useState<any[]>(DEFAULT_TONGUE_TWISTERS);
+  // One attempt (one XP reward) per content. Saved in users/{uid}.practiceDone.
+  const [loadingAudioId, setLoadingAudioId] = useState<string | null>(null);
+  const readKey = hashStr(`${readRecordContent?.title || ''}|${readRecordContent?.passage || ''}`);
+  const twisterKey = hashStr(JSON.stringify(tongueTwisters || []));
   const [minimalPairs, setMinimalPairs] = useState<any[]>(DEFAULT_MINIMAL_PAIRS);
 
   // Modals
@@ -213,6 +238,17 @@ export default function PracticeScreen({ navigation }: any) {
   const [adminTwisterDifficulty, setAdminTwisterDifficulty] = useState('Medium');
   const [adminTwisterTimerSec, setAdminTwisterTimerSec] = useState('15');
   const [savingAdminTwister, setSavingAdminTwister] = useState(false);
+
+  // ✏️ Admin: Minimal Pairs manager (add / edit / delete)
+  const [isPairsAdminVisible, setIsPairsAdminVisible] = useState(false);
+  const [pairEditIdx, setPairEditIdx] = useState<number | null>(null); // null = list view, -1 = new pair
+  const [pairForm, setPairForm] = useState({ wordA: '', wordB: '', ipaA: '', ipaB: '', soundRule: '', tip: '' });
+  const [savingPairs, setSavingPairs] = useState(false);
+
+  // 🎧 The student's saved Read & Record recordings (kept for 30 days in Firebase Storage)
+  const [myRecordings, setMyRecordings] = useState<any[]>([]);
+  const [showMyRecs, setShowMyRecs] = useState(false);
+  const [loadingRecs, setLoadingRecs] = useState(false);
 
   // 🌟 Premium Success Popup Modal
   const [successPopup, setSuccessPopup] = useState<{ visible: boolean; title: string; message: string }>({
@@ -249,7 +285,12 @@ export default function PracticeScreen({ navigation }: any) {
 
   const timerRef = useRef<any>(null);
   const elapsedRef = useRef(0);
+  const twisterSecondsRef = useRef<{ [key: string]: number }>({}); // seconds really spoken per twister
   const soundRef = useRef<any>(null);
+  const playTokenRef = useRef(0); // ignores late callbacks of an older sound
+  const audioLoadingRef = useRef(false); // true while a sound is loading (ignores extra taps)
+  const recorderActiveRef = useRef(false); // true only while a recorder is really running
+  const startingRecordRef = useRef(false); // blocks a second 'start recording' while one is starting
   const ttsSoundRef = useRef<any>(null);
 
   // Glow & Shimmer Animations
@@ -434,15 +475,23 @@ export default function PracticeScreen({ navigation }: any) {
 
   // 🎙️ START RECORDING WITH CARD-SPECIFIC TIMER
   const handleStartRecord = async (type: 'read_record' | 'tongue_twister') => {
+    // A double tap used to start TWO recorders that wrote into the same file (the voice came out doubled)
+    if (startingRecordRef.current || isRecording) return;
+    if ((type === 'read_record' && readDone) || (type === 'tongue_twister' && twistersDone)) {
+      Alert.alert('Already completed ✅', 'You have already finished this challenge. A new one opens when the admin updates it.');
+      return;
+    }
+    startingRecordRef.current = true;
     const hasPerm = await requestAudioPermission();
     if (!hasPerm) {
+      startingRecordRef.current = false;
       Alert.alert('Permission Required', 'Please allow microphone permission to practice speaking.');
       return;
     }
 
     try {
       if (soundRef.current) {
-        try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+        playTokenRef.current++; try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
         soundRef.current = null;
       }
       setIsPlayingAudio(false);
@@ -466,6 +515,8 @@ export default function PracticeScreen({ navigation }: any) {
       setIsRecording(true);
       setRecordingTime(0);
       AudioRecord.start();
+      recorderActiveRef.current = true;
+      startingRecordRef.current = false;
 
       let elapsed = 0;
       elapsedRef.current = 0;
@@ -482,14 +533,18 @@ export default function PracticeScreen({ navigation }: any) {
         }
       }, 1000);
     } catch (e: any) {
+      startingRecordRef.current = false;
+      recorderActiveRef.current = false;
       setIsRecording(false);
       Alert.alert('Recording Error', e.message || 'Unable to start recording');
     }
   };
 
   const handleStopRecord = async (type: 'read_record' | 'tongue_twister') => {
+    if (timerRef.current) clearInterval(timerRef.current);
+    if (!recorderActiveRef.current) return; // already stopped (auto-stop and the Finish button together)
+    recorderActiveRef.current = false;
     try {
-      if (timerRef.current) clearInterval(timerRef.current);
       const audioPath = await AudioRecord.stop();
       setIsRecording(false);
 
@@ -505,6 +560,7 @@ export default function PracticeScreen({ navigation }: any) {
           ...twisterRecordingsMap,
           [currentTwisterId]: audioPath
         };
+        twisterSecondsRef.current[currentTwisterId] = elapsedRef.current;
         setTwisterRecordingsMap(updated);
         await AsyncStorage.setItem(STORAGE_KEY_TWISTER_AUDIO, JSON.stringify(updated));
       }
@@ -515,7 +571,7 @@ export default function PracticeScreen({ navigation }: any) {
 
   const handleDeleteReadRecordAudio = async () => {
     if (soundRef.current) {
-      try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+      playTokenRef.current++; try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
       soundRef.current = null;
     }
     setIsPlayingAudio(false);
@@ -529,7 +585,7 @@ export default function PracticeScreen({ navigation }: any) {
 
   const handleDeleteTwisterAudio = async (twisterId: string) => {
     if (soundRef.current) {
-      try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+      playTokenRef.current++; try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
       soundRef.current = null;
     }
     setIsPlayingAudio(false);
@@ -541,72 +597,236 @@ export default function PracticeScreen({ navigation }: any) {
     await AsyncStorage.setItem(STORAGE_KEY_TWISTER_AUDIO, JSON.stringify(updated));
   };
 
+  // Play / Pause / Resume for any recording (a fresh one on the phone or a saved cloud one).
+  //  - tap on the playing recording  -> pause (keeps the position)
+  //  - tap on the paused recording   -> resume from the same position
+  //  - tap on another recording      -> the old one is stopped, the new one starts
   const handlePlayAudio = (filePath: string | null, targetId?: string) => {
-    if (!filePath || !SoundPlayer) return;
+    if (!filePath) return;
+    if (!SoundPlayer) {
+      Alert.alert('Cannot play', 'The audio player is not available. Please rebuild the app.');
+      return;
+    }
+    if (audioLoadingRef.current) return; // a sound is still loading: ignore extra taps (they made two voices)
 
     const id = targetId || filePath;
 
-    if (isPlayingAudio && activePlayingTarget === id && soundRef.current) {
-      try { soundRef.current.stop(); } catch(e){}
+    const finishedWith = (tk: number, success: boolean, snd: any) => {
+      if (tk !== playTokenRef.current) return; // an older sound: ignore
       setIsPlayingAudio(false);
       setActivePlayingTarget(null);
+      try { snd.release(); } catch (err) {}
+      if (soundRef.current === snd) soundRef.current = null;
+      if (!success) Alert.alert('Playback problem', 'The recording stopped because of an audio error.');
+    };
+
+    // Same recording that is already loaded: pause or resume
+    if (soundRef.current && activePlayingTarget === id) {
+      const snd = soundRef.current;
+      const tk = playTokenRef.current;
+      if (isPlayingAudio) {
+        try { snd.pause(); } catch (e) {}
+        setIsPlayingAudio(false);
+      } else {
+        setIsPlayingAudio(true);
+        snd.play((ok: boolean) => finishedWith(tk, ok, snd));
+      }
       return;
     }
 
+    const token = ++playTokenRef.current;
+
+    // A different recording: stop the old one completely first
     if (soundRef.current) {
-      try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+      try { soundRef.current.stop(); soundRef.current.release(); } catch (e) {}
       soundRef.current = null;
     }
+    setIsPlayingAudio(false);
+    setActivePlayingTarget(null);
 
-    let targetPath = filePath;
-    if (Platform.OS === 'android' && targetPath.startsWith('file://')) {
-      targetPath = targetPath.replace('file://', '');
-    }
+    // A saved (cloud) recording is a web link. A fresh recording is a file on the phone,
+    // which some Android versions only open with (or without) the file:// prefix, so both are tried.
+    const isRemote = /^https?:\/\//i.test(filePath);
+    const plain = filePath.replace(/^file:\/\//, '');
+    const candidates: string[] = isRemote
+      ? [filePath]
+      : Platform.OS === 'android'
+        ? [plain, `file://${plain}`]
+        : [plain];
 
-    const sound = new SoundPlayer(targetPath, '', (error: any) => {
-      if (error) {
-        setIsPlayingAudio(false);
-        setActivePlayingTarget(null);
-        return;
-      }
-      soundRef.current = sound;
-      setIsPlayingAudio(true);
-      setActivePlayingTarget(id);
-      sound.play(() => {
-        setIsPlayingAudio(false);
-        setActivePlayingTarget(null);
-        try { sound.release(); } catch(err){}
-        soundRef.current = null;
+    audioLoadingRef.current = true;
+    setLoadingAudioId(id);
+    const tryLoad = (i: number) => {
+      const sound = new SoundPlayer(candidates[i], '', (error: any) => {
+        if (error) {
+          try { sound.release(); } catch (err) {}
+          if (i + 1 < candidates.length) {
+            tryLoad(i + 1);
+            return;
+          }
+          audioLoadingRef.current = false;
+          setLoadingAudioId(null);
+          console.log('Recording playback error:', error);
+          Alert.alert(
+            'Cannot play recording',
+            isRemote
+              ? 'Could not load this recording. Please check your internet connection and try again.'
+              : 'This recording file could not be opened. Please record it again.'
+          );
+          return;
+        }
+        audioLoadingRef.current = false;
+        setLoadingAudioId(null);
+        if (token !== playTokenRef.current) {
+          try { sound.release(); } catch (err) {}
+          return;
+        }
+        soundRef.current = sound;
+        try { sound.setVolume(1.0); } catch (err) {}
+        setIsPlayingAudio(true);
+        setActivePlayingTarget(id);
+        sound.play((success: boolean) => finishedWith(token, success, sound));
       });
-    });
+    };
+    // A cloud recording is first saved on the phone (once) and then played from there: no stalls on Play / Pause
+    (async () => {
+      if (isRemote && BlobUtil) {
+        try {
+          const f = `${BlobUtil.fs.dirs.CacheDir}/rec_${hashStr(filePath)}.wav`;
+          if (!(await BlobUtil.fs.exists(f))) {
+            await BlobUtil.config({ path: f }).fetch('GET', filePath);
+          }
+          candidates.length = 0;
+          candidates.push(Platform.OS === 'android' ? f : f);
+          if (Platform.OS === 'android') candidates.push(`file://${f}`);
+        } catch (e) {
+          console.log('Recording cache failed, streaming instead:', e);
+        }
+      }
+      tryLoad(0);
+    })();
   };
 
-  const handleListenPronunciation = (word: string, gender: 'female' | 'male' = 'female') => {
+  // Saved Read & Record recordings of this student (newest first)
+  const loadMyRecordings = async () => {
+    const uid = auth().currentUser?.uid;
+    if (!uid) return;
+    setLoadingRecs(true);
+    try {
+      const snap = await firestore().collection('challenge_recordings').where('uid', '==', uid).get();
+      const ms = (v: any) => (v && typeof v.toDate === 'function' ? v.toDate().getTime() : v ? new Date(v).getTime() : 0);
+      const list = snap.docs
+        .map((d: any) => ({ id: d.id, ...d.data() }))
+        .filter((r: any) => r.source === 'read_record' && r.audioUrl)
+        .sort((x: any, y: any) => ms(y.createdAt) - ms(x.createdAt))
+        .slice(0, 15);
+      setMyRecordings(list);
+    } catch (e) {
+      console.log('Could not load saved recordings:', e);
+    } finally {
+      setLoadingRecs(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeModal === 'read_record') loadMyRecordings();
+  }, [activeModal]);
+
+  // Pronunciation is always played in a female voice.
+  const handleListenPronunciation = (word: string) => {
     if (!SoundPlayer) return;
-    
+
     if (ttsSoundRef.current) {
       try { ttsSoundRef.current.stop(); ttsSoundRef.current.release(); } catch(e){}
       ttsSoundRef.current = null;
     }
 
     setSpeakingWord(word);
-    
-    const voiceType = gender === 'female' ? '1' : '2';
-    const audioUrl = `https://dict.youdao.com/dictvoice?audio=${encodeURIComponent(word.trim())}&type=${voiceType}`;
+    const q = encodeURIComponent(word.trim());
+    const urls = [
+      `https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=en&q=${q}`,
+      `https://dict.youdao.com/dictvoice?audio=${q}&type=2`,
+    ];
 
-    const sound = new SoundPlayer(audioUrl, '', (error: any) => {
-      if (error) {
-        setSpeakingWord(null);
-        return;
-      }
-      ttsSoundRef.current = sound;
-      sound.setVolume(1.0);
-      sound.play(() => {
-        setSpeakingWord(null);
-        try { sound.release(); } catch(e){}
-        ttsSoundRef.current = null;
+    const tryUrl = (i: number) => {
+      const sound = new SoundPlayer(urls[i], '', (error: any) => {
+        if (error) {
+          try { sound.release(); } catch (e) {}
+          if (i + 1 < urls.length) { tryUrl(i + 1); return; }
+          setSpeakingWord(null);
+          Alert.alert('Cannot play', 'Could not load the pronunciation. Please check your internet connection.');
+          return;
+        }
+        ttsSoundRef.current = sound;
+        sound.setVolume(1.0);
+        sound.play(() => {
+          setSpeakingWord(null);
+          try { sound.release(); } catch(e){}
+          ttsSoundRef.current = null;
+        });
       });
-    });
+    };
+    tryUrl(0);
+  };
+
+  // ✏️ Admin: Minimal Pairs (saved in practice_content/minimal_pairs)
+  const savePairsList = async (items: any[]) => {
+    setSavingPairs(true);
+    try {
+      await firestore().collection('practice_content').doc('minimal_pairs').set({
+        items,
+        updatedAt: firestore.FieldValue.serverTimestamp(),
+      });
+      setMinimalPairs(items);
+      return true;
+    } catch (e: any) {
+      Alert.alert('Error', e?.message || 'Could not save. Only admins can change minimal pairs.');
+      return false;
+    } finally {
+      setSavingPairs(false);
+    }
+  };
+
+  const openPairForm = (idx: number) => {
+    if (idx >= 0) {
+      const p = minimalPairs[idx] || {};
+      setPairForm({
+        wordA: p.wordA || '', wordB: p.wordB || '', ipaA: p.ipaA || '',
+        ipaB: p.ipaB || '', soundRule: p.soundRule || '', tip: p.tip || '',
+      });
+    } else {
+      setPairForm({ wordA: '', wordB: '', ipaA: '', ipaB: '', soundRule: '', tip: '' });
+    }
+    setPairEditIdx(idx);
+  };
+
+  const handleSavePairForm = async () => {
+    const f = pairForm;
+    if (!f.wordA.trim() || !f.wordB.trim()) {
+      Alert.alert('Required', 'Please enter both Word A and Word B.');
+      return;
+    }
+    const item = {
+      id: pairEditIdx !== null && pairEditIdx >= 0 ? (minimalPairs[pairEditIdx]?.id || String(Date.now())) : String(Date.now()),
+      wordA: f.wordA.trim(), wordB: f.wordB.trim(),
+      ipaA: f.ipaA.trim(), ipaB: f.ipaB.trim(),
+      soundRule: f.soundRule.trim(), tip: f.tip.trim(),
+    };
+    const list = [...minimalPairs];
+    if (pairEditIdx !== null && pairEditIdx >= 0) list[pairEditIdx] = item;
+    else list.push(item);
+    if (await savePairsList(list)) setPairEditIdx(null);
+  };
+
+  const handleDeletePair = (idx: number) => {
+    Alert.alert('Delete pair', `Delete "${minimalPairs[idx]?.wordA} / ${minimalPairs[idx]?.wordB}"?`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () => savePairsList(minimalPairs.filter((_, i) => i !== idx)),
+      },
+    ]);
   };
 
   // 💾 Admin Save Read & Record Passage
@@ -752,6 +972,7 @@ export default function PracticeScreen({ navigation }: any) {
         expiresAt: firestore.Timestamp.fromDate(new Date(Date.now() + RECORDING_KEEP_DAYS * 24 * 60 * 60 * 1000)),
       });
       await AsyncStorage.removeItem(STORAGE_KEY_READ_PENDING_UPLOAD);
+      loadMyRecordings();
     } catch (e) {
       console.log('Read & Record upload failed, will retry later:', e);
       try {
@@ -778,13 +999,18 @@ export default function PracticeScreen({ navigation }: any) {
       if (recordedCount < totalCount) {
         Alert.alert(
           'Incomplete Challenge 🔒',
-          `Aapko teeno (${totalCount}) tongue twisters record karne honge tabhi XP count hoga! (Currently recorded: ${recordedCount}/${totalCount})`
+          `Please record all ${totalCount} tongue twisters to earn XP. (Recorded so far: ${recordedCount}/${totalCount})`
         );
         return;
       }
     }
 
-    const currentStreak = (userData?.streak || 1);
+    if ((type === 'read_record' && readDone) || (type === 'tongue_twisters' && twistersDone)) {
+      Alert.alert('Already completed ✅', 'XP for this challenge was already added. A new one opens when the admin updates it.');
+      return;
+    }
+
+    let currentStreak = getEffectiveStreak(userData) || 1;
 
     // Read & Record: remember what is needed to store the recording before the local state is cleared
     const readAudioPath = readRecordAudio;
@@ -796,11 +1022,54 @@ export default function PracticeScreen({ navigation }: any) {
       minutesToAdd = Math.min(Number(readRecordContent?.estMinutes) || 3, Math.max(1, Math.round(readSeconds / 60)));
     }
 
+    if (type === 'tongue_twisters') {
+      // Count the minutes really spoken (at least 1)
+      const totalSec = Object.values(twisterSecondsRef.current).reduce((a: number, b: any) => a + (Number(b) || 0), 0);
+      if (totalSec > 0) minutesToAdd = Math.max(1, Math.ceil(totalSec / 60));
+    }
+
+    // XP is added ONCE per challenge content, inside a transaction (two quick taps or two phones cannot add it twice)
+    const doneKey = type === 'read_record' ? readKey : twisterKey;
+    if (currentUser) {
+      let granted = false;
+      try {
+        const userRef = firestore().collection('users').doc(currentUser.uid);
+        granted = await firestore().runTransaction(async (tx: any) => {
+          const snap = await tx.get(userRef);
+          const done = (snap.exists ? (snap.data() as any)?.practiceDone : null) || {};
+          if (done[type] === doneKey) return false;
+          tx.set(
+            userRef,
+            {
+              practiceDone: { [type]: doneKey },
+              minutesSpokenToday: firestore.FieldValue.increment(minutesToAdd),
+              xp: firestore.FieldValue.increment(xpToAdd),
+              lastPracticedAt: firestore.FieldValue.serverTimestamp(),
+            },
+            { merge: true }
+          );
+          return true;
+        });
+      } catch (err) {
+        Alert.alert('Could not save', 'Please check your internet connection and submit again.');
+        return;
+      }
+      if (!granted) {
+        closeModalOnly();
+        Alert.alert('Already completed ✅', 'XP for this challenge was already added.');
+        return;
+      }
+    }
+
     closeModalOnly();
+
+    // Streak: the server counts this challenge for today (first challenge of the day = streak +1)
+    const streakRes = await recordPracticeActivity(type === 'read_record' ? 'read_record' : 'tongue_twisters');
+    if (streakRes?.streak) currentStreak = streakRes.streak;
 
     let sessionTitle = 'Challenge Completed!';
     if (type === 'read_record') sessionTitle = 'Reading Studio Complete!';
-    if (type === 'tongue_twisters') sessionTitle = 'All 3 Twisters Mastered! 🔥';
+    if (type === 'tongue_twisters') sessionTitle = `All ${tongueTwisters.length} Twisters Mastered! 🔥`;
 
     setRewardDetails({
       title: sessionTitle,
@@ -814,14 +1083,6 @@ export default function PracticeScreen({ navigation }: any) {
     setRewardModalVisible(true);
 
     if (currentUser) {
-      try {
-        await firestore().collection('users').doc(currentUser.uid).set({
-          minutesSpokenToday: firestore.FieldValue.increment(minutesToAdd),
-          xp: firestore.FieldValue.increment(xpToAdd),
-          lastPracticedAt: firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
-      } catch (err) {}
-
       if (type === 'read_record') {
         // Speaking score + weekly gain shown on the Home screen
         addSpeakingPoints(currentUser.uid, READ_RECORD_SPEAKING_POINTS);
@@ -844,6 +1105,7 @@ export default function PracticeScreen({ navigation }: any) {
       await AsyncStorage.removeItem(STORAGE_KEY_READ_SECONDS);
     } else if (type === 'tongue_twisters') {
       setTwisterRecordingsMap({});
+      twisterSecondsRef.current = {};
       await AsyncStorage.removeItem(STORAGE_KEY_TWISTER_AUDIO);
     }
   };
@@ -851,10 +1113,11 @@ export default function PracticeScreen({ navigation }: any) {
   const closeModalOnly = () => {
     if (timerRef.current) clearInterval(timerRef.current);
     if (isRecording) {
+      recorderActiveRef.current = false;
       try { AudioRecord.stop(); } catch(e){}
     }
     if (soundRef.current) {
-      try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
+      playTokenRef.current++; try { soundRef.current.stop(); soundRef.current.release(); } catch(e){}
       soundRef.current = null;
     }
     if (ttsSoundRef.current) {
@@ -887,6 +1150,8 @@ export default function PracticeScreen({ navigation }: any) {
   const currentTwisterAudio = twisterRecordingsMap[currentTwisterId] || null;
   const recordedTwisterCount = Object.keys(twisterRecordingsMap).length;
   const allTwistersCompleted = recordedTwisterCount >= tongueTwisters.length;
+  const readDone = userData?.practiceDone?.read_record === readKey;
+  const twistersDone = userData?.practiceDone?.tongue_twisters === twisterKey;
 
   return (
     <View style={[styles.mainContainer, { backgroundColor: colors.bgLight }]}>
@@ -935,6 +1200,20 @@ export default function PracticeScreen({ navigation }: any) {
             </Text>
           </View>
 
+          <TouchableOpacity
+            activeOpacity={0.85}
+            onPress={() => {
+              const s = getEffectiveStreak(userData);
+              Alert.alert(
+                s > 0 ? `${s}-day streak 🔥` : 'No streak yet',
+                s <= 0
+                  ? 'Complete any challenge today (Read & Record, Tongue Twister, Daily Topic or a Community challenge) to start your streak.'
+                  : practicedToday(userData)
+                    ? "Today's challenge is done ✅ Come back tomorrow to keep your streak going."
+                    : 'Complete any challenge before midnight to keep your streak. If you miss a full day, the streak resets to 0.'
+              );
+            }}
+          >
           <Animated.View style={[
             styles.streakBadge, 
             { 
@@ -947,9 +1226,10 @@ export default function PracticeScreen({ navigation }: any) {
           ]}>
             <Flame size={16} color="#F59E0B" />
             <Text style={{ color: '#F59E0B', fontWeight: '900', fontSize: 12.5, marginLeft: 4 }}>
-              {userData?.streak || 1}d Streak
+              {getEffectiveStreak(userData)}d Streak
             </Text>
           </Animated.View>
+          </TouchableOpacity>
         </View>
       </View>
 
@@ -1216,7 +1496,14 @@ export default function PracticeScreen({ navigation }: any) {
             )}
 
             <View style={styles.modalFooterActions}>
-              {isRecording ? (
+              {readDone ? (
+                <View style={{ width: '100%', padding: 14, borderRadius: 16, backgroundColor: 'rgba(16,185,129,0.12)', borderWidth: 1, borderColor: '#10B981' }}>
+                  <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 14, textAlign: 'center' }}>Completed ✅</Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+                    You already earned XP for this passage. A new passage opens when the admin updates it.
+                  </Text>
+                </View>
+              ) : isRecording ? (
                 <View style={styles.recordingActiveContainer}>
                   <View style={styles.redRecordingDot} />
                   <Text style={styles.recordingTimerText}>Listening & Recording... {recordingTime}s</Text>
@@ -1232,8 +1519,13 @@ export default function PracticeScreen({ navigation }: any) {
                       onPress={() => handlePlayAudio(readRecordAudio, 'read_record')}
                     >
                       {isPlayingAudio && activePlayingTarget === 'read_record' ? <Pause size={17} color={primaryColor} /> : <Play size={17} color={primaryColor} />}
-                      <Text style={[styles.audioPlaybackBtnText, { color: colors.textPrimary }]}>
-                        {isPlayingAudio && activePlayingTarget === 'read_record' ? 'Pause Voice' : 'Listen Recording'}
+                      <Text
+                        numberOfLines={1}
+                        adjustsFontSizeToFit
+                        minimumFontScale={0.75}
+                        style={[styles.audioPlaybackBtnText, { color: colors.textPrimary, flexShrink: 1 }]}
+                      >
+                        {isPlayingAudio && activePlayingTarget === 'read_record' ? 'Pause' : 'Listen'}
                       </Text>
                     </TouchableOpacity>
 
@@ -1265,6 +1557,60 @@ export default function PracticeScreen({ navigation }: any) {
                 </TouchableOpacity>
               )}
             </View>
+
+            {!isRecording && (
+              <View style={{ marginTop: 10 }}>
+                <TouchableOpacity
+                  onPress={() => { setShowMyRecs((v) => !v); if (!showMyRecs) loadMyRecordings(); }}
+                  style={{ flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 6, paddingVertical: 8 }}
+                  activeOpacity={0.8}
+                >
+                  <Headphones size={15} color={primaryColor} />
+                  <Text style={{ color: primaryColor, fontWeight: '800', fontSize: 13 }}>
+                    {showMyRecs ? 'Hide my saved recordings' : 'My saved recordings (30 days)'}
+                  </Text>
+                </TouchableOpacity>
+                {showMyRecs && (
+                  <View style={{ maxHeight: 170, borderWidth: 1, borderColor: colors.border, borderRadius: 12, padding: 6 }}>
+                    {loadingRecs ? (
+                      <ActivityIndicator size="small" color={primaryColor} style={{ margin: 10 }} />
+                    ) : myRecordings.length === 0 ? (
+                      <Text style={{ color: colors.textSecondary, textAlign: 'center', fontSize: 12, padding: 10 }}>
+                        No saved recordings yet. Submit a reading to save one.
+                      </Text>
+                    ) : (
+                      <ScrollView nestedScrollEnabled showsVerticalScrollIndicator={false}>
+                        {myRecordings.map((r: any) => {
+                          const tid = `rec_${r.id}`;
+                          const playing = isPlayingAudio && activePlayingTarget === tid;
+                          const when = r.createdAt && typeof r.createdAt.toDate === 'function' ? r.createdAt.toDate().toLocaleDateString() : '';
+                          return (
+                            <TouchableOpacity
+                              key={r.id}
+                              onPress={() => handlePlayAudio(r.audioUrl, tid)}
+                              style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 8, paddingHorizontal: 6, gap: 10 }}
+                              activeOpacity={0.8}
+                            >
+                              {loadingAudioId === tid ? (
+                                <ActivityIndicator size="small" color={primaryColor} />
+                              ) : playing ? <Pause size={17} color={primaryColor} /> : <Play size={17} color={primaryColor} />}
+                              <View style={{ flex: 1 }}>
+                                <Text numberOfLines={1} style={{ color: colors.textPrimary, fontWeight: '700', fontSize: 13 }}>
+                                  {String(r.challengeTitle || 'Read & Record').replace(/^Read & Record:\s*/, '')}
+                                </Text>
+                                <Text style={{ color: colors.textSecondary, fontSize: 11 }}>
+                                  {when}{r.durationSeconds ? `  •  ${r.durationSeconds}s` : ''}
+                                </Text>
+                              </View>
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    )}
+                  </View>
+                )}
+              </View>
+            )}
 
           </TouchableOpacity>
         </TouchableOpacity>
@@ -1455,6 +1801,13 @@ export default function PracticeScreen({ navigation }: any) {
                       <Text style={styles.stopRecordBtnText}>Finish</Text>
                     </TouchableOpacity>
                   </View>
+                ) : twistersDone ? (
+                  <View style={{ width: '100%', padding: 14, borderRadius: 16, backgroundColor: 'rgba(16,185,129,0.12)', borderWidth: 1, borderColor: '#10B981' }}>
+                    <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 14, textAlign: 'center' }}>Completed ✅</Text>
+                    <Text style={{ color: colors.textSecondary, fontSize: 12, textAlign: 'center', marginTop: 4 }}>
+                      You already earned XP for these tongue twisters. New ones open when the admin updates them.
+                    </Text>
+                  </View>
                 ) : (
                   <View style={{ width: '100%', gap: 10 }}>
                     <TouchableOpacity 
@@ -1478,7 +1831,7 @@ export default function PracticeScreen({ navigation }: any) {
                         onPress={() => setActiveTwisterIdx(i => Math.max(i - 1, 0))}
                       >
                         <ChevronLeft size={16} color={colors.textPrimary} />
-                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>‹ Prev</Text>
+                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>Prev</Text>
                       </TouchableOpacity>
 
                       <TouchableOpacity 
@@ -1489,7 +1842,7 @@ export default function PracticeScreen({ navigation }: any) {
                         disabled={activeTwisterIdx + 1 >= tongueTwisters.length}
                         onPress={() => setActiveTwisterIdx(i => Math.min(i + 1, tongueTwisters.length - 1))}
                       >
-                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>Next ›</Text>
+                        <Text style={[styles.navBtnText, { color: colors.textPrimary }]}>Next</Text>
                         <ChevronRight size={16} color={colors.textPrimary} />
                       </TouchableOpacity>
                     </View>
@@ -1500,7 +1853,7 @@ export default function PracticeScreen({ navigation }: any) {
                         styles.primaryActionBtn, 
                         { backgroundColor: allTwistersCompleted ? '#10B981' : (isDarkMode ? '#1E293B' : '#E2E8F0'), borderColor: allTwistersCompleted ? '#10B981' : colors.border, borderWidth: 1 }
                       ]} 
-                      onPress={() => handleCompletePracticeSession('tongue_twisters', 3, 20)}
+                      onPress={() => handleCompletePracticeSession('tongue_twisters', 1, 20)}
                     >
                       {allTwistersCompleted ? (
                         <>
@@ -1685,8 +2038,17 @@ export default function PracticeScreen({ navigation }: any) {
                   Minimal Pairs Lab
                 </Text>
                 <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
-                  Word A (Female Voice 👩) vs Word B (Male Voice 👨)
+                  Listen to both words in a female voice 👩
                 </Text>
+                {isAdmin && (
+                  <TouchableOpacity
+                    style={[styles.adminEditMiniPill, { alignSelf: 'flex-start', marginTop: 6 }]}
+                    onPress={() => { setPairEditIdx(null); setIsPairsAdminVisible(true); }}
+                  >
+                    <Edit3 size={11} color="#8B5CF6" />
+                    <Text style={styles.adminEditMiniPillText}>Admin: Add / Edit Pairs</Text>
+                  </TouchableOpacity>
+                )}
               </View>
               <TouchableOpacity onPress={closeModalOnly} style={styles.modalCloseBtn} hitSlop={{ top: 15, bottom: 15, left: 15, right: 15 }}>
                 <X size={20} color={colors.textSecondary} />
@@ -1715,12 +2077,12 @@ export default function PracticeScreen({ navigation }: any) {
                       
                       <TouchableOpacity 
                         style={[styles.speakerPill, { backgroundColor: speakingWord === pair.wordA ? '#10B98120' : '#EC489918' }]}
-                        onPress={() => handleListenPronunciation(pair.wordA, 'female')}
+                        onPress={() => handleListenPronunciation(pair.wordA)}
                         activeOpacity={0.7}
                       >
                         <Volume2 size={13} color={speakingWord === pair.wordA ? '#10B981' : '#EC4899'} />
                         <Text style={[styles.speakerPillText, { color: speakingWord === pair.wordA ? '#10B981' : '#EC4899' }]}>
-                          {speakingWord === pair.wordA ? 'Speaking...' : 'Female 👩'}
+                          {speakingWord === pair.wordA ? 'Speaking...' : 'Listen 👩'}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -1741,13 +2103,13 @@ export default function PracticeScreen({ navigation }: any) {
                       </TouchableOpacity>
                       
                       <TouchableOpacity 
-                        style={[styles.speakerPill, { backgroundColor: speakingWord === pair.wordB ? '#10B98120' : '#0284C718' }]}
-                        onPress={() => handleListenPronunciation(pair.wordB, 'male')}
+                        style={[styles.speakerPill, { backgroundColor: speakingWord === pair.wordB ? '#10B98120' : '#EC489918' }]}
+                        onPress={() => handleListenPronunciation(pair.wordB)}
                         activeOpacity={0.7}
                       >
-                        <Volume2 size={13} color={speakingWord === pair.wordB ? '#10B981' : '#0284C7'} />
-                        <Text style={[styles.speakerPillText, { color: speakingWord === pair.wordB ? '#10B981' : '#0284C7' }]}>
-                          {speakingWord === pair.wordB ? 'Speaking...' : 'Male 👨'}
+                        <Volume2 size={13} color={speakingWord === pair.wordB ? '#10B981' : '#EC4899'} />
+                        <Text style={[styles.speakerPillText, { color: speakingWord === pair.wordB ? '#10B981' : '#EC4899' }]}>
+                          {speakingWord === pair.wordB ? 'Speaking...' : 'Listen 👩'}
                         </Text>
                       </TouchableOpacity>
                     </View>
@@ -1763,6 +2125,97 @@ export default function PracticeScreen({ navigation }: any) {
       {/* ═══════════════════════════════════════════════════════
           MODAL 4: COMING SOON
       ═══════════════════════════════════════════════════════ */}
+      {/* ADMIN: MINIMAL PAIRS MANAGER */}
+      <Modal visible={isPairsAdminVisible} animationType="fade" transparent={true} onRequestClose={() => setIsPairsAdminVisible(false)}>
+        <TouchableOpacity style={styles.modalBackdrop} activeOpacity={1} onPress={() => setIsPairsAdminVisible(false)}>
+          <TouchableOpacity
+            activeOpacity={1}
+            style={[styles.adminEditCard, { backgroundColor: isDarkMode ? '#131C2E' : '#FFFFFF', borderColor: colors.border, maxHeight: '88%' }]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <View style={styles.adminModalHeader}>
+              <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                <Edit3 size={18} color="#8B5CF6" />
+                <Text style={[styles.adminModalTitle, { color: colors.textPrimary }]}>
+                  {pairEditIdx === null ? 'Admin: Minimal Pairs' : pairEditIdx === -1 ? 'Add New Pair' : 'Edit Pair'}
+                </Text>
+              </View>
+              <TouchableOpacity onPress={() => setIsPairsAdminVisible(false)}>
+                <X size={18} color="#94A3B8" />
+              </TouchableOpacity>
+            </View>
+
+            {pairEditIdx === null ? (
+              <>
+                <TouchableOpacity
+                  style={[styles.adminSaveBtn, { backgroundColor: '#8B5CF6', flexDirection: 'row', justifyContent: 'center', gap: 6, marginBottom: 10 }]}
+                  onPress={() => openPairForm(-1)}
+                >
+                  <Plus size={16} color="#FFFFFF" />
+                  <Text style={styles.adminSaveBtnText}>Add New Pair</Text>
+                </TouchableOpacity>
+                <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 380 }}>
+                  {minimalPairs.map((p: any, i: number) => (
+                    <View key={p.id || i} style={{ flexDirection: 'row', alignItems: 'center', paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: colors.border }}>
+                      <View style={{ flex: 1 }}>
+                        <Text style={{ color: colors.textPrimary, fontWeight: '800', fontSize: 14 }}>{p.wordA} / {p.wordB}</Text>
+                        {!!p.soundRule && <Text style={{ color: colors.textSecondary, fontSize: 11.5, marginTop: 2 }}>{p.soundRule}</Text>}
+                      </View>
+                      <TouchableOpacity onPress={() => openPairForm(i)} style={{ padding: 8 }}>
+                        <Edit3 size={17} color="#8B5CF6" />
+                      </TouchableOpacity>
+                      <TouchableOpacity onPress={() => handleDeletePair(i)} style={{ padding: 8 }} disabled={savingPairs}>
+                        <Trash2 size={17} color="#EF4444" />
+                      </TouchableOpacity>
+                    </View>
+                  ))}
+                  {minimalPairs.length === 0 && (
+                    <Text style={{ color: colors.textSecondary, textAlign: 'center', paddingVertical: 20 }}>No pairs yet. Tap "Add New Pair".</Text>
+                  )}
+                </ScrollView>
+              </>
+            ) : (
+              <ScrollView showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
+                {([
+                  ['wordA', 'Word A', 'e.g. Ship'],
+                  ['ipaA', 'Word A sound (IPA, optional)', 'e.g. /ʃɪp/'],
+                  ['wordB', 'Word B', 'e.g. Sheep'],
+                  ['ipaB', 'Word B sound (IPA, optional)', 'e.g. /ʃiːp/'],
+                  ['soundRule', 'Sound difference', 'e.g. Short /ɪ/ vs Long /iː/'],
+                  ['tip', 'Tip (optional)', 'e.g. Ship is short; Sheep is long.'],
+                ] as any[]).map(([key, label, ph]) => (
+                  <View key={key}>
+                    <Text style={[styles.inputLabel, { color: colors.textSecondary }]}>{label}</Text>
+                    <TextInput
+                      style={[styles.adminInput, { color: colors.textPrimary, borderColor: colors.border, backgroundColor: isDarkMode ? '#0F172A' : '#F8FAFC' }]}
+                      value={(pairForm as any)[key]}
+                      onChangeText={(v) => setPairForm((prev) => ({ ...prev, [key]: v }))}
+                      placeholder={ph}
+                      placeholderTextColor="#64748B"
+                    />
+                  </View>
+                ))}
+                <View style={{ flexDirection: 'row', gap: 10, marginTop: 14 }}>
+                  <TouchableOpacity
+                    style={[styles.adminCancelBtn, { backgroundColor: isDarkMode ? '#334155' : '#E2E8F0' }]}
+                    onPress={() => setPairEditIdx(null)}
+                  >
+                    <Text style={[styles.adminCancelBtnText, { color: colors.textPrimary }]}>Back</Text>
+                  </TouchableOpacity>
+                  <TouchableOpacity
+                    style={[styles.adminSaveBtn, { backgroundColor: '#8B5CF6' }]}
+                    onPress={handleSavePairForm}
+                    disabled={savingPairs}
+                  >
+                    {savingPairs ? <ActivityIndicator size="small" color="#FFFFFF" /> : <Text style={styles.adminSaveBtnText}>Save Pair</Text>}
+                  </TouchableOpacity>
+                </View>
+              </ScrollView>
+            )}
+          </TouchableOpacity>
+        </TouchableOpacity>
+      </Modal>
+
       <Modal visible={activeModal === 'coming_soon'} animationType="fade" transparent={true} onRequestClose={closeModalOnly}>
         <TouchableOpacity 
           style={styles.modalBackdrop} 
@@ -2227,6 +2680,7 @@ const styles = StyleSheet.create({
   stopRecordBtnText: { color: '#FFFFFF', fontWeight: '800', fontSize: 12.5 },
   audioPlaybackBtn: {
     flex: 1,
+    minWidth: 0,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
@@ -2249,7 +2703,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingHorizontal: 14,
+    paddingHorizontal: 10,
     paddingVertical: 12,
     borderRadius: 16,
     borderWidth: 1.5,
