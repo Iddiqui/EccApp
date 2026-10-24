@@ -10,6 +10,8 @@ import {
 } from 'react-native';
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import firestore from '@react-native-firebase/firestore';
+import functions from '@react-native-firebase/functions';
 
 import {
   DAILY_WORD_ZIP,
@@ -44,18 +46,42 @@ const getDistance = (
   );
 };
 
-const getDailyPuzzle = (
-  puzzleIndex: number,
-): WordZipPuzzle => {
-  return DAILY_WORD_ZIP[puzzleIndex];
+// Puzzles added by the admin (Admin Panel > Word Zip) are saved in Firestore: word_zip_puzzles.
+// If there are none (or no internet), the built-in puzzles are used.
+const fetchPuzzles = async (): Promise<WordZipPuzzle[]> => {
+  try {
+    const snap = await firestore().collection('word_zip_puzzles').get();
+    const rows: any[] = [];
+    snap.forEach((d: any) => {
+      const x: any = d.data() || {};
+      if (x.active === false) return;
+      const grid = Array.isArray(x.grid)
+        ? x.grid.map((r: any) => String(r || '').toUpperCase().split(''))
+        : [];
+      if (grid.length !== 4 || grid.some((r: string[]) => r.length !== 4)) return;
+      const words = (Array.isArray(x.words) ? x.words : [])
+        .map((w: any) => ({
+          word: String(w?.word || '').toUpperCase().trim(),
+          meaning: String(w?.meaning || '').trim(),
+        }))
+        .filter((w: any) => w.word.length >= 2);
+      if (words.length === 0) return;
+      rows.push({ id: d.id, order: Number(x.order) || 0, title: x.title || 'Word Zip', theme: x.theme || '', grid, words });
+    });
+    rows.sort((a, b) => a.order - b.order);
+    if (rows.length > 0) return rows as unknown as WordZipPuzzle[];
+  } catch (e) {
+    console.log('Word Zip puzzles load error:', e);
+  }
+  return DAILY_WORD_ZIP;
 };
 
-const getPuzzleIndex = () => {
+const getPuzzleIndex = (count: number) => {
   const dayNumber = Math.floor(
     Date.now() / (24 * 60 * 60 * 1000),
   );
 
-  return dayNumber % DAILY_WORD_ZIP.length;
+  return dayNumber % Math.max(count, 1);
 };
 
 const getCellFromPosition = (
@@ -111,13 +137,18 @@ export default function WordZipGameScreen() {
   const puzzleRef =
     useRef<WordZipPuzzle | null>(null);
 
+  const puzzlesRef =
+    useRef<WordZipPuzzle[]>(DAILY_WORD_ZIP);
+
   useEffect(() => {
     loadDailyGame();
   }, []);
 
   const loadDailyGame = async () => {
     try {
-      const todayIndex = getPuzzleIndex();
+      const list = await fetchPuzzles();
+      puzzlesRef.current = list;
+      const todayIndex = getPuzzleIndex(list.length);
 
       const saved =
         await AsyncStorage.getItem(STORAGE_KEY);
@@ -136,7 +167,7 @@ export default function WordZipGameScreen() {
           data.puzzleIndex === todayIndex
         ) {
           const currentPuzzle =
-            getDailyPuzzle(data.puzzleIndex);
+            list[data.puzzleIndex];
 
           setPuzzle(currentPuzzle);
           puzzleRef.current =
@@ -152,7 +183,7 @@ export default function WordZipGameScreen() {
       }
 
       const newPuzzle =
-        getDailyPuzzle(todayIndex);
+        list[todayIndex];
 
       const newGame: SavedGame = {
         puzzleIndex: todayIndex,
@@ -195,7 +226,7 @@ export default function WordZipGameScreen() {
         ? JSON.parse(saved)
         : {
             puzzleIndex:
-              getPuzzleIndex(),
+              getPuzzleIndex(puzzlesRef.current.length),
             startedAt: Date.now(),
             foundWords: [],
           };
@@ -332,6 +363,11 @@ export default function WordZipGameScreen() {
         setMessage(
           '🎉 Daily puzzle completed!',
         );
+
+        // Counts for the streak and the Weekly goal (the server saves it)
+        functions()
+          .httpsCallable('recordPracticeActivity')({ activity: 'puzzle' })
+          .catch(() => {});
 
         Alert.alert(
           '🎉 Amazing!',

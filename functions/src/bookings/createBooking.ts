@@ -2,28 +2,29 @@ import * as functions from 'firebase-functions';
 import * as admin from 'firebase-admin';
 
 /**
- * createBooking  (PHASE 3: ab Video subscription se chalta hai)
- * -------------------------------------------------------------
- * Student apne Video plan ke teacher ka ek slot book karta hai. Ab har slot
- * ka alag payment nahi hota. Plan kharidte waqt hi paisa de diya gaya hai,
- * isliye yahan:
- *  1. subscriptions/{uid}_video dekha jaata hai: plan active ho, expire na
- *     hua ho, aur remainingSessions > 0 ho.
- *  2. Teacher wahi hona chahiye jo plan kharidte waqt lock hua tha.
- *  3. Ek hi TRANSACTION mein: slot lock hota hai, subscription ka count ek
- *     ghatta hai (remainingSessions -1, usedSessions +1) aur booking seedha
- *     'confirmed' status mein ban jaati hai (price 0, payment screen nahi).
- *
- * Transaction isliye zaroori hai ki 2 students ek saath same slot par tap
- * karein, ya ek student ek saath 2 baar tap kare, to bhi sirf ek hi booking
- * bane aur count sirf ek baar ghate.
- *
- * Demo class is function se nahi, createDemoBooking se chalti hai (alag).
- *
- * Collection name `session_teachers` hi hai (website ka `teachers` alag hai).
+ createBooking (PHASE 3: Now operates via video subscription)
+* -------------------------------------------------------------
+* A student books a slot with the teacher associated with their video plan. 
+* Individual payments for each slot are no longer required; payment is
+* settled at the time of purchasing the plan. Therefore, the process involves:
+*  1. Checking `subscriptions/{uid}_video`: the plan must be active,
+*     not expired, and have `remainingSessions > 0`. 
+*  2. The teacher must be the same one locked in at the time of the plan purchase. 
+*  3. Within a single TRANSACTION: the slot is locked, the subscription count
+*     is updated (`remainingSessions` decreases by 1, `usedSessions` increases by 1),
+*     and the booking is created directly with a 'confirmed' status
+*     (price is 0; no payment screen is displayed). 
+*
+* A transaction is essential to ensure that if two students attempt to book
+* the same slot simultaneously—or if a single student taps twice—only one
+* booking is created and the session count is decremented only once. 
+*
+* Demo classes are handled separately via `createDemoBooking`, not through this function. 
+*
+* The collection name is `session_teachers` (distinct from the `teachers` collection used on the website).
  */
 
-/** Firestore Timestamp / Date / number / ISO string, sab ko milliseconds mein badalta hai. */
+/** Firestore Timestamp / Date / number / ISO string,Converts everything into milliseconds. */
 function toMillis(v: any): number {
   if (!v) return NaN;
   if (typeof v.toMillis === 'function') return v.toMillis();

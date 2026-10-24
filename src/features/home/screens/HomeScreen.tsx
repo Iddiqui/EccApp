@@ -67,6 +67,7 @@ import { getMySubscriptions } from '../../payments/paymentService';
 import type { ProgramAccess } from '../../payments/paymentTypes';
 import type { Booking } from '../../sessions/sessionTypes';
 import { recordPracticeActivity, getEffectiveStreak } from '../../../services/streakService';
+import XpRewardModal from './XpRewardModal';
 
 // Sound module for playback
 let SoundPlayer: any = null;
@@ -79,6 +80,18 @@ try {
 } catch (e) {
   console.log("react-native-sound missing");
 }
+
+// Used to keep a copy of a saved (cloud) recording on the phone, so it plays smoothly
+let BlobUtil: any = null;
+try {
+  BlobUtil = require('react-native-blob-util').default;
+} catch (e) {}
+
+const hashText = (str: string): string => {
+  let h = 5381;
+  for (let i = 0; i < str.length; i++) h = ((h << 5) + h + str.charCodeAt(i)) | 0;
+  return String(Math.abs(h));
+};
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -1147,6 +1160,7 @@ export default function HomeScreen() {
 
   const timerRef = useRef<any>(null);
   const soundInstanceRef = useRef<any>(null);
+  const startingRecordRef = useRef(false);
   const elapsedRef = useRef(0);
   const durationLimitRef = useRef(MAX_CHALLENGE_SECONDS);
 
@@ -1155,6 +1169,14 @@ export default function HomeScreen() {
 
   // Admin Topic Edit State
   const [isAdminEditTopicModal, setIsAdminEditTopicModal] = useState(false);
+  // XP reward popup with the animated coins (same as Read & Record)
+  const [rewardVisible, setRewardVisible] = useState(false);
+  const [rewardInfo, setRewardInfo] = useState({ title: '', subtitle: '', xpEarned: 0, streakCount: 0 });
+  // Playback helpers (a token ignores late callbacks of an older sound, so two voices can never play together)
+  const playTokenRef = useRef(0);
+  const audioLoadingRef = useRef(false);
+  const soundTargetRef = useRef<string | null>(null);
+  const [loadingAudioUrl, setLoadingAudioUrl] = useState<string | null>(null);
   const [adminNewTopicTitle, setAdminNewTopicTitle] = useState('');
   const [adminNewTopicSubtitle, setAdminNewTopicSubtitle] = useState('');
   const [adminSelectedDuration, setAdminSelectedDuration] = useState(60);
@@ -1391,8 +1413,22 @@ export default function HomeScreen() {
     return true;
   };
 
+  // One attempt per topic: the key changes when the admin saves a new topic (title or update time changes)
+  const getTopicKey = () => {
+    const u: any = dailyTopicData?.updatedAt;
+    const ms = u && typeof u.toMillis === 'function' ? u.toMillis() : 0;
+    return `${dailyTopicData?.title || ''}|${ms}`;
+  };
+  const topicDone = !isAdmin && userData?.practiceDone?.daily_topic === getTopicKey();
+
   // 🎙️ START RECORDING
   const handleStartRecording = async () => {
+    if (topicDone) {
+      Alert.alert('Already completed ✅', 'You already completed this challenge. A new topic opens when the admin changes it.');
+      return;
+    }
+    if (startingRecordRef.current) return;
+    startingRecordRef.current = true;
     stopAudioPlayback();
     const hasPermission = await requestAudioPermissions();
     if (!hasPermission) {
@@ -1408,6 +1444,19 @@ export default function HomeScreen() {
       durationLimitRef.current = Math.min(maxLimit, MAX_CHALLENGE_SECONDS);
       setRemainingSeconds(durationLimitRef.current);
 
+      // A new file for every recording (re-using one file name made the new audio mix with the old one = double voice)
+      try {
+        AudioRecord.stop();
+      } catch (e) {}
+      if (AudioRecord && AudioRecord.init) {
+        AudioRecord.init({
+          sampleRate: 16000,
+          channels: 1,
+          bitsPerSample: 16,
+          audioSource: 6,
+          wavFile: `speaking_challenge_${Date.now()}.wav`,
+        });
+      }
       if (AudioRecord && AudioRecord.start) {
         AudioRecord.start();
       }
@@ -1417,6 +1466,8 @@ export default function HomeScreen() {
       startRecordingTimer();
     } catch (e: any) {
       Alert.alert('Recording Error', e.message || 'Unable to start audio recording.');
+    } finally {
+      startingRecordRef.current = false;
     }
   };
 
@@ -1500,30 +1551,67 @@ export default function HomeScreen() {
       await reference.putFile(uploadUri, { contentType: 'audio/wav' });
       const downloadUrl = await reference.getDownloadURL();
 
-      // Save the record and the XP together (two writes in parallel instead of one after another)
-      await Promise.all([
-        firestore().collection('challenge_recordings').add({
-          challengeTitle: dailyTopicData.title,
-          uid: currentUser.uid,
-          studentName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
-          userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
-          userPhoto: currentUser.photoURL || null,
-          audioUrl: downloadUrl,
-          storagePath,
-          durationSeconds: elapsedSeconds || 1,
-          createdAt: firestore.FieldValue.serverTimestamp(),
-          // Recordings are kept for 30 days; a daily Cloud Function deletes older ones (file + record).
-          expiresAt: firestore.Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
-        }),
-        firestore().collection('users').doc(currentUser.uid).set({
-          xp: firestore.FieldValue.increment(dailyTopicData.rewardXP || 10),
-        }, { merge: true }),
-      ]);
-      recordPracticeActivity('daily_topic'); // counts as today's challenge for the streak
+      // XP is added only ONCE per topic, inside a transaction (two quick taps or two phones cannot add it twice)
+      const topicKey = getTopicKey();
+      const xpToAdd = Number(dailyTopicData?.rewardXP) || 10;
+      const userRef = firestore().collection('users').doc(currentUser.uid);
+      let granted = false;
+      if (isAdmin) {
+        granted = true; // admins can test the challenge again and again
+        await userRef.set({ xp: firestore.FieldValue.increment(xpToAdd) }, { merge: true });
+      } else {
+        granted = await firestore().runTransaction(async (tx: any) => {
+          const snap = await tx.get(userRef);
+          const done = (snap.exists ? (snap.data() as any)?.practiceDone : null) || {};
+          if (done.daily_topic === topicKey) return false;
+          tx.set(
+            userRef,
+            {
+              practiceDone: { daily_topic: topicKey },
+              xp: firestore.FieldValue.increment(xpToAdd),
+            },
+            { merge: true }
+          );
+          return true;
+        });
+      }
+
+      if (!granted) {
+        setIsSavingAudio(false);
+        setLocalRecordedAudioUri(null);
+        Alert.alert('Already completed ✅', 'You already completed this challenge. A new topic opens when the admin changes it.');
+        return;
+      }
+
+      await firestore().collection('challenge_recordings').add({
+        challengeTitle: dailyTopicData.title,
+        uid: currentUser.uid,
+        studentName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
+        userName: currentUser.displayName || currentUser.email?.split('@')[0] || 'Learner',
+        userPhoto: currentUser.photoURL || null,
+        audioUrl: downloadUrl,
+        storagePath,
+        durationSeconds: elapsedSeconds || 1,
+        createdAt: firestore.FieldValue.serverTimestamp(),
+        // Recordings are kept for 30 days; a daily Cloud Function deletes older ones (file + record).
+        expiresAt: firestore.Timestamp.fromDate(new Date(Date.now() + 30 * 24 * 60 * 60 * 1000)),
+      });
+
+      // counts as today's challenge for the streak and the Weekly goal
+      const streakRes = await recordPracticeActivity('daily_topic');
 
       setIsSavingAudio(false);
       setLocalRecordedAudioUri(null);
-      Alert.alert('🎉 Sent Successfully!', 'Your speaking challenge response has been saved. You can listen to it again for the next 30 days.');
+
+      // Close the challenge window and show the XP popup with the animated coins
+      setIsChallengeModalVisible(false);
+      setRewardInfo({
+        title: 'Challenge Completed!',
+        subtitle: `You earned +${xpToAdd} XP. Your response is saved for 30 days.`,
+        xpEarned: xpToAdd,
+        streakCount: streakRes?.streak || getEffectiveStreak(userData) || 1,
+      });
+      setRewardVisible(true);
     } catch (e: any) {
       setIsSavingAudio(false);
       console.log('Firebase storage upload error:', e);
@@ -1561,43 +1649,114 @@ export default function HomeScreen() {
   };
 
   // 🔊 AUDIO PLAYBACK (FOR LOCAL DRAFT AND CLOUD AUDIOS)
+  //  - tap on the playing audio  -> pause
+  //  - tap on the paused audio   -> resume
+  //  - tap on another audio      -> the old one is stopped completely, then the new one starts
+  // Only one sound can exist at a time (before, quick taps started two sounds = double / unclear voice).
   const handleTogglePlayAudio = (audioTarget: string) => {
     if (!audioTarget) return;
-
-    if (activePlayingUrl === audioTarget && soundInstanceRef.current) {
-      soundInstanceRef.current.stop();
-      soundInstanceRef.current.release();
-      soundInstanceRef.current = null;
-      setActivePlayingUrl(null);
-      return;
-    }
-
     if (!SoundPlayer) {
-      Alert.alert('Playback Ready', 'Audio playback is supported on this device.');
+      Alert.alert('Cannot play', 'The audio player is not available. Please rebuild the app.');
+      return;
+    }
+    if (audioLoadingRef.current) return; // still loading: ignore extra taps
+
+    // Same audio that is already loaded: pause / resume
+    if (soundInstanceRef.current && soundTargetRef.current === audioTarget) {
+      const snd = soundInstanceRef.current;
+      const tk = playTokenRef.current;
+      if (activePlayingUrl === audioTarget) {
+        try { snd.pause(); } catch (e) {}
+        setActivePlayingUrl(null);
+      } else {
+        setActivePlayingUrl(audioTarget);
+        snd.play((ok: boolean) => {
+          if (tk !== playTokenRef.current) return;
+          setActivePlayingUrl(null);
+          try { snd.release(); } catch (e) {}
+          if (soundInstanceRef.current === snd) {
+            soundInstanceRef.current = null;
+            soundTargetRef.current = null;
+          }
+        });
+      }
       return;
     }
 
+    // A different audio: stop the old one completely first
     stopAudioPlayback();
+    const token = ++playTokenRef.current;
 
-    const isHttp = audioTarget.startsWith('http');
-    const basePath = isHttp ? undefined : '';
+    const isRemote = /^https?:\/\//i.test(audioTarget);
+    const plain = audioTarget.replace(/^file:\/\//, '');
+    const candidates: string[] = isRemote
+      ? [audioTarget]
+      : Platform.OS === 'android'
+        ? [plain, `file://${plain}`]
+        : [plain];
 
-    const sound = new SoundPlayer(audioTarget, basePath, (error: any) => {
-      if (error) {
-        setActivePlayingUrl(null);
-        return;
-      }
-      setActivePlayingUrl(audioTarget);
-      sound.play((success: boolean) => {
-        setActivePlayingUrl(null);
-        sound.release();
+    audioLoadingRef.current = true;
+    setLoadingAudioUrl(audioTarget);
+
+    const tryLoad = (i: number) => {
+      const sound = new SoundPlayer(candidates[i], '', (error: any) => {
+        if (error) {
+          try { sound.release(); } catch (e) {}
+          if (i + 1 < candidates.length) {
+            tryLoad(i + 1);
+            return;
+          }
+          audioLoadingRef.current = false;
+          setLoadingAudioUrl(null);
+          Alert.alert(
+            'Cannot play recording',
+            isRemote ? 'Could not load this recording. Please check your internet and try again.' : 'This recording could not be opened. Please record it again.'
+          );
+          return;
+        }
+        audioLoadingRef.current = false;
+        setLoadingAudioUrl(null);
+        if (token !== playTokenRef.current) {
+          try { sound.release(); } catch (e) {}
+          return;
+        }
+        soundInstanceRef.current = sound;
+        soundTargetRef.current = audioTarget;
+        try { sound.setVolume(1.0); } catch (e) {}
+        setActivePlayingUrl(audioTarget);
+        sound.play(() => {
+          if (token !== playTokenRef.current) return;
+          setActivePlayingUrl(null);
+          try { sound.release(); } catch (e) {}
+          if (soundInstanceRef.current === sound) {
+            soundInstanceRef.current = null;
+            soundTargetRef.current = null;
+          }
+        });
       });
-    });
+    };
 
-    soundInstanceRef.current = sound;
+    // A cloud recording is saved on the phone once and played from there (no stalls, no stream glitches)
+    (async () => {
+      if (isRemote && BlobUtil) {
+        try {
+          const f = `${BlobUtil.fs.dirs.CacheDir}/challenge_${hashText(audioTarget)}.wav`;
+          if (!(await BlobUtil.fs.exists(f))) {
+            await BlobUtil.config({ path: f }).fetch('GET', audioTarget);
+          }
+          candidates.length = 0;
+          candidates.push(f);
+          if (Platform.OS === 'android') candidates.push(`file://${f}`);
+        } catch (e) {
+          console.log('Recording cache failed, streaming instead:', e);
+        }
+      }
+      tryLoad(0);
+    })();
   };
 
   const stopAudioPlayback = () => {
+    playTokenRef.current++;
     if (soundInstanceRef.current) {
       try {
         soundInstanceRef.current.stop();
@@ -1605,6 +1764,9 @@ export default function HomeScreen() {
       } catch (e) {}
       soundInstanceRef.current = null;
     }
+    soundTargetRef.current = null;
+    audioLoadingRef.current = false;
+    setLoadingAudioUrl(null);
     setActivePlayingUrl(null);
   };
 
@@ -2553,9 +2715,21 @@ export default function HomeScreen() {
                 </View>
               )}
 
+              {/* ✅ Already done: one attempt per topic */}
+              {topicDone && !localRecordedAudioUri && (
+                <View style={[styles.audioStatusCard, { backgroundColor: isDarkMode ? '#0F172A' : '#ECFDF5', borderColor: '#10B981', marginTop: 10 }]}>
+                  <Text style={{ color: '#10B981', fontWeight: '800', fontSize: 14, textAlign: 'center' }}>
+                    ✅ Challenge completed
+                  </Text>
+                  <Text style={{ color: colors.textSecondary, fontSize: 12.5, textAlign: 'center', marginTop: 4 }}>
+                    You can attempt this topic only once. A new challenge opens when the admin changes the topic.
+                  </Text>
+                </View>
+              )}
+
               {/* 🎙️ RECORDING CONTROL ACTIONS */}
               <View style={styles.micActionContainer}>
-                {!localRecordedAudioUri && (
+                {!localRecordedAudioUri && !topicDone && (
                   <Animated.View style={{ transform: [{ scale: micPulseAnim }] }}>
                     <TouchableOpacity 
                       style={[
@@ -2601,6 +2775,7 @@ export default function HomeScreen() {
                   </View>
                 )}
 
+                {!topicDone && (
                 <Text style={[styles.micStatusLabel, { color: colors.textSecondary }]}>
                   {isRecordingAudio
                     ? `Speaking (${elapsedSeconds}s / ${dailyTopicData?.durationSec || 60}s) • Tap Complete when done`
@@ -2608,6 +2783,7 @@ export default function HomeScreen() {
                       ? `Audio draft ready (${elapsedSeconds}s) • Tap Send Response to save`
                       : `Max duration: ${dailyTopicData?.durationSec || 60}s (Speak any length)`}
                 </Text>
+                )}
               </View>
 
               {/* 📤 SEND RESPONSE BUTTON */}
@@ -2636,6 +2812,16 @@ export default function HomeScreen() {
           </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
+
+      {/* ─── 🪙 XP REWARD POPUP (animated coins) ─── */}
+      <XpRewardModal
+        visible={rewardVisible}
+        title={rewardInfo.title}
+        subtitle={rewardInfo.subtitle}
+        xpEarned={rewardInfo.xpEarned}
+        streakCount={rewardInfo.streakCount}
+        onComplete={() => setRewardVisible(false)}
+      />
 
       {/* ─── ✏️ ADMIN EDIT TOPIC & DURATION MODAL (OUTSIDE TAP TO CLOSE) ─── */}
       <Modal

@@ -35,6 +35,9 @@ export default function RegisterScreen({ navigation }: any) {
   const keyboardHeightAnim = useRef(new Animated.Value(0)).current;
 
   useEffect(() => {
+    // Android already resizes the window when the keyboard opens. Adding padding as well shrank the form
+    // twice (only a thin strip stayed visible), so the manual padding is for iOS only.
+    if (Platform.OS !== 'ios') return;
     const onKeyboardShow = (e: any) => {
       const duration = e?.duration || 250;
       Animated.timing(keyboardHeightAnim, {

@@ -257,7 +257,31 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
     // sabka call chalta rahega.
     const endingCall = activeCall;
     try {
-      if (
+      const rid = endingCall?.roomId;
+      const uid = auth().currentUser?.uid;
+      if (endingCall?.roomType === 'study' && rid && uid) {
+        // PUBLIC ROOM: the host leaving does NOT remove the room while people are still inside.
+        // The card stays in the list as "Host Left"; the room is removed when the last person leaves.
+        const ref = firestore().collection('voice_rooms').doc(rid);
+        const roomSnap = await ref.get();
+        if (roomSnap.exists) {
+          const roomData: any = roomSnap.data() || {};
+          const isCreator = roomData.createdBy === uid;
+          const partSnap = await ref.collection('participants').get();
+          const now = Date.now();
+          const others = partSnap.docs.filter((d) => {
+            if (d.id === uid) return false;
+            const ls: any = d.data()?.lastSeen;
+            const ms = ls && typeof ls.toMillis === 'function' ? ls.toMillis() : null;
+            return ms === null || now - ms < 70 * 1000;
+          }).length;
+          if (others === 0) {
+            await ref.delete();
+          } else if (isCreator) {
+            await ref.update({ hostLeft: true, hostLeftAt: firestore.FieldValue.serverTimestamp() });
+          }
+        }
+      } else if (
         endingCall?.roomType !== 'one_to_one' &&
         endingCall?.isHost &&
         endingCall?.roomId
@@ -275,7 +299,7 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
         }
       }
     } catch (e) {
-      console.log('CallSessionProvider: error deleting room on end call:', e);
+      console.log('CallSessionProvider: error closing room on end call:', e);
     }
 
     setCanConnect(false);
@@ -350,7 +374,7 @@ export const CallSessionProvider = ({ children }: { children: React.ReactNode })
         >
           <CallServiceStarter title={activeCall.roomTitle || activeCall.otherPersonName} />
           {/* Always-mounted helpers (they keep working while the room is minimized) */}
-          {activeCall.roomType === 'study' && <StudyRoomController isHost={!!activeCall.isHost} userAvatarUrl={activeCall.userAvatarUrl} roomId={activeCall.roomId} />}
+          {activeCall.roomType === 'study' && <StudyRoomController isHost={!!activeCall.isHost} userAvatarUrl={activeCall.userAvatarUrl} roomId={activeCall.roomId} onRoomClosed={endCall} />}
           {(activeCall.roomType === 'class' || !activeCall.roomType) && <ClassRoomController userAvatarUrl={activeCall.userAvatarUrl} />}
           {activeCall.roomType !== 'one_to_one' && <RoomPresenceReporter roomId={activeCall.roomId} />}
 

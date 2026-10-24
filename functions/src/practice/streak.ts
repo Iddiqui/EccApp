@@ -24,6 +24,13 @@ const istDayKey = (ms: number): string => new Date(ms + IST_OFFSET_MS).toISOStri
 
 const ALLOWED_ACTIVITIES = ['read_record', 'tongue_twisters', 'daily_topic', 'quiz', 'puzzle'];
 
+// Monday of the current week (IST) as "YYYY-MM-DD". The Weekly goal restarts every Monday.
+const istWeekKey = (ms: number): string => {
+  const d = new Date(ms + IST_OFFSET_MS);
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return new Date(d.getTime() - sinceMonday * DAY_MS).toISOString().slice(0, 10);
+};
+
 // "YYYY-MM-DD" from a string / Timestamp / Date, or null
 function toDayKey(value: any): string | null {
   if (!value) return null;
@@ -60,6 +67,13 @@ export const recordPracticeActivity = functions.https.onCall(async (request: any
     else if (last === yesterday) next = Math.max(current, 0) + 1; // continues the streak
     else next = 1; // first practice, or a whole day was missed
 
+    // WEEKLY GOAL: every different challenge type finished this week counts once
+    // (Read & Record, Tongue Twisters, Daily topic, Quiz, Puzzle = 5 challenges).
+    const week = istWeekKey(now);
+    const prevWeekly: any = d.weeklyChallenges || {};
+    const doneBefore: string[] = prevWeekly.week === week && Array.isArray(prevWeekly.done) ? prevWeekly.done : [];
+    const doneNow = doneBefore.includes(activity) ? doneBefore : [...doneBefore, activity];
+
     const longest = Math.max(Number(d.longestStreak) || 0, next);
     const best = Math.max(Number(d.bestStreak) || 0, next);
 
@@ -71,10 +85,11 @@ export const recordPracticeActivity = functions.https.onCall(async (request: any
         bestStreak: best,
         lastPracticeDate: today,
         completedLectureDates: admin.firestore.FieldValue.arrayUnion(today),
+        weeklyChallenges: { week, done: doneNow },
       },
       { merge: true },
     );
-    return { streak: next, increased: last !== today, today };
+    return { streak: next, increased: last !== today, today, weeklyDone: doneNow.length };
   });
 });
 

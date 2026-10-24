@@ -63,7 +63,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
               year: 'numeric',
             })}.`
           : '';
-        Alert.alert('Success 🎉', `Aapka subscription activate ho gaya hai!${validTill}`, [
+        Alert.alert('Success 🎉', `Your subscription has been activated!${validTill}`, [
           {
             text: 'OK',
             onPress: () => {
@@ -85,7 +85,7 @@ export default function SubscriptionScreen({ navigation, route }: any) {
         // paymentTaken: paisa kat chuka hai (confirm hone me der ya refund case)
         Alert.alert(
           err?.paymentTaken ? 'Payment Received' : 'Payment Failed',
-          err?.message || 'Kuch galat ho gaya. Please try again.'
+          err?.message || 'Something went wrong. Please try again.'
         );
       }
     } finally {

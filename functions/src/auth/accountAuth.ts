@@ -53,13 +53,15 @@ async function userByEmail(email: string): Promise<admin.auth.UserRecord | null>
 }
 
 async function sendMail(to: string, code: string, purpose: 'verify' | 'reset') {
-  const user = SMTP_USER.value();
-  const pass = SMTP_PASS.value();
+  // Gmail shows an app password as 4 groups with spaces; spaces / line breaks pasted by mistake are removed here
+  const user = String(SMTP_USER.value() || '').trim();
+  const pass = String(SMTP_PASS.value() || '').replace(/\s+/g, '');
   if (!user || !pass) {
     throw new HttpsError('failed-precondition', 'Email service is not set up yet. Please contact support.');
   }
   const transporter = nodemailer.createTransport({ service: 'gmail', auth: { user, pass } });
   const what = purpose === 'reset' ? 'reset your password' : 'verify your email address';
+  try {
   await transporter.sendMail({
     from: `"ECC - English Conversation Club" <${user}>`,
     to,
@@ -72,6 +74,13 @@ async function sendMail(to: string, code: string, purpose: 'verify' | 'reset') {
       <p style="color:#64748B;font-size:13px">It is valid for 10 minutes. If you did not ask for this, you can ignore this email.</p>
     </div>`,
   });
+  } catch (e: any) {
+    console.error('Sending the email code failed:', e?.code, e?.responseCode, e?.message);
+    if (e?.code === 'EAUTH') {
+      throw new HttpsError('failed-precondition', 'The email service login is wrong (SMTP_USER / SMTP_PASS). Please contact support.');
+    }
+    throw new HttpsError('unavailable', 'Could not send the email right now. Please try again in a moment.');
+  }
 }
 
 /** Creates and mails a fresh 6-digit code. Enforces the resend gap and a daily cap. */
@@ -191,31 +200,38 @@ export const completeProfile = onCall(async (request) => {
   const db = admin.firestore();
   const rec = await admin.auth().getUser(uid);
 
-  // Phone: must be verified (linked through Firebase OTP)
-  if (!rec.phoneNumber) throw new HttpsError('failed-precondition', 'Please verify your mobile number first.');
-
-  // Email: either already verified on the account, or just verified by code
-  const sameEmail = (rec.email || '').toLowerCase() === email;
-  let emailOk = sameEmail && rec.emailVerified;
-  if (!emailOk) {
-    const u = (await db.collection('users').doc(uid).get()).data() || {};
-    const at = u.verifiedEmailAt?.toMillis ? u.verifiedEmailAt.toMillis() : 0;
-    emailOk = u.verifiedEmail === email && Date.now() - at < 60 * 60 * 1000;
+  // Either the phone (Firebase SMS OTP) OR the email (code) must be verified. One is enough.
+  const phoneOk = !!rec.phoneNumber;
+  const sameEmail = !!email && (rec.email || '').toLowerCase() === email;
+  let emailOk = false;
+  if (email) {
+    emailOk = sameEmail && rec.emailVerified;
+    if (!emailOk) {
+      const u = (await db.collection('users').doc(uid).get()).data() || {};
+      const at = u.verifiedEmailAt?.toMillis ? u.verifiedEmailAt.toMillis() : 0;
+      emailOk = u.verifiedEmail === email && Date.now() - at < 60 * 60 * 1000;
+    }
   }
-  if (!emailOk) throw new HttpsError('failed-precondition', 'Please verify your email address first.');
-
-  // Password: needed when the account has no password sign-in yet (phone / Google users)
-  const hasPasswordLogin = rec.providerData.some((p) => p.providerId === 'password');
-  const update: admin.auth.UpdateRequest = { displayName: name, emailVerified: true };
-  if (!sameEmail) {
-    const other = await userByEmail(email);
-    if (other && other.uid !== uid) throw new HttpsError('already-exists', 'This email is already registered with another account.');
-    update.email = email;
+  if (!phoneOk && !emailOk) {
+    throw new HttpsError('failed-precondition', 'Please verify your mobile number or your email address first.');
   }
-  if (!hasPasswordLogin || !sameEmail) {
-    update.password = checkPassword(password);
-  } else if (password) {
-    update.password = checkPassword(password);
+
+  const update: admin.auth.UpdateRequest = { displayName: name };
+  let passwordChanged = false;
+  if (emailOk) {
+    const hasPasswordLogin = rec.providerData.some((p) => p.providerId === 'password');
+    update.emailVerified = true;
+    if (!sameEmail) {
+      const other = await userByEmail(email);
+      if (other && other.uid !== uid) throw new HttpsError('already-exists', 'This email is already registered with another account.');
+      update.email = email;
+    }
+    if (!hasPasswordLogin || !sameEmail) {
+      update.password = checkPassword(password);
+    } else if (password) {
+      update.password = checkPassword(password);
+    }
+    passwordChanged = update.password !== undefined;
   }
   try {
     await admin.auth().updateUser(uid, update);
@@ -224,29 +240,27 @@ export const completeProfile = onCall(async (request) => {
     throw e;
   }
 
-  const digits = rec.phoneNumber.replace(/^\+91/, '').replace(/\D/g, '');
-  await db
-    .collection('users')
-    .doc(uid)
-    .set(
-      {
-        uid,
-        fullName: name,
-        email,
-        phone: digits,
-        phoneE164: rec.phoneNumber,
-        age: ageNum,
-        gender: g,
-        emailVerified: true,
-        phoneVerified: true,
-        profileComplete: true,
-        profileCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
-        verifiedEmail: admin.firestore.FieldValue.delete(),
-        verifiedEmailAt: admin.firestore.FieldValue.delete(),
-      },
-      { merge: true }
-    );
-  return { success: true, passwordChanged: update.password !== undefined };
+  const data: Record<string, any> = {
+    uid,
+    fullName: name,
+    age: ageNum,
+    gender: g,
+    profileComplete: true,
+    profileCompletedAt: admin.firestore.FieldValue.serverTimestamp(),
+    verifiedEmail: admin.firestore.FieldValue.delete(),
+    verifiedEmailAt: admin.firestore.FieldValue.delete(),
+  };
+  if (phoneOk) {
+    data.phone = rec.phoneNumber!.replace(/^\+91/, '').replace(/\D/g, '');
+    data.phoneE164 = rec.phoneNumber;
+    data.phoneVerified = true;
+  }
+  if (emailOk) {
+    data.email = email;
+    data.emailVerified = true;
+  }
+  await db.collection('users').doc(uid).set(data, { merge: true });
+  return { success: true, passwordChanged };
 });
 
 // ───────────────────────── 4. Forgot password: email code ─────────────────────────

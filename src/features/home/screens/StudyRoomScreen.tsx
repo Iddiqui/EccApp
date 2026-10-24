@@ -100,28 +100,30 @@ const isHostParticipant = (p: any): boolean => {
 // Messages travel as LiveKit data packets:
 //   SPEAK_REQUEST  student -> host      "I would like to speak"
 //   SPEAK_CANCEL   student -> host      request withdrawn
-//   SPEAK_GRANT    host -> student      allowed to speak for `duration` seconds
+//   SPEAK_GRANT    host -> student      allowed to speak (asked once; no time limit)
+//   RAISE_HAND     anybody -> all       hand raised / lowered (everyone sees it)
 //   SPEAK_DENY     host -> student      request declined
 //   HOST_MUTE      host -> student/ALL  mic switched off
 // ─────────────────────────────────────────────────────────────────────────────
-const SPEAK_DURATIONS = [180, 300, 600]; // 3, 5 and 10 minutes
-const DEFAULT_SPEAK_SECONDS = 600;
-const formatSpeakTime = (sec: number) => `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`;
-const speakLabel = (sec: number) => `${Math.round(sec / 60)} min`;
 
 type SpeakRequest = { senderId: string; senderName: string };
 type StudyProfile = { avatarUrl: string; isHost: boolean };
 type StudyCtl = {
   profiles: Record<string, StudyProfile>;
   requests: SpeakRequest[];
-  timeRemaining: number | null;
+  timeRemaining: number | null; // not used any more (no speaking time limit); kept so old code compiles
   requestPending: boolean;
-  approve: (senderId: string, seconds: number) => void;
+  allowed: boolean; // the host has allowed this user to use the mic (asked only once)
+  hands: Record<string, boolean>; // identity -> hand raised (shared with everybody)
+  myHand: boolean;
+  hostLeft: boolean;
+  setMyHand: (raised: boolean) => void;
+  approve: (senderId: string) => void;
   deny: (senderId: string) => void;
   requestSpeak: () => void;
   stopMyMic: () => void;
   muteParticipant: (identity: string) => void;
-  grantParticipant: (identity: string, seconds: number) => void;
+  grantParticipant: (identity: string) => void;
   muteAll: () => void;
 };
 const noopCtl = () => {};
@@ -130,6 +132,11 @@ const CTL_DEFAULT: StudyCtl = {
   requests: [],
   timeRemaining: null,
   requestPending: false,
+  allowed: false,
+  hands: {},
+  myHand: false,
+  hostLeft: false,
+  setMyHand: noopCtl,
   approve: noopCtl,
   deny: noopCtl,
   requestSpeak: noopCtl,
@@ -159,12 +166,16 @@ const useStudyCtl = (): StudyCtl => {
 const ctlEncoder = new TextEncoder();
 const ctlDecoder = new TextDecoder();
 
-export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?: boolean; userAvatarUrl?: string; roomId?: string }) => {
+export const StudyRoomController = ({ isHost, userAvatarUrl, roomId, onRoomClosed }: { isHost?: boolean; userAvatarUrl?: string; roomId?: string; onRoomClosed?: () => void }) => {
   const room = useRoomContext();
   const connectionState = useConnectionState();
   const { localParticipant, isMicrophoneEnabled: micOn } = useLocalParticipant();
   const timerRef = useRef<any>(null);
-  const allowedRef = useRef(false); // true only while the host has allowed this user to speak
+  const allowedRef = useRef(false); // true once the host has allowed this user to speak (asked only once)
+  const myHandRef = useRef(false);
+  const closedRef = useRef(false);
+  const onClosedRef = useRef<any>(null);
+  onClosedRef.current = onRoomClosed;
   const pendingTimeoutRef = useRef<any>(null);
   const requestsRef = useRef<SpeakRequest[]>([]);
   const lpRef = useRef<any>(null);
@@ -188,8 +199,12 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
     }
   };
 
-  const muteMyself = async () => {
-    allowedRef.current = false;
+  // Switch the own mic off. By default the permission stays (the user can unmute again without asking).
+  const muteMyself = async (revoke?: boolean) => {
+    if (revoke) {
+      allowedRef.current = false;
+      setCtl({ allowed: false });
+    }
     clearTimer();
     setCtl({ timeRemaining: null });
     try {
@@ -197,11 +212,13 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
     } catch (e) {}
   };
 
-  const startSpeaking = async (seconds: number) => {
+  // The host allowed this user. From now on the user can mute / unmute freely, no more requests.
+  const startSpeaking = async () => {
     const lp = lpRef.current;
     if (!lp) return;
     // Mark as allowed BEFORE enabling so the auto-mute guard never fights the grant
     allowedRef.current = true;
+    setCtl({ allowed: true });
     let enabled = false;
     for (let i = 0; i < 3 && !enabled; i++) {
       try {
@@ -212,27 +229,19 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         await new Promise((r) => setTimeout(r, 400));
       }
     }
+    if (pendingTimeoutRef.current) clearTimeout(pendingTimeoutRef.current);
+    setCtl({ requestPending: false });
     if (!enabled) {
-      allowedRef.current = false;
       Alert.alert('Microphone error', 'Could not turn on your microphone. Please check the mic permission and try again.');
       return;
     }
-    if (pendingTimeoutRef.current) clearTimeout(pendingTimeoutRef.current);
-    setCtl({ requestPending: false });
-
-    clearTimer();
-    const endsAt = Date.now() + seconds * 1000;
-    setCtl({ timeRemaining: seconds });
-    Alert.alert('You can speak 🎤', `The host allowed you to speak for ${speakLabel(seconds)}.`);
-    timerRef.current = setInterval(() => {
-      const left = Math.ceil((endsAt - Date.now()) / 1000);
-      if (left <= 0) {
-        muteMyself();
-        Alert.alert('Time is over', 'Your speaking time is finished. Raise your hand to ask again.');
-      } else {
-        setCtl({ timeRemaining: left });
-      }
-    }, 1000);
+    // The hand goes down once the host allowed the mic
+    if (myHandRef.current) {
+      myHandRef.current = false;
+      setCtl({ myHand: false, hands: { ...ctlState.hands, [lp.identity]: false } });
+      send({ type: 'RAISE_HAND', isRaised: false });
+    }
+    Alert.alert('You can speak 🎤', 'The host allowed your microphone. You can now mute and unmute yourself.');
   };
 
   const setRequests = (list: SpeakRequest[]) => {
@@ -243,8 +252,8 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
   // Actions that the screen can call
   useEffect(() => {
     setCtl({
-      approve: (senderId, seconds) => {
-        send({ type: 'SPEAK_GRANT', targetId: senderId, duration: seconds }, senderId);
+      approve: (senderId) => {
+        send({ type: 'SPEAK_GRANT', targetId: senderId }, senderId);
         setRequests(requestsRef.current.filter((r) => r.senderId !== senderId));
       },
       deny: (senderId) => {
@@ -259,11 +268,18 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         Alert.alert('Request sent ✋', 'The host has been asked. You can speak once the host allows it.');
       },
       stopMyMic: () => {
+        // Only switches the mic off; the permission stays
         muteMyself();
         send({ type: 'SPEAK_CANCEL' });
       },
       muteParticipant: (identity) => send({ type: 'HOST_MUTE', targetId: identity }, identity),
-      grantParticipant: (identity, seconds) => send({ type: 'SPEAK_GRANT', targetId: identity, duration: seconds }, identity),
+      grantParticipant: (identity) => send({ type: 'SPEAK_GRANT', targetId: identity }, identity),
+      setMyHand: (raised) => {
+        const me = lpRef.current?.identity;
+        myHandRef.current = raised;
+        setCtl({ myHand: raised, hands: me ? { ...ctlState.hands, [me]: raised } : ctlState.hands });
+        send({ type: 'RAISE_HAND', isRaised: raised });
+      },
       muteAll: () => send({ type: 'HOST_MUTE', targetId: 'ALL' }),
     });
     return () => {
@@ -279,15 +295,39 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
   const hostUidRef = useRef<string | null>(null);
   useEffect(() => {
     if (!roomId) return;
-    firestore()
+    let seen = false;
+    const closeRoom = (msg: string) => {
+      if (closedRef.current) return;
+      closedRef.current = true;
+      Alert.alert('Class ended', msg);
+      try {
+        room?.disconnect();
+      } catch (e) {}
+      if (onClosedRef.current) onClosedRef.current();
+    };
+    const unsub = firestore()
       .collection('voice_rooms')
       .doc(roomId)
-      .get()
-      .then((d) => {
-        hostUidRef.current = (d.data() as any)?.createdBy || null;
-      })
-      .catch(() => {});
-  }, [roomId]);
+      .onSnapshot(
+        (d) => {
+          if (!d) return;
+          if (!d.exists) {
+            // The room was removed (by an admin or because everybody left). Ignore the very first
+            // empty snapshot of a cache that has not loaded yet.
+            if (seen || !d.metadata.fromCache) closeRoom('This class has been closed. You are being taken back to the list.');
+            return;
+          }
+          seen = true;
+          const data: any = d.data() || {};
+          hostUidRef.current = data.createdBy || null;
+          setCtl({ hostLeft: !!data.hostLeft });
+          if (data.endedByAdmin === true) closeRoom('The admin ended this class for everyone.');
+        },
+        () => {}
+      );
+    return () => unsub();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [roomId, room]);
 
   const myIdentity = localParticipant?.identity;
   const connectedNow = String(connectionState).toLowerCase() === 'connected';
@@ -301,6 +341,7 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         uid: auth().currentUser?.uid || '',
         avatarUrl: userAvatarUrl || '',
         isHost: !!isHost,
+        hand: myHandRef.current,
       });
     announce();
     const first = setTimeout(announce, 1500);
@@ -339,7 +380,14 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
             ...ctlState.profiles,
             [sender]: { avatarUrl: typeof data.avatarUrl === 'string' ? data.avatarUrl : '', isHost: claimsHost },
           },
+          ...(typeof data.hand === 'boolean' ? { hands: { ...ctlState.hands, [sender]: data.hand } } : {}),
         });
+        return;
+      }
+
+      if (type === 'RAISE_HAND') {
+        if (!sender) return;
+        setCtl({ hands: { ...ctlState.hands, [sender]: data.isRaised !== false } });
         return;
       }
 
@@ -352,7 +400,7 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         setRequests(requestsRef.current.filter((r) => r.senderId !== sender));
       } else if (type === 'SPEAK_GRANT') {
         if (!fromHost || data.targetId !== me) return;
-        startSpeaking(Number(data.duration) || DEFAULT_SPEAK_SECONDS);
+        startSpeaking();
       } else if (type === 'SPEAK_DENY') {
         if (!fromHost || data.targetId !== me) return;
         if (pendingTimeoutRef.current) clearTimeout(pendingTimeoutRef.current);
@@ -362,12 +410,21 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         if (!fromHost || isHost) return;
         if (data.targetId === me || data.targetId === 'ALL') {
           const wasOn = !!lpRef.current?.isMicrophoneEnabled;
-          muteMyself();
-          if (wasOn) Alert.alert('Muted by host', 'The host switched your microphone off.');
+          // "Mute all" only switches mics off (people may unmute again). Muting one person takes the permission back.
+          muteMyself(data.targetId === me);
+          if (wasOn) {
+            Alert.alert(
+              'Muted by host',
+              data.targetId === me ? 'The host muted you. Ask the host again to speak.' : 'The host muted everyone.'
+            );
+          }
         }
       }
     };
     const onLeft = (p: any) => {
+      if (p?.identity && ctlState.hands[p.identity]) {
+        setCtl({ hands: { ...ctlState.hands, [p.identity]: false } });
+      }
       if (requestsRef.current.some((r) => r.senderId === p?.identity)) {
         setRequests(requestsRef.current.filter((r) => r.senderId !== p?.identity));
       }
@@ -388,6 +445,9 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
     if (!isHost || hostMicInitRef.current) return;
     if (String(connectionState).toLowerCase() !== 'connected') return;
     hostMicInitRef.current = true;
+    if (roomId) {
+      firestore().collection('voice_rooms').doc(roomId).update({ hostLeft: false }).catch(() => {});
+    }
     (async () => {
       // Give the audio engine a moment after connecting (a mic opened too early records silence on some phones)
       await new Promise((r) => setTimeout(r, 2000));
@@ -401,7 +461,7 @@ export const StudyRoomController = ({ isHost, userAvatarUrl, roomId }: { isHost?
         }
       }
     })();
-  }, [connectionState, isHost]);
+  }, [connectionState, isHost, roomId]);
 
   // A student who is not allowed to speak must start muted
   useEffect(() => {
@@ -509,14 +569,13 @@ const StudyParticipantTile = ({
   
   // Chosen avatar or profile picture; with none, the first letter of the name is shown (no default cartoon)
   let avatarUrl = fallbackAvatarUrl || '';
-  let participantHand = isHandRaised;
+  let participantHand = !!ctlForTile.hands[participant?.identity];
   let participantIsHost = false;
 
   try {
     if (participant?.metadata) {
       const meta = JSON.parse(participant.metadata);
       if (typeof meta?.avatarUrl === 'string') avatarUrl = meta.avatarUrl;
-      if (typeof meta?.isHandRaised === 'boolean') participantHand = meta.isHandRaised;
       if (meta?.isHost === true) participantIsHost = true;
     }
   } catch (e) {}
@@ -616,7 +675,6 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
 
   // The host: first request waiting in the queue, or a person the host picked to allow
   const [grantTarget, setGrantTarget] = useState<{ identity: string } | null>(null);
-  const [pickedSeconds, setPickedSeconds] = useState<number>(DEFAULT_SPEAK_SECONDS);
   const waitingRequest = isHost ? ctl.requests[0] : undefined;
 
   // Host first, then everyone else
@@ -631,7 +689,7 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
   const [messages, setMessages] = useState<any[]>([]);
   const [chatInputText, setChatInputText] = useState('');
   const [unreadCount, setUnreadCount] = useState(0);
-  const [isHandRaised, setIsHandRaised] = useState(false);
+  const isHandRaised = ctl.myHand;
 
   // 🚀 Native Smooth Keyboard Animation Driver (Zero Lag)
 
@@ -693,7 +751,6 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         if (!isCancelled && String(connectionState).toLowerCase() === 'connected' && localParticipant) {
           await localParticipant.setMetadata(JSON.stringify({ 
             avatarUrl: userAvatarUrl || '',
-            isHandRaised: isHandRaised,
             isHost: !!isHost,
           }));
         }
@@ -704,7 +761,7 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     return () => {
       isCancelled = true;
     };
-  }, [connectionState, localParticipant, userAvatarUrl, isHandRaised, isHost]);
+  }, [connectionState, localParticipant, userAvatarUrl, isHost]);
 
   // Firestore Realtime Chat
   // The unread badge counts only NEW messages from other people that arrive while the chat is closed.
@@ -771,6 +828,9 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         await localParticipant.setMicrophoneEnabled(!isMicrophoneEnabled);
       } else if (isMicrophoneEnabled) {
         ctl.stopMyMic();
+      } else if (ctl.allowed) {
+        // The host allowed this user before: unmute without asking again
+        await localParticipant.setMicrophoneEnabled(true);
       } else if (ctl.requestPending) {
         Alert.alert('Already requested', 'Your request is with the host. Please wait for the host to allow it.');
       } else {
@@ -786,13 +846,12 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
     if (!participant?.identity) return;
     if (micIsOn) ctl.muteParticipant(participant.identity);
     else {
-      setPickedSeconds(DEFAULT_SPEAK_SECONDS);
       setGrantTarget({ identity: participant.identity });
     }
   };
 
   const toggleHandRaise = () => {
-    setIsHandRaised(prev => !prev);
+    ctl.setMyHand(!ctl.myHand);
   };
 
   // Minimize: the room stays connected (audio keeps playing) and the user goes back to the app.
@@ -834,9 +893,8 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
 
   const handleLeaveCall = async () => {
     try {
-      if (isHost && roomId) {
-        await firestore().collection('voice_rooms').doc(roomId).delete();
-      }
+      // The room record is handled in CallSessionProvider.endCall: when the host leaves and people are still
+      // inside, the room stays open as "Host Left"; it is removed when the last person leaves.
       if (room) {
         await room.disconnect();
       }
@@ -875,7 +933,7 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
             <View style={styles.statusRow}>
               <View style={styles.greenPulseDot} />
               <Text style={styles.participantCount}>
-                {participants.length} Active • Audio HD Live
+                {participants.length} Active • {ctl.hostLeft ? 'Host left' : 'Audio HD Live'}
               </Text>
             </View>
           </View>
@@ -910,7 +968,7 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
               <StudyParticipantTile 
                 participant={item} 
                 fallbackAvatarUrl={item.isLocal ? userAvatarUrl : ''}
-                isHandRaised={item.isLocal ? isHandRaised : false}
+                isHandRaised={false}
                 totalCount={participants.length}
                 viewerIsHost={!!isHost}
                 onHostMicPress={handleHostMicPress}
@@ -923,7 +981,7 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
         {isHost ? (
           <View style={styles.hostStrip}>
             <Text style={styles.hostStripText} numberOfLines={2}>
-              👑 You are the host. Tap a mic icon to mute or allow someone.
+              👑 You are the host. Tap a mic icon on a person to mute or allow them.
               {ctl.requests.length > 0 ? `  ✋ ${ctl.requests.length} waiting` : ''}
             </Text>
             <TouchableOpacity style={styles.muteAllBtn} onPress={() => ctl.muteAll()} activeOpacity={0.8}>
@@ -931,10 +989,10 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
               <Text style={styles.muteAllText}>Mute all</Text>
             </TouchableOpacity>
           </View>
-        ) : ctl.timeRemaining !== null ? (
+        ) : ctl.allowed ? (
           <View style={[styles.hostStrip, { borderColor: 'rgba(16,185,129,0.5)' }]}>
             <Text style={[styles.hostStripText, { color: '#34D399' }]}>
-              🎤 You can speak. Time left: {formatSpeakTime(ctl.timeRemaining)}
+              🎤 The host allowed your mic. Tap the mic button to mute or unmute.
             </Text>
           </View>
         ) : ctl.requestPending ? (
@@ -1001,22 +1059,8 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 <Text style={{ fontWeight: '800', color: '#FFF' }}>
                   {waitingRequest ? waitingRequest.senderName : grantTarget?.identity}
                 </Text>
-                {waitingRequest ? ' wants to turn on the mic.' : ' will be able to speak for the time you choose.'}
+                {waitingRequest ? ' wants to turn on the mic.' : ' will be allowed to use the mic (asked only once).'}
               </Text>
-
-              <Text style={styles.approvalLabel}>Speaking time</Text>
-              <View style={styles.timeRow}>
-                {SPEAK_DURATIONS.map((d) => (
-                  <TouchableOpacity
-                    key={d}
-                    style={[styles.timeChip, pickedSeconds === d && styles.timeChipSelected]}
-                    onPress={() => setPickedSeconds(d)}
-                    activeOpacity={0.8}
-                  >
-                    <Text style={[styles.timeChipText, pickedSeconds === d && styles.timeChipTextSelected]}>{speakLabel(d)}</Text>
-                  </TouchableOpacity>
-                ))}
-              </View>
 
               <View style={styles.approvalActions}>
                 <TouchableOpacity
@@ -1032,9 +1076,9 @@ export const StudyRoomView = ({ safeExit, onMinimize, roomTitle, isHost, roomId,
                 <TouchableOpacity
                   style={[styles.approvalBtn, { backgroundColor: '#10B981' }]}
                   onPress={() => {
-                    if (waitingRequest) ctl.approve(waitingRequest.senderId, pickedSeconds);
+                    if (waitingRequest) ctl.approve(waitingRequest.senderId);
                     else if (grantTarget) {
-                      ctl.grantParticipant(grantTarget.identity, pickedSeconds);
+                      ctl.grantParticipant(grantTarget.identity);
                       setGrantTarget(null);
                     }
                   }}

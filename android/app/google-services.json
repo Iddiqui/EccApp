@@ -22,6 +22,30 @@
           }
         },
         {
+          "client_id": "297316222035-elh30gglbng1hq99bv9l31mj27b9j0k4.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.eccapp",
+            "certificate_hash": "b164cdd1491eaa38f9d62862b8a27944156c2fbd"
+          }
+        },
+        {
+          "client_id": "297316222035-k2jqjb1hr8g02d0bml4j8d0ibhfnn45f.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.eccapp",
+            "certificate_hash": "a1e62e636b775ac1e9e19b56c15a86bb904cb1ed"
+          }
+        },
+        {
+          "client_id": "297316222035-nkhqffdi3b70ds334rch1a1c9c8gjorp.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.eccapp",
+            "certificate_hash": "f0bca0975e8de0dd4db59d35ce2010bf4ce12c43"
+          }
+        },
+        {
           "client_id": "297316222035-ohu8hnc4jesdbolgrv9v1k1sk46nocc5.apps.googleusercontent.com",
           "client_type": 1,
           "android_info": {

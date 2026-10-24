@@ -110,6 +110,20 @@ const getWeekKey = (): string => {
   return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
+// Weekly goal = these challenges, each finished once during the week (Monday to Sunday, IST)
+const WEEKLY_CHALLENGES = [
+  { key: 'daily_topic', label: 'Daily Topic' },
+  { key: 'read_record', label: 'Read & Record' },
+  { key: 'tongue_twisters', label: 'Tongue Twisters' },
+  { key: 'quiz', label: 'Quiz' },
+  { key: 'puzzle', label: 'Word Zip' },
+];
+const getIstWeekKey = (): string => {
+  const d = new Date(Date.now() + 5.5 * 60 * 60 * 1000);
+  const sinceMonday = (d.getUTCDay() + 6) % 7;
+  return new Date(d.getTime() - sinceMonday * 24 * 60 * 60 * 1000).toISOString().slice(0, 10);
+};
+
 // ─── ADMIN EMAILS ───
 const KNOWN_ADMIN_EMAILS = [
   'jitendrakumar2k4@gmail.com',
@@ -1140,11 +1154,15 @@ export default function PracticeScreen({ navigation }: any) {
     );
   }
 
-  const spokenMinutes = userData?.minutesSpokenToday ?? 0;
-  const targetGoalMinutes = userData?.dailyGoalMinutes ?? 20;
-  const structuralPercentage = targetGoalMinutes > 0 
-    ? Math.min(Math.round((spokenMinutes / targetGoalMinutes) * 100), 100) 
-    : 0;
+  // WEEKLY GOAL: finish every challenge once this week. The server (recordPracticeActivity) saves
+  // users/{uid}.weeklyChallenges = { week: Monday (IST), done: [...] }; it restarts every Monday.
+  const weeklyDoneList: string[] = userData?.weeklyChallenges?.week === getIstWeekKey() && Array.isArray(userData?.weeklyChallenges?.done)
+    ? userData.weeklyChallenges.done
+    : [];
+  const spokenMinutes = WEEKLY_CHALLENGES.filter((c) => weeklyDoneList.includes(c.key)).length;
+  const targetGoalMinutes = WEEKLY_CHALLENGES.length;
+  const weeklyLeftNames = WEEKLY_CHALLENGES.filter((c) => !weeklyDoneList.includes(c.key)).map((c) => c.label);
+  const structuralPercentage = Math.min(Math.round((spokenMinutes / targetGoalMinutes) * 100), 100);
 
   const currentTwisterId = tongueTwisters[activeTwisterIdx]?.id || `${activeTwisterIdx}`;
   const currentTwisterAudio = twisterRecordingsMap[currentTwisterId] || null;
@@ -1302,7 +1320,10 @@ export default function PracticeScreen({ navigation }: any) {
                 <Text style={[styles.goalStatsSub, { color: colors.textSecondary }]}>
                   <Text style={[styles.boldStatHighlight, { color: colors.textPrimary }]}>
                     {spokenMinutes} / {targetGoalMinutes}
-                  </Text> {t?.practice?.spokenToday || 'of 20 minutes spoken today'}
+                  </Text> challenges completed this week
+                </Text>
+                <Text style={{ fontSize: 11, marginTop: 2, color: colors.textSecondary }} numberOfLines={1}>
+                  {weeklyLeftNames.length === 0 ? '🎉 All challenges done this week!' : `Left: ${weeklyLeftNames.join(', ')}`}
                 </Text>
               </View>
 

@@ -31,10 +31,15 @@ export default function CompleteProfileScreen() {
   const [phoneBusy, setPhoneBusy] = useState(false);
   const phoneTimer = useCountdown(30);
 
+  // Which way the user verifies with (mobile OTP or email code). Only the chosen box is shown.
+  const [method, setMethod] = useState<'phone' | 'email'>('phone');
+
   // ── Email ──
   const hasPasswordLogin = !!current?.providerData?.some((p) => p?.providerId === 'password');
   const [email, setEmail] = useState(current?.email || '');
-  const [emailVerified, setEmailVerified] = useState(!!current?.email && !!current?.emailVerified);
+  // Always starts as NOT verified: the user must enter the code that is mailed to the address (even when the
+  // address came with a Google login). So the "Email code" option really sends a code.
+  const [emailVerified, setEmailVerified] = useState(false);
   const [emailSent, setEmailSent] = useState(false);
   const [emailCode, setEmailCode] = useState('');
   const [emailBusy, setEmailBusy] = useState(false);
@@ -60,7 +65,8 @@ export default function CompleteProfileScreen() {
   }, []);
 
   const emailNorm = email.trim().toLowerCase();
-  const needPassword = !hasPasswordLogin || emailNorm !== (current?.email || '').toLowerCase();
+  // A password is only needed when the user verifies with the email.
+  const needPassword = method === 'email' && emailVerified && (!hasPasswordLogin || emailNorm !== (current?.email || '').toLowerCase());
 
   // ───────── mobile OTP (link the number to this account) ─────────
   // The native Firebase SDK cannot use linkWithPhoneNumber(). The supported way is:
@@ -187,8 +193,13 @@ export default function CompleteProfileScreen() {
     if (fullName.trim().length < 2) return Alert.alert('Missing Name', 'Please enter your full name.');
     if (!ageNum || ageNum < 10 || ageNum > 100) return Alert.alert('Invalid Age', 'Please enter a valid age (10 to 100).');
     if (!gender) return Alert.alert('Missing Gender', 'Please choose your gender.');
-    if (!phoneVerified) return Alert.alert('Verify Mobile', 'Please verify your mobile number with the OTP.');
-    if (!emailVerified) return Alert.alert('Verify Email', 'Please verify your email address with the code.');
+    // Mobile OTP and email code are alternatives: the chosen one must be verified.
+    if (method === 'phone' && !phoneVerified) {
+      return Alert.alert('Verify Mobile', 'Please send the OTP to your mobile number and verify it.');
+    }
+    if (method === 'email' && !emailVerified) {
+      return Alert.alert('Verify Email', 'Please send the code to your email address and verify it.');
+    }
     if (needPassword) {
       if (password.length < 6) return Alert.alert('Weak Password', 'Password should be at least 6 characters long.');
       if (password !== confirm) return Alert.alert('Password Mismatch', 'Password and Confirm Password do not match.');
@@ -200,7 +211,7 @@ export default function CompleteProfileScreen() {
         fullName: fullName.trim(),
         age: ageNum,
         gender,
-        email: emailNorm,
+        email: method === 'email' && emailVerified ? emailNorm : undefined,
         password: needPassword ? password : undefined,
       });
       savedPassword.current = needPassword ? password : '';
@@ -262,79 +273,113 @@ export default function CompleteProfileScreen() {
         })}
       </View>
 
-      {/* Mobile number */}
-      <Label>Mobile number</Label>
-      {phoneVerified ? (
-        <Field value={phoneE164.replace(/^\+91/, '')} prefix="+91" locked badge="✓ Verified" editable={false} />
-      ) : !phoneVid ? (
-        <View style={st.row}>
-          <View style={{ flex: 1 }}>
-            <Field
-              prefix="+91"
-              placeholder="10-digit mobile number"
-              value={phone}
-              onChangeText={(t) => setPhone(t.replace(/\D/g, '').slice(0, 10))}
-              keyboardType="phone-pad"
-              editable={!phoneBusy && !busy}
-            />
-          </View>
-          <View style={{ marginBottom: 12 }}>
-            <SmallButton title="Send OTP" onPress={sendPhoneOtp} loading={phoneBusy} disabled={busy} />
-          </View>
-        </View>
-      ) : (
-        <>
-          <Text style={st.hint}>Code sent to +91 {phone}</Text>
-          <View style={st.row}>
-            <View style={{ flex: 1 }}>
-              <OtpField value={phoneCode} onChangeText={setPhoneCode} editable={!phoneBusy} />
-            </View>
-            <View style={{ marginBottom: 12 }}>
-              <SmallButton title="Verify" onPress={confirmPhoneOtp} loading={phoneBusy} disabled={phoneCode.length !== 6} />
-            </View>
-          </View>
-          <View style={st.linksRow}>
-            <LinkText title={phoneTimer.left > 0 ? `Resend in ${phoneTimer.left}s` : 'Resend OTP'} onPress={sendPhoneOtp} disabled={phoneTimer.left > 0 || phoneBusy} />
-            <LinkText title="Change number" onPress={() => setPhoneVid('')} disabled={phoneBusy} />
-          </View>
-        </>
-      )}
+      {/* Choose how to verify: mobile OTP or email code (one is enough, the other is optional) */}
+      <Label>Verify your account with</Label>
+      <View style={st.genderRow}>
+        <TouchableOpacity style={[st.chip, method === 'phone' && st.chipOn]} onPress={() => setMethod('phone')} disabled={busy} activeOpacity={0.8}>
+          <Text style={[st.chipText, method === 'phone' && st.chipTextOn]}>Mobile OTP</Text>
+        </TouchableOpacity>
+        <TouchableOpacity style={[st.chip, method === 'email' && st.chipOn]} onPress={() => setMethod('email')} disabled={busy} activeOpacity={0.8}>
+          <Text style={[st.chipText, method === 'email' && st.chipTextOn]}>Email code</Text>
+        </TouchableOpacity>
+      </View>
+      <Text style={st.hint}>
+        {method === 'phone'
+          ? 'We will send an OTP on SMS to your mobile number.'
+          : 'We will send a 6-digit code to your email address.'}
+      </Text>
 
-      {/* Email */}
-      <Label>Email address</Label>
-      {emailVerified ? (
-        <Field value={email} locked badge="✓ Verified" editable={false} />
-      ) : !emailSent ? (
-        <View style={st.row}>
-          <View style={{ flex: 1 }}>
-            <Field
-              placeholder="you@example.com"
-              value={email}
-              onChangeText={onEmailChange}
-              keyboardType="email-address"
-              autoCapitalize="none"
-              editable={!emailBusy && !busy}
-            />
-          </View>
-          <View style={{ marginBottom: 12 }}>
-            <SmallButton title="Send Code" onPress={sendEmailCode} loading={emailBusy} disabled={busy} />
-          </View>
-        </View>
+      {method === 'phone' ? (
+        <>
+          {/* Mobile number */}
+          <Label>Mobile number (OTP on SMS)</Label>
+          {phoneVerified ? (
+            <Field value={phoneE164.replace(/^\+91/, '')} prefix="+91" locked badge="✓ Verified" editable={false} />
+          ) : !phoneVid ? (
+            <View style={st.row}>
+              <View style={{ flex: 1 }}>
+                <Field
+                  prefix="+91"
+                  placeholder="10-digit mobile number"
+                  value={phone}
+                  onChangeText={(t) => setPhone(t.replace(/\D/g, '').slice(0, 10))}
+                  keyboardType="phone-pad"
+                  editable={!phoneBusy && !busy}
+                />
+              </View>
+              <View style={{ marginBottom: 12 }}>
+                <SmallButton title="Send OTP" onPress={sendPhoneOtp} loading={phoneBusy} disabled={busy} />
+              </View>
+            </View>
+          ) : (
+            <>
+              <Text style={st.hint}>Code sent to +91 {phone}</Text>
+              <View style={st.row}>
+                <View style={{ flex: 1 }}>
+                  <OtpField value={phoneCode} onChangeText={setPhoneCode} editable={!phoneBusy} />
+                </View>
+                <View style={{ marginBottom: 12 }}>
+                  <SmallButton title="Verify" onPress={confirmPhoneOtp} loading={phoneBusy} disabled={phoneCode.length !== 6} />
+                </View>
+              </View>
+              <View style={st.linksRow}>
+                <LinkText title={phoneTimer.left > 0 ? `Resend in ${phoneTimer.left}s` : 'Resend OTP'} onPress={sendPhoneOtp} disabled={phoneTimer.left > 0 || phoneBusy} />
+                <LinkText title="Change number" onPress={() => setPhoneVid('')} disabled={phoneBusy} />
+              </View>
+            </>
+          )}
+        </>
       ) : (
         <>
-          <Text style={st.hint}>Code sent to {emailNorm}. Check your inbox (and spam).</Text>
-          <View style={st.row}>
-            <View style={{ flex: 1 }}>
-              <OtpField value={emailCode} onChangeText={setEmailCode} editable={!emailBusy} />
+          {/* Email */}
+          <Label>Email address (code on email)</Label>
+          {emailVerified ? (
+            <>
+              <Field value={email} locked badge="✓ Verified" editable={false} />
+              <LinkText
+                title="Use a different email"
+                onPress={() => {
+                  setEmail('');
+                  setEmailVerified(false);
+                  setEmailSent(false);
+                  setEmailCode('');
+                }}
+                disabled={busy}
+              />
+            </>
+          ) : !emailSent ? (
+            <View style={st.row}>
+              <View style={{ flex: 1 }}>
+                <Field
+                  placeholder="you@example.com"
+                  value={email}
+                  onChangeText={onEmailChange}
+                  keyboardType="email-address"
+                  autoCapitalize="none"
+                  editable={!emailBusy && !busy}
+                />
+              </View>
+              <View style={{ marginBottom: 12 }}>
+                <SmallButton title="Send Code" onPress={sendEmailCode} loading={emailBusy} disabled={busy} />
+              </View>
             </View>
-            <View style={{ marginBottom: 12 }}>
-              <SmallButton title="Verify" onPress={confirmEmailCode} loading={emailBusy} disabled={emailCode.length !== 6} />
-            </View>
-          </View>
-          <View style={st.linksRow}>
-            <LinkText title={emailTimer.left > 0 ? `Resend in ${emailTimer.left}s` : 'Resend code'} onPress={sendEmailCode} disabled={emailTimer.left > 0 || emailBusy} />
-            <LinkText title="Change email" onPress={() => setEmailSent(false)} disabled={emailBusy} />
-          </View>
+          ) : (
+            <>
+              <Text style={st.hint}>Code sent to {emailNorm}. Check your inbox (and spam).</Text>
+              <View style={st.row}>
+                <View style={{ flex: 1 }}>
+                  <OtpField value={emailCode} onChangeText={setEmailCode} editable={!emailBusy} />
+                </View>
+                <View style={{ marginBottom: 12 }}>
+                  <SmallButton title="Verify" onPress={confirmEmailCode} loading={emailBusy} disabled={emailCode.length !== 6} />
+                </View>
+              </View>
+              <View style={st.linksRow}>
+                <LinkText title={emailTimer.left > 0 ? `Resend in ${emailTimer.left}s` : 'Resend code'} onPress={sendEmailCode} disabled={emailTimer.left > 0 || emailBusy} />
+                <LinkText title="Change email" onPress={() => setEmailSent(false)} disabled={emailBusy} />
+              </View>
+            </>
+          )}
         </>
       )}
 

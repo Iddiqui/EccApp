@@ -86,6 +86,7 @@ interface VoiceRoom {
   totalParticipants?: number;
   livekitRoomId: string;
   createdBy: string;
+  hostLeft?: boolean;
   type?: 'public' | 'official';
   maxLimit?: number;
   createdAt?: any;
@@ -496,6 +497,8 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
     return () => unsubs.forEach(u => u());
   }, [roomIdsKey, currentUser]);
 
+  const roomsRef = useRef<VoiceRoom[]>([]);
+  roomsRef.current = rooms;
   // Recount every 20 seconds so people who closed the app drop out
   useEffect(() => {
     const recount = () => {
@@ -505,6 +508,11 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
         next[id] = Object.values(presenceDocsRef.current[id]).filter(
           ms => ms === null || now - (ms as number) < 70 * 1000
         ).length;
+        // A "Host Left" room with nobody inside any more is removed
+        const r = roomsRef.current.find(x => x.id === id);
+        if (r && r.hostLeft && next[id] === 0) {
+          firestore().collection('voice_rooms').doc(id).delete().catch(() => {});
+        }
       });
       setLiveCounts(next);
     };
@@ -774,7 +782,7 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                 <View
                   style={[
                     styles.liveBadgeGlow,
-                    { backgroundColor: isFull ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
+                    { backgroundColor: item.hostLeft ? 'rgba(245, 158, 11, 0.15)' : isFull ? 'rgba(239, 68, 68, 0.12)' : 'rgba(16, 185, 129, 0.12)' },
                   ]}
                 >
                   <Animated.View
@@ -790,10 +798,10 @@ export default function VoiceRoomScreen({ navigation, route }: any) {
                   <Text
                     style={[
                       styles.liveBadgeText,
-                      { color: isFull ? '#EF4444' : '#10B981' },
+                      { color: item.hostLeft ? '#F59E0B' : isFull ? '#EF4444' : '#10B981' },
                     ]}
                   >
-                    {isFull ? 'FULL' : (currentLang === 'hi' ? 'लाइव' : 'LIVE')}
+                    {item.hostLeft ? 'ROOM ACTIVE • HOST LEFT' : isFull ? 'FULL' : (currentLang === 'hi' ? 'लाइव' : 'LIVE')}
                   </Text>
                 </View>
 

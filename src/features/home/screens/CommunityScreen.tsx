@@ -179,7 +179,7 @@ const DEFAULT_QUIZ_CHALLENGES = [
   }
 ];
 
-const WORD_ZIP_PUZZLES = [
+const DEFAULT_WORD_ZIP_PUZZLES = [
   {
     id: 'zip_puz_1',
     title: 'English Fluency & Speech',
@@ -809,6 +809,32 @@ export default function CommunityScreen({ navigation, route }: any) {
   const [completedZipWords, setCompletedZipWords] = useState<{ word: string; meaning: string }[]>([]);
   const [tapValidationStatus, setTapValidationStatus] = useState<'idle' | 'success' | 'wrong'>('idle');
   const [zipConfetti, setZipConfetti] = useState(false);
+  // Puzzles managed by the admin (Admin Panel > Word Zip), saved in word_zip_puzzles. The built-in ones are the fallback.
+  const [zipPuzzles, setZipPuzzles] = useState<any[]>(DEFAULT_WORD_ZIP_PUZZLES);
+  useEffect(() => {
+    const unsub = firestore()
+      .collection('word_zip_puzzles')
+      .onSnapshot(
+        (snap: any) => {
+          const list: any[] = [];
+          snap?.forEach((d: any) => {
+            const x: any = d.data() || {};
+            if (x.active === false) return;
+            const rows = Array.isArray(x.grid) ? x.grid.map((r: any) => String(r || '').toUpperCase().split('')) : [];
+            if (rows.length !== 4 || rows.some((r: string[]) => r.length !== 4)) return;
+            const words = (Array.isArray(x.words) ? x.words : [])
+              .map((w: any) => ({ word: String(w?.word || '').toUpperCase().trim(), meaning: String(w?.meaning || '').trim() }))
+              .filter((w: any) => w.word.length >= 2);
+            if (words.length === 0) return;
+            list.push({ id: d.id, title: x.title || 'Word Zip', theme: x.theme || x.title || 'Word Zip', grid: rows, words, order: Number(x.order) || 0 });
+          });
+          list.sort((a, b) => a.order - b.order);
+          setZipPuzzles(list.length > 0 ? list : DEFAULT_WORD_ZIP_PUZZLES);
+        },
+        () => {}
+      );
+    return () => unsub();
+  }, []);
 
   const [isResultsModalVisible, setIsResultsModalVisible] = useState(false);
   const [puzzlePlayedUsers, setPuzzlePlayedUsers] = useState<any[]>([]);
@@ -1502,7 +1528,7 @@ export default function CommunityScreen({ navigation, route }: any) {
     if (selectedTappedCells.length < 2) return;
 
     const constructedWord = selectedTappedCells.map(item => item.char).join('');
-    const puzzle = WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length];
+    const puzzle = zipPuzzles[activeZipIndex % zipPuzzles.length];
     const matchedItem = puzzle.words.find(w => w.word === constructedWord);
     const alreadyFound = completedZipWords.some(w => w.word === constructedWord);
 
@@ -1547,7 +1573,7 @@ export default function CommunityScreen({ navigation, route }: any) {
   };
 
   const handleShowHint = () => {
-    const puzzle = WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length];
+    const puzzle = zipPuzzles[activeZipIndex % zipPuzzles.length];
     const unfound = puzzle.words.find(w => !completedZipWords.some(c => c.word === w.word));
     if (unfound) {
       Alert.alert("💡 Word Hint", `Search for "${unfound.word.charAt(0)}..." (${unfound.word.length} letters)\nMeaning: ${unfound.meaning}`);
@@ -3163,7 +3189,7 @@ export default function CommunityScreen({ navigation, route }: any) {
           <ScrollView contentContainerStyle={{ padding: 16, alignItems: 'center' }}>
             <View style={{ alignItems: 'center', marginVertical: 8 }}>
               <Text style={{ fontSize: 18, fontWeight: '900', color: colors.textPrimary, textAlign: 'center' }}>
-                {WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length].theme}
+                {zipPuzzles[activeZipIndex % zipPuzzles.length].theme}
               </Text>
               <Text style={{ fontSize: 12, color: colors.textSecondary, marginTop: 2 }}>
                 Tap letters on the grid to build words, then tap Check!
@@ -3204,9 +3230,9 @@ export default function CommunityScreen({ navigation, route }: any) {
             </View>
 
             <View style={[styles.zipBoardFrame, { backgroundColor: colors.bgCard, borderColor: colors.border }]}>
-              {WORD_ZIP_PUZZLES[activeZipIndex % WORD_ZIP_PUZZLES.length].grid.map((rowArr, rIdx) => (
+              {zipPuzzles[activeZipIndex % zipPuzzles.length].grid.map((rowArr: string[], rIdx: number) => (
                 <View key={`row_${rIdx}`} style={styles.zipBoardRow}>
-                  {rowArr.map((char, cIdx) => {
+                  {rowArr.map((char: string, cIdx: number) => {
                     const tappedOrderIndex = selectedTappedCells.findIndex(item => item.r === rIdx && item.c === cIdx);
                     const isSelected = tappedOrderIndex !== -1;
                     const isLocked = completedZipCells.some(item => item.r === rIdx && item.c === cIdx);
@@ -3283,7 +3309,7 @@ export default function CommunityScreen({ navigation, route }: any) {
 
               <TouchableOpacity 
                 style={[styles.zipControlBtn, { borderColor: primaryColor, backgroundColor: primaryColor + '15' }]} 
-                onPress={() => openWordZipScreen((activeZipIndex + 1) % WORD_ZIP_PUZZLES.length)}
+                onPress={() => openWordZipScreen((activeZipIndex + 1) % zipPuzzles.length)}
               >
                 <Shuffle size={16} color={primaryColor} style={{ marginRight: 6 }} />
                 <Text style={[styles.zipControlBtnText, { color: primaryColor }]}>Next Level</Text>

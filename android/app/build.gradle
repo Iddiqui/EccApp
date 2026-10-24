@@ -23,17 +23,17 @@ android {
         applicationId "com.eccapp"
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
-        versionCode 1
-        versionName "1.0"
+        versionCode 2
+        versionName "1.0.1"
     }
 
-    // 🚀 FIX FOR LINT VITAL ANALYZE RELEASE ERROR
+    // Fix for lint vital analyze release error
     lintOptions {
         checkReleaseBuilds false
         abortOnError false
     }
 
-    // 🚀 EXACT FIX: FORCED JAVA 17 & KOTLIN 17 COMPATIBILITY
+    // Java 17 and Kotlin 17 compatibility
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_17
         targetCompatibility JavaVersion.VERSION_17
@@ -50,6 +50,14 @@ android {
             keyAlias 'androiddebugkey'
             keyPassword 'android'
         }
+        release {
+            if (project.hasProperty('ECC_UPLOAD_STORE_PASSWORD')) {
+                storeFile file('ecc-upload.keystore')
+                storePassword ECC_UPLOAD_STORE_PASSWORD
+                keyAlias 'ecc-upload'
+                keyPassword ECC_UPLOAD_KEY_PASSWORD
+            }
+        }
     }
 
     buildTypes {
@@ -57,7 +65,7 @@ android {
             signingConfig signingConfigs.debug
         }
         release {
-            signingConfig signingConfigs.debug
+            signingConfig signingConfigs.release
             minifyEnabled enableProguardInReleaseBuilds
             proguardFiles getDefaultProguardFile("proguard-android.txt"), "proguard-rules.pro"
         }

@@ -27,11 +27,13 @@ import { checkIsAdmin, getDemoConfig, type DemoConfig } from '../sessions/sessio
 //   Plans    : change the PRICE of every Video / Audio plan and switch plans on/off.
 //              Sessions, duration and validity are fixed and shown read-only.
 //   Demo     : demo class price (0 = free) and on/off
+//   Word Zip : add / edit / delete / switch off the Word Zip puzzles (word_zip_puzzles)
+//   Rooms    : active public classes, with "End Class for Everyone"
 //   Setup    : one-click "create default plans"
 // Every write goes through a Cloud Function that re-checks the admin on the server.
 // ─────────────────────────────────────────────────────────────────────────
 
-type Tab = 'teachers' | 'plans' | 'demo';
+type Tab = 'teachers' | 'plans' | 'demo' | 'rooms' | 'zip';
 
 interface TeacherRow {
   id: string;
@@ -51,6 +53,51 @@ interface PlanRow {
   price: number;
   isActive: boolean;
 }
+
+interface ZipRow {
+  id: string;
+  title: string;
+  theme: string;
+  grid: string[];
+  words: { word: string; meaning: string }[];
+  active: boolean;
+  order: number;
+}
+
+// "WORD - meaning" per line (the meaning is optional)
+const parseZipWords = (text: string): { word: string; meaning: string }[] =>
+  text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const m = line.match(/^([A-Za-z]{2,16})\s*(?:[-–—:|]\s*(.*))?$/);
+      return m ? { word: m[1].toUpperCase(), meaning: (m[2] || '').trim() } : null;
+    })
+    .filter(Boolean) as { word: string; meaning: string }[];
+
+// Can the word be made by touching neighbouring letters (also diagonally) without using a letter twice?
+const canTraceWord = (grid: string[], word: string): boolean => {
+  const cells = grid.map((r) => r.split(''));
+  const used = cells.map((r) => r.map(() => false));
+  const go = (r: number, c: number, i: number): boolean => {
+    if (r < 0 || c < 0 || r > 3 || c > 3 || used[r][c] || cells[r][c] !== word[i]) return false;
+    if (i === word.length - 1) return true;
+    used[r][c] = true;
+    for (let dr = -1; dr <= 1; dr++) {
+      for (let dc = -1; dc <= 1; dc++) {
+        if ((dr || dc) && go(r + dr, c + dc, i + 1)) {
+          used[r][c] = false;
+          return true;
+        }
+      }
+    }
+    used[r][c] = false;
+    return false;
+  };
+  for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++) if (go(r, c, 0)) return true;
+  return false;
+};
 
 const call = async (fn: string, payload?: any) => {
   const res = await functions().httpsCallable(fn)(payload);
@@ -88,6 +135,18 @@ export default function AdminPanelScreen() {
   // ── Plans ──
   const [plans, setPlans] = useState<PlanRow[]>([]);
   const [priceDraft, setPriceDraft] = useState<Record<string, string>>({});
+
+  // ── Word Zip puzzles ──
+  const [zipList, setZipList] = useState<ZipRow[]>([]);
+  const [zipEditId, setZipEditId] = useState<string | null>(null);
+  const [zTitle, setZTitle] = useState('');
+  const [zTheme, setZTheme] = useState('');
+  const [zRows, setZRows] = useState<string[]>(['', '', '', '']);
+  const [zWords, setZWords] = useState('');
+  const [zActive, setZActive] = useState(true);
+
+  // ── Active public rooms ──
+  const [pubRooms, setPubRooms] = useState<{ id: string; title: string; hostName: string; hostLeft: boolean }[]>([]);
 
   // ── Demo ──
   const [demo, setDemo] = useState<DemoConfig | null>(null);
@@ -140,6 +199,156 @@ export default function AdminPanelScreen() {
     setPriceDraft(draft);
   }, []);
 
+  // Live list of Word Zip puzzles
+  useEffect(() => {
+    if (!allowed) return;
+    const unsub = firestore()
+      .collection('word_zip_puzzles')
+      .onSnapshot(
+        (snap) => {
+          const rows: ZipRow[] = [];
+          snap?.docs?.forEach((d) => {
+            const x: any = d.data() || {};
+            rows.push({
+              id: d.id,
+              title: x.title || 'Word Zip',
+              theme: x.theme || '',
+              grid: Array.isArray(x.grid) ? x.grid.map((r: any) => String(r || '')) : ['', '', '', ''],
+              words: Array.isArray(x.words) ? x.words : [],
+              active: x.active !== false,
+              order: Number(x.order) || 0,
+            });
+          });
+          rows.sort((a, b) => a.order - b.order);
+          setZipList(rows);
+        },
+        (e) => console.log('Word Zip list error:', e)
+      );
+    return () => unsub();
+  }, [allowed]);
+
+  const resetZipForm = () => {
+    setZipEditId(null);
+    setZTitle('');
+    setZTheme('');
+    setZRows(['', '', '', '']);
+    setZWords('');
+    setZActive(true);
+  };
+
+  const editZip = (z: ZipRow) => {
+    setZipEditId(z.id);
+    setZTitle(z.title);
+    setZTheme(z.theme);
+    setZRows([0, 1, 2, 3].map((i) => z.grid[i] || ''));
+    setZWords(z.words.map((w) => (w.meaning ? `${w.word} - ${w.meaning}` : w.word)).join('\n'));
+    setZActive(z.active);
+  };
+
+  const doSaveZip = (payload: any) =>
+    run(async () => {
+      const col = firestore().collection('word_zip_puzzles');
+      if (zipEditId) {
+        await col.doc(zipEditId).set({ ...payload, updatedAt: firestore.FieldValue.serverTimestamp() }, { merge: true });
+      } else {
+        await col.add({ ...payload, order: Date.now(), createdAt: firestore.FieldValue.serverTimestamp() });
+      }
+      resetZipForm();
+    }, zipEditId ? 'Puzzle updated.' : 'Puzzle added. Students see it in the Word Zip game.');
+
+  const saveZip = () => {
+    const rows = zRows.map((r) => r.trim().toUpperCase());
+    if (rows.some((r) => !/^[A-Z]{4}$/.test(r))) {
+      return Alert.alert('Grid', 'Each of the 4 rows needs exactly 4 letters (A-Z).');
+    }
+    const words = parseZipWords(zWords);
+    if (words.length === 0) return Alert.alert('Words', 'Add at least one word. One per line, like:  FLUENT - able to speak smoothly');
+    const unique = Array.from(new Map(words.map((w) => [w.word, w])).values());
+    const bad = unique.filter((w) => !canTraceWord(rows, w.word)).map((w) => w.word);
+    const payload = {
+      title: zTitle.trim() || 'Word Zip',
+      theme: zTheme.trim() || zTitle.trim() || 'Word Zip',
+      grid: rows,
+      words: unique,
+      active: zActive,
+    };
+    if (bad.length > 0) {
+      Alert.alert(
+        'Check these words',
+        `${bad.join(', ')} cannot be made from touching neighbouring letters in this grid. Students may not be able to find them. Save anyway?`,
+        [
+          { text: 'Fix it', style: 'cancel' },
+          { text: 'Save anyway', onPress: () => doSaveZip(payload) },
+        ]
+      );
+      return;
+    }
+    doSaveZip(payload);
+  };
+
+  const deleteZip = (z: ZipRow) => {
+    Alert.alert('Delete puzzle', `Delete "${z.title}"? This cannot be undone.`, [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: () =>
+          run(async () => {
+            await firestore().collection('word_zip_puzzles').doc(z.id).delete();
+            if (zipEditId === z.id) resetZipForm();
+          }),
+      },
+    ]);
+  };
+
+  const toggleZip = (z: ZipRow, v: boolean) =>
+    run(async () => {
+      await firestore().collection('word_zip_puzzles').doc(z.id).update({ active: v });
+    });
+
+  // Live list of public rooms (updates by itself)
+  useEffect(() => {
+    if (!allowed) return;
+    const unsub = firestore()
+      .collection('voice_rooms')
+      .onSnapshot(
+        (snap) => {
+          const rows: any[] = [];
+          snap?.docs?.forEach((d) => {
+            const x: any = d.data() || {};
+            if (x.type && x.type !== 'public') return;
+            rows.push({ id: d.id, title: x.title || 'Room', hostName: x.hostName || 'User', hostLeft: !!x.hostLeft });
+          });
+          setPubRooms(rows);
+        },
+        () => {}
+      );
+    return () => unsub();
+  }, [allowed]);
+
+  const endClassForEveryone = (r: { id: string; title: string }) => {
+    Alert.alert(
+      'End class for everyone?',
+      `"${r.title}" will be closed and everybody inside will be disconnected.`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'End class',
+          style: 'destructive',
+          onPress: () =>
+            run(async () => {
+              const ref = firestore().collection('voice_rooms').doc(r.id);
+              // 1) flag: every connected phone disconnects and goes back to the list
+              await ref.update({ endedByAdmin: true });
+              // 2) give the phones a moment to react, then remove the room
+              await new Promise((res) => setTimeout(res, 3000));
+              await ref.delete();
+            }, 'The class was ended for everyone.'),
+        },
+      ]
+    );
+  };
+
   const loadDemo = useCallback(async () => {
     const cfg = await getDemoConfig();
     setDemo(cfg);
@@ -157,10 +366,17 @@ export default function AdminPanelScreen() {
   }, [loadTeachers, loadPlans, loadDemo]);
 
   useEffect(() => {
-    // Shows only WHY access was refused. The list of admin emails is not shown to the user.
-    const explainDenied = (reason: string) => {
+    const explainDenied = async (reason: string) => {
       const email = auth().currentUser?.email || '(no email)';
-      setDenyInfo(`Signed in as: ${email}\n${reason}`);
+      let listInfo = '';
+      try {
+        const snap = await firestore().collection('admins').get();
+        const emails = snap.docs.map((d) => String((d.data() as any).email || '(no email field)'));
+        listInfo = `admins list (${emails.length}): ${emails.join(', ') || 'empty'}`;
+      } catch (e: any) {
+        listInfo = `Could not read the admins list: ${e?.code || ''} ${e?.message || e}`;
+      }
+      setDenyInfo(`Signed in as: ${email}\n${reason}\n${listInfo}`);
     };
     checkIsAdmin()
       .then((ok) => {
@@ -394,6 +610,107 @@ export default function AdminPanelScreen() {
     </>
   );
 
+  const renderZip = () => (
+    <>
+      <View style={[styles.card, card]}>
+        <Text style={[styles.cardTitle, { color: colors.textPrimary }]}>{zipEditId ? 'Edit Word Zip puzzle' : 'Add a Word Zip puzzle'}</Text>
+        <Text style={[styles.hint, { color: colors.textSecondary }]}>
+          The grid is 4 x 4 letters. Students join neighbouring letters to make the words. Puzzles are shown to students in order;
+          if you add none, the built-in puzzles are used.
+        </Text>
+        <TextInput value={zTitle} onChangeText={setZTitle} placeholder="Title (e.g. English Fluency)" placeholderTextColor={colors.textSecondary} style={input} />
+        <TextInput value={zTheme} onChangeText={setZTheme} placeholder="Theme line (optional)" placeholderTextColor={colors.textSecondary} style={input} />
+        <Text style={[styles.label, { color: colors.textPrimary, marginTop: 10 }]}>Grid (4 letters in each row)</Text>
+        {[0, 1, 2, 3].map((i) => (
+          <TextInput
+            key={i}
+            value={zRows[i]}
+            onChangeText={(t) => setZRows((prev) => prev.map((r, j) => (j === i ? t.replace(/[^A-Za-z]/g, '').slice(0, 4).toUpperCase() : r)))}
+            placeholder={`Row ${i + 1}  (4 letters)`}
+            placeholderTextColor={colors.textSecondary}
+            autoCapitalize="characters"
+            maxLength={4}
+            style={[...input, { letterSpacing: 6, fontWeight: '800' }]}
+          />
+        ))}
+        <Text style={[styles.label, { color: colors.textPrimary, marginTop: 10 }]}>Words (one per line:  WORD - meaning)</Text>
+        <TextInput
+          value={zWords}
+          onChangeText={setZWords}
+          placeholder={'FLUENT - able to speak smoothly\nTALK - to speak with someone'}
+          placeholderTextColor={colors.textSecondary}
+          multiline
+          style={[...input, { minHeight: 110, textAlignVertical: 'top' }]}
+        />
+        <View style={styles.switchRow}>
+          <Text style={[styles.label, { color: colors.textPrimary }]}>Active (visible to students)</Text>
+          <Switch value={zActive} onValueChange={setZActive} trackColor={{ true: accent }} />
+        </View>
+        <View style={{ flexDirection: 'row', gap: 10, marginTop: 6 }}>
+          {zipEditId && (
+            <TouchableOpacity style={[styles.btn, { borderColor: accent, borderWidth: 1.5, flex: 1 }]} onPress={resetZipForm}>
+              <Text style={{ color: accent, fontWeight: '800' }}>Cancel</Text>
+            </TouchableOpacity>
+          )}
+          <TouchableOpacity style={[styles.btn, { backgroundColor: accent, flex: 2 }, busy && { opacity: 0.45 }]} disabled={busy} onPress={saveZip}>
+            <Text style={styles.btnText}>{zipEditId ? 'Save changes' : 'Add puzzle'}</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Puzzles ({zipList.length})</Text>
+      {zipList.length === 0 && (
+        <Text style={[styles.hint, { color: colors.textSecondary }]}>No puzzle added yet. Students currently see the built-in puzzles.</Text>
+      )}
+      {zipList.map((z) => (
+        <View key={z.id} style={[styles.card, card]}>
+          <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' }}>
+            <View style={{ flex: 1 }}>
+              <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={1}>{z.title}</Text>
+              <Text style={[styles.hint, { color: colors.textSecondary }]} numberOfLines={1}>
+                {z.grid.join('  ')}   •   {z.words.length} words
+              </Text>
+              <Text style={[styles.hint, { color: z.active ? '#10B981' : '#EF4444', fontWeight: '800' }]}>{z.active ? 'Active' : 'Hidden'}</Text>
+            </View>
+            <Switch value={z.active} onValueChange={(v) => toggleZip(z, v)} trackColor={{ true: accent }} />
+          </View>
+          <View style={{ flexDirection: 'row', gap: 10, marginTop: 8 }}>
+            <TouchableOpacity style={[styles.btn, { borderColor: accent, borderWidth: 1.5, flex: 1 }]} onPress={() => editZip(z)}>
+              <Text style={{ color: accent, fontWeight: '800' }}>Edit</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={[styles.btn, { backgroundColor: '#EF4444', flex: 1 }]} onPress={() => deleteZip(z)}>
+              <Text style={styles.btnText}>Delete</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      ))}
+    </>
+  );
+
+  const renderRooms = () => (
+    <>
+      <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>Active public classes ({pubRooms.length})</Text>
+      {pubRooms.length === 0 && (
+        <Text style={[styles.hint, { color: colors.textSecondary }]}>No public class is active right now.</Text>
+      )}
+      {pubRooms.map((r) => (
+        <View key={r.id} style={[styles.card, card]}>
+          <Text style={[styles.cardTitle, { color: colors.textPrimary }]} numberOfLines={2}>{r.title}</Text>
+          <Text style={[styles.hint, { color: colors.textSecondary }]}>
+            Hosted by {r.hostName}{r.hostLeft ? '  •  Host left' : ''}
+          </Text>
+          <TouchableOpacity
+            style={[styles.btn, { backgroundColor: '#EF4444', marginTop: 8 }, busy && { opacity: 0.45 }]}
+            disabled={busy}
+            onPress={() => endClassForEveryone(r)}
+          >
+            <Text style={styles.btnText}>End Class for Everyone</Text>
+          </TouchableOpacity>
+        </View>
+      ))}
+    </>
+  );
+
   const renderPlanGroup = (title: string, list: PlanRow[]) => (
     <>
       <Text style={[styles.sectionTitle, { color: colors.textPrimary }]}>{title}</Text>
@@ -510,8 +827,8 @@ export default function AdminPanelScreen() {
         <Text style={[styles.headerTitle, { color: colors.textPrimary }]}>Admin Panel</Text>
       </View>
 
-      <View style={styles.tabs}>
-        {(['teachers', 'plans', 'demo'] as Tab[]).map((t) => {
+      <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ flexGrow: 0, flexShrink: 0, height: 56 }} contentContainerStyle={[styles.tabs, { alignItems: 'center' }]}>
+        {(['teachers', 'plans', 'demo', 'zip', 'rooms'] as Tab[]).map((t) => {
           const active = tab === t;
           return (
             <TouchableOpacity
@@ -520,17 +837,19 @@ export default function AdminPanelScreen() {
               style={[styles.tab, { backgroundColor: active ? accent : colors.bgCard, borderColor: active ? accent : colors.border }]}
             >
               <Text style={{ color: active ? '#FFF' : colors.textSecondary, fontWeight: '800', fontSize: 13 }}>
-                {t === 'teachers' ? 'Teachers' : t === 'plans' ? 'Plan prices' : 'Demo class'}
+                {t === 'teachers' ? 'Teachers' : t === 'plans' ? 'Plan prices' : t === 'demo' ? 'Demo class' : t === 'zip' ? 'Word Zip' : 'Rooms'}
               </Text>
             </TouchableOpacity>
           );
         })}
-      </View>
+      </ScrollView>
 
       <ScrollView contentContainerStyle={styles.scroll} keyboardShouldPersistTaps="handled">
         {tab === 'teachers' && renderTeachers()}
         {tab === 'plans' && renderPlans()}
         {tab === 'demo' && renderDemo()}
+        {tab === 'zip' && renderZip()}
+        {tab === 'rooms' && renderRooms()}
       </ScrollView>
     </SafeAreaView>
   );
@@ -542,7 +861,7 @@ const styles = StyleSheet.create({
   backBtn: { width: 38, height: 38, borderRadius: 19, alignItems: 'center', justifyContent: 'center' },
   headerTitle: { fontSize: 20, fontWeight: '800' },
   tabs: { flexDirection: 'row', gap: 8, paddingHorizontal: 16, marginBottom: 8 },
-  tab: { flex: 1, borderWidth: 1, borderRadius: 12, paddingVertical: 10, alignItems: 'center' },
+  tab: { height: 40, borderWidth: 1, borderRadius: 12, paddingHorizontal: 16, alignItems: 'center', justifyContent: 'center' },
   scroll: { paddingHorizontal: 16, paddingBottom: 40, gap: 12 },
   card: { borderWidth: 1, borderRadius: 16, padding: 14, gap: 4 },
   cardTitle: { fontSize: 15.5, fontWeight: '800' },
